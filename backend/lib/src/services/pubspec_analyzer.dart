@@ -40,8 +40,10 @@ class PubspecAnalyzer {
       final status = _status(installed, info.latest, info.advisoryIds);
 
       // Graph edges: this package's regular deps, kept only if they're also in
-      // the project's resolved set (so edges never dangle).
-      final children = Version.parse(installed) == null
+      // the project's resolved set (so edges never dangle). Skipped when the
+      // version isn't a real semver (no lockfile), since pub.dev can't be
+      // queried for the dependencies of "(unresolved)".
+      final children = _tryParseVersion(installed) == null
           ? const <String>[]
           : (await _pub.dependencyNames(name, installed))
               .where(names.contains)
@@ -81,10 +83,24 @@ class PubspecAnalyzer {
   ) {
     if (advisories.isNotEmpty) return DepStatus.vulnerable;
     if (latest == null) return DepStatus.unknown;
-    final cur = Version.parse(installed);
-    final lat = Version.parse(latest);
+    final cur = _tryParseVersion(installed);
+    final lat = _tryParseVersion(latest);
     if (cur == null || lat == null) return DepStatus.unknown;
     return cur < lat ? DepStatus.outdated : DepStatus.upToDate;
+  }
+
+  /// Parses a semver string, returning null instead of throwing.
+  ///
+  /// [Version.parse] throws a [FormatException] on anything non-semver, and
+  /// `installed` is the sentinel `(unresolved)` for projects with no
+  /// `pubspec.lock` — so parsing directly crashed the whole analysis for any
+  /// repo that doesn't commit its lockfile. Such versions are simply unknown.
+  static Version? _tryParseVersion(String text) {
+    try {
+      return Version.parse(text);
+    } on FormatException {
+      return null;
+    }
   }
 
   /// Minimal pubspec.lock reader: package -> resolved version.
