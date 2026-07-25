@@ -17,7 +17,9 @@ class _DepGraphState extends State<DepGraph> {
   late final Graph _graph;
   late final Map<String, DepNode> _byName;
 
-  final _builder = FruchtermanReingoldAlgorithm(iterations: 1000);
+  final _builder = FruchtermanReingoldAlgorithm(
+    FruchtermanReingoldConfiguration(iterations: 1000),
+  );
 
   @override
   void initState() {

@@ -41,7 +41,7 @@ class PubspecAnalyzer {
 
       // Graph edges: this package's regular deps, kept only if they're also in
       // the project's resolved set (so edges never dangle).
-      final children = Version.tryParse(installed) == null
+      final children = Version.parse(installed) == null
           ? const <String>[]
           : (await _pub.dependencyNames(name, installed))
               .where(names.contains)
@@ -81,8 +81,8 @@ class PubspecAnalyzer {
   ) {
     if (advisories.isNotEmpty) return DepStatus.vulnerable;
     if (latest == null) return DepStatus.unknown;
-    final cur = Version.tryParse(installed);
-    final lat = Version.tryParse(latest);
+    final cur = Version.parse(installed);
+    final lat = Version.parse(latest);
     if (cur == null || lat == null) return DepStatus.unknown;
     return cur < lat ? DepStatus.outdated : DepStatus.upToDate;
   }
