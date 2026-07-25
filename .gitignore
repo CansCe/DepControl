@@ -47,3 +47,4 @@ app.*.map.json
 # Dart Frog build output (backend member)
 backend/.dart_frog/
 backend/build/
+.serena
