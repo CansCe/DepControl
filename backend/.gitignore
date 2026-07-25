@@ -1,0 +1,11 @@
+# Secrets — never commit. Use .env.example as the template.
+.env
+.env.*
+!.env.example
+
+# Dart / Dart Frog build output
+.dart_tool/
+.dart_frog/
+build/
+.packages
+pubspec_overrides.yaml

@@ -1,0 +1,169 @@
+import 'dart:convert';
+
+import 'package:postgres/postgres.dart';
+import 'package:shared/shared.dart';
+
+import 'project_repository.dart';
+
+/// Postgres-backed [ProjectRepository] (Phase 3). Persists tracked projects and
+/// their latest dependency report to Supabase Postgres, so state survives
+/// restarts. The dependency graph is stored as JSONB (`dep_reports.nodes`).
+///
+/// Backed by a lazily-opened connection [Pool] so concurrent Dart Frog requests
+/// don't contend on a single connection. The pool opens connections on first
+/// use, which keeps [Deps] construction synchronous.
+class PostgresProjectRepository implements ProjectRepository {
+  PostgresProjectRepository(this._pool);
+
+  /// Builds a repository from a `postgres://user:pass@host:port/db` URL, as
+  /// provided by Supabase (Project Settings → Database → Connection string).
+  ///
+  /// TLS is required by Supabase, so `sslmode` defaults to `require`; pass
+  /// `?sslmode=disable` in the URL for a plaintext local Postgres.
+  factory PostgresProjectRepository.fromUrl(String url) {
+    final uri = Uri.parse(url);
+    if (uri.scheme != 'postgres' && uri.scheme != 'postgresql') {
+      throw ArgumentError(
+        'DATABASE_URL must be a postgres:// URL (got scheme "${uri.scheme}")',
+      );
+    }
+
+    final userInfo = uri.userInfo.split(':');
+    final endpoint = Endpoint(
+      host: uri.host,
+      port: uri.hasPort ? uri.port : 5432,
+      database: uri.pathSegments.isNotEmpty && uri.pathSegments.first.isNotEmpty
+          ? uri.pathSegments.first
+          : 'postgres',
+      username: userInfo.isNotEmpty && userInfo.first.isNotEmpty
+          ? Uri.decodeComponent(userInfo.first)
+          : null,
+      password: userInfo.length > 1
+          ? Uri.decodeComponent(userInfo.sublist(1).join(':'))
+          : null,
+    );
+
+    final sslMode = switch (uri.queryParameters['sslmode']) {
+      'disable' => SslMode.disable,
+      'verify-full' || 'verify-ca' => SslMode.verifyFull,
+      _ => SslMode.require,
+    };
+
+    return PostgresProjectRepository(
+      Pool.withEndpoints(
+        [endpoint],
+        settings: PoolSettings(sslMode: sslMode, maxConnectionCount: 5),
+      ),
+    );
+  }
+
+  final Pool _pool;
+
+  /// Closes the underlying connection pool. Call on server shutdown.
+  Future<void> close() => _pool.close();
+
+  @override
+  Future<Project> add(Project project) async {
+    await _pool.execute(
+      Sql.named('''
+        insert into projects (id, git_url, name, ref, added_at, last_checked_at)
+        values (@id:uuid, @gitUrl:text, @name:text, @ref:text,
+                @addedAt:timestamptz, @lastCheckedAt:timestamptz)
+        on conflict (id) do update set
+          git_url         = excluded.git_url,
+          name            = excluded.name,
+          ref             = excluded.ref,
+          last_checked_at = excluded.last_checked_at
+      '''),
+      parameters: {
+        'id': project.id,
+        'gitUrl': project.gitUrl,
+        'name': project.name,
+        'ref': project.ref,
+        'addedAt': project.addedAt ?? DateTime.now().toUtc(),
+        'lastCheckedAt': project.lastCheckedAt,
+      },
+    );
+    return project;
+  }
+
+  @override
+  Future<List<Project>> all() async {
+    final result = await _pool.execute(
+      'select id, git_url, name, ref, added_at, last_checked_at '
+      'from projects order by added_at desc',
+    );
+    return result.map((row) => _projectFromRow(row.toColumnMap())).toList();
+  }
+
+  @override
+  Future<Project?> byId(String id) async {
+    final result = await _pool.execute(
+      Sql.named('select id, git_url, name, ref, added_at, last_checked_at '
+          'from projects where id = @id:uuid'),
+      parameters: {'id': id},
+    );
+    if (result.isEmpty) return null;
+    return _projectFromRow(result.first.toColumnMap());
+  }
+
+  @override
+  Future<void> saveReport(DepReport report) async {
+    await _pool.execute(
+      Sql.named('''
+        insert into dep_reports (project_id, generated_at, nodes)
+        values (@projectId:uuid, @generatedAt:timestamptz, @nodes:jsonb)
+        on conflict (project_id) do update set
+          generated_at = excluded.generated_at,
+          nodes        = excluded.nodes
+      '''),
+      parameters: {
+        'projectId': report.projectId,
+        'generatedAt': report.generatedAt,
+        'nodes': report.nodes.map((n) => n.toJson()).toList(),
+      },
+    );
+  }
+
+  @override
+  Future<DepReport?> reportFor(String projectId) async {
+    final result = await _pool.execute(
+      Sql.named('select project_id, generated_at, nodes '
+          'from dep_reports where project_id = @id:uuid'),
+      parameters: {'id': projectId},
+    );
+    if (result.isEmpty) return null;
+    final row = result.first.toColumnMap();
+
+    // jsonb decodes to a parsed Dart structure (List of node maps).
+    final rawNodes = row['nodes'];
+    final nodeList = rawNodes is String
+        ? (jsonDecodeList(rawNodes))
+        : (rawNodes as List? ?? const []);
+
+    return DepReport(
+      projectId: row['project_id'].toString(),
+      generatedAt: row['generated_at'] as DateTime,
+      nodes: nodeList
+          .map((e) => DepNode.fromJson((e as Map).cast<String, dynamic>()))
+          .toList(),
+    );
+  }
+
+  Project _projectFromRow(Map<String, dynamic> row) => Project(
+        id: row['id'].toString(),
+        gitUrl: row['git_url'] as String,
+        name: row['name'] as String,
+        ref: (row['ref'] as String?) ?? 'HEAD',
+        addedAt: row['added_at'] as DateTime?,
+        lastCheckedAt: row['last_checked_at'] as DateTime?,
+      );
+}
+
+/// Fallback for drivers/paths that surface jsonb as a raw string.
+List<dynamic> jsonDecodeList(String s) {
+  final decoded = _json.decode(s);
+  return decoded is List ? decoded : const [];
+}
+
+const _json = JsonCodec();

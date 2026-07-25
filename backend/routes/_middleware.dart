@@ -1,12 +1,22 @@
+import 'package:backend/src/auth/auth_middleware.dart';
+import 'package:backend/src/deps.dart';
+import 'package:backend/src/services/logger.dart';
+import 'package:backend/src/services/request_logger.dart';
 import 'package:dart_frog/dart_frog.dart';
 
-import '../lib/src/deps.dart';
-
-/// Injects shared services and permissive CORS for local Flutter Web dev.
+/// Injects shared services, an optional authenticated user, and permissive CORS
+/// for local Flutter Web dev. In development, also logs every request.
 Handler middleware(Handler handler) {
-  return handler
+  var pipeline = handler
+      .use(authProvider(deps.authVerifier))
       .use(provider<Deps>((_) => deps))
       .use(_cors());
+
+  // Request logging is a development-only convenience; keep production quiet.
+  if (log.isDevelopment) {
+    pipeline = pipeline.use(devRequestLogger(log));
+  }
+  return pipeline;
 }
 
 Middleware _cors() {
@@ -26,5 +36,5 @@ Middleware _cors() {
 const _corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
