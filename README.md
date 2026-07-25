@@ -11,18 +11,21 @@ lets you **inspect & report**, **resolve & simulate** dependency changes, and tr
 
 ## Layout
 
-`project_cloud/` is both the Flutter app at the repo root **and** the pub workspace
-root that ties the members together under one lockfile / `.dart_tool/`.
+`project_cloud/` is the pub workspace **umbrella** — it is not itself an app. It ties
+the members together under one lockfile / `.dart_tool/`. The runnable app is the
+`frontend` member; `backend` and `shared` are its peers.
 
 ```
-project_cloud/            # repo root: Flutter app (lib/) + pub workspace root
-├── lib/                  # root Flutter app
+project_cloud/            # repo root = pub workspace umbrella (not an app)
 ├── packages/shared/      # DTOs: Project, DepNode, DepReport, ResolutionResult
 ├── backend/              # Dart Frog API
 │   ├── routes/           # file-based routes -> HTTP endpoints
 │   └── lib/src/          # services (git fetch, pub.dev, analyzer, resolver) + repo
-└── frontend/             # Flutter Web app
+└── frontend/             # Flutter Web app  <-- the runnable app
 ```
+
+> Native (mobile/desktop) targets, when needed, get added to `frontend` (via
+> `flutter create --platforms=...`) or a new workspace member — not to the root.
 
 ## Roadmap
 
@@ -44,7 +47,7 @@ project_cloud/            # repo root: Flutter app (lib/) + pub workspace root
 This repo is a single pub workspace, so you resolve everything **once from the root**:
 
 ```bash
-# from C:\ProjectCloud\project_cloud — resolves the root app + shared + backend + frontend together
+# from C:\ProjectCloud\project_cloud — resolves shared + backend + frontend together
 flutter pub get
 ```
 

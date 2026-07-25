@@ -15,9 +15,9 @@ Pkg `backend`, Dart Frog file-based routing. Compiles to a single binary.
 ## Run
 - `cd backend; dart_frog dev` → http://localhost:8080 (needs `dart_frog_cli` activated).
 
-## Known issues (pre-existing stub bugs)
-- `services/pubspec_analyzer.dart:44,84,85` — uses `Version.tryParse` which pub_semver's
-  `Version` doesn't define (use `Version.parse`).
+## Lint debt (stub code, not errors)
+- `services/pubspec_analyzer.dart:44,86` — `unnecessary_null_comparison` (dead null checks;
+  `Version.tryParse` resolves fine under pub_semver 2.2.0).
 - Route files use relative `../lib` imports → `avoid_relative_lib_imports`; should be
   `package:backend/...`.
 
