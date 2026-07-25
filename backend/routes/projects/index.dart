@@ -1,10 +1,9 @@
 import 'dart:io';
 
+import 'package:backend/src/deps.dart';
 import 'package:dart_frog/dart_frog.dart';
 import 'package:shared/shared.dart';
 import 'package:uuid/uuid.dart';
-
-import '../../lib/src/deps.dart';
 
 /// GET  /projects        -> list tracked projects
 /// POST /projects        -> ingest a project by git URL, returns the report

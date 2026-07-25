@@ -21,7 +21,29 @@ class PostgresProjectRepository implements ProjectRepository {
   /// TLS is required by Supabase, so `sslmode` defaults to `require`; pass
   /// `?sslmode=disable` in the URL for a plaintext local Postgres.
   factory PostgresProjectRepository.fromUrl(String url) {
-    final uri = Uri.parse(url);
+    // The .env.example ships a `[YOUR-DB-PASSWORD]` placeholder. Catch it
+    // explicitly: `Uri.parse` would otherwise fail deep in the stack with an
+    // opaque "Invalid character" FormatException.
+    if (url.contains('[') || url.contains(']')) {
+      throw ArgumentError(
+        'DATABASE_URL still contains a placeholder (e.g. [YOUR-DB-PASSWORD]). '
+        'Replace it with the real password from the Supabase dashboard: '
+        'Project Settings -> Database -> Connection string. '
+        'If the password itself contains special characters (@ : / ? # []), '
+        'URL-encode it.',
+      );
+    }
+
+    final Uri uri;
+    try {
+      uri = Uri.parse(url);
+    } on FormatException catch (e) {
+      throw ArgumentError(
+        'DATABASE_URL is not a valid URL (${e.message}). If your password '
+        'contains special characters (@ : / ? # []), URL-encode it.',
+      );
+    }
+
     if (uri.scheme != 'postgres' && uri.scheme != 'postgresql') {
       throw ArgumentError(
         'DATABASE_URL must be a postgres:// URL (got scheme "${uri.scheme}")',

@@ -69,10 +69,26 @@ class Deps {
   /// in-memory fallback keeps local dev working before a database is wired up,
   /// but its state is lost on every restart — a warning makes that explicit.
   static ProjectRepository _buildRepository() {
+    final db = log.tagged('db');
     final url = Platform.environment['DATABASE_URL'];
     if (url != null && url.isNotEmpty) {
-      log.tagged('db').info('Using Postgres repository (DATABASE_URL).');
-      return PostgresProjectRepository.fromUrl(url);
+      try {
+        final repo = PostgresProjectRepository.fromUrl(url);
+        db.info('Using Postgres repository (DATABASE_URL).');
+        return repo;
+      } catch (e) {
+        // A malformed DATABASE_URL used to blow up lazily on the first request,
+        // taking down every route with an opaque stack trace. In development,
+        // report it clearly and keep serving from memory; in production, fail
+        // fast rather than silently running without persistence.
+        db.error('DATABASE_URL is unusable: $e');
+        if (!log.isDevelopment) rethrow;
+        db.warn(
+          'Falling back to the in-memory repository so the dev server can '
+          'still start. Fix DATABASE_URL in backend/.env to persist data.',
+        );
+        return InMemoryProjectRepository();
+      }
     }
     log.tagged('db').warn(
           'DATABASE_URL not set — using in-memory repository. State is lost '

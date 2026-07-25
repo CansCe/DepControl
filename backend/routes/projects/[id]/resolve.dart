@@ -1,11 +1,10 @@
 import 'dart:io';
 
+import 'package:backend/src/deps.dart';
 import 'package:dart_frog/dart_frog.dart';
 import 'package:shared/shared.dart';
 
-import '../../../lib/src/deps.dart';
-
-/// POST /projects/<id>/resolve  {package, targetConstraint}
+/// POST `/projects/<id>/resolve`  {package, targetConstraint}
 /// Simulates the change and returns a [ResolutionResult].
 Future<Response> onRequest(RequestContext context, String id) async {
   if (context.request.method != HttpMethod.post) {

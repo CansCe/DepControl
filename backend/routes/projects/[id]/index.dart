@@ -1,10 +1,9 @@
 import 'dart:io';
 
+import 'package:backend/src/deps.dart';
 import 'package:dart_frog/dart_frog.dart';
 
-import '../../../lib/src/deps.dart';
-
-/// GET /projects/<id> -> the cached dependency report for a project.
+/// GET `/projects/<id>` -> the cached dependency report for a project.
 Future<Response> onRequest(RequestContext context, String id) async {
   final deps = context.read<Deps>();
   final project = await deps.repository.byId(id);
