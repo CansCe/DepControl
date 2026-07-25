@@ -1,9 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:shared/shared.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'api/api_client.dart';
 
-void main() => runApp(const DepControlApp());
+/// Shorthand for the Supabase client once [main] has initialized it.
+SupabaseClient get supabase => Supabase.instance.client;
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(
+    url: 'https://ogsnkqlamfvftdgvvtje.supabase.co',
+    // Publishable key — public by design; safe in client code.
+    // Never place the service_role/secret key here. Requires RLS on all tables.
+    publishableKey: 'sb_publishable_1hxQQb522Ukayaq9TzPvpg_oiu7KkK6',
+  );
+  runApp(const DepControlApp());
+}
 
 class DepControlApp extends StatelessWidget {
   const DepControlApp({super.key});
