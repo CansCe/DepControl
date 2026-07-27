@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -67,6 +68,31 @@ class _SignInScreenState extends State<SignInScreen> {
     }
   }
 
+  Future<void> _signInWithGitHub() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+      _notice = null;
+    });
+
+    try {
+      await Supabase.instance.client.auth.signInWithOAuth(
+        OAuthProvider.github,
+        // On web the browser returns to the current origin, which must be in
+        // Supabase's redirect allow list. Native builds need the deep link.
+        redirectTo: kIsWeb ? null : 'io.supabase.depcontrol://login-callback/',
+      );
+      // The browser navigates away; onAuthStateChange resumes the app on
+      // return, so nothing more to do here.
+    } on AuthException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } catch (e) {
+      if (mounted) setState(() => _error = 'Could not start GitHub sign-in. $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -92,6 +118,29 @@ class _SignInScreenState extends State<SignInScreen> {
                     style: theme.textTheme.bodyMedium,
                   ),
                   const SizedBox(height: 24),
+                  OutlinedButton.icon(
+                    onPressed: _busy ? null : _signInWithGitHub,
+                    icon: const Icon(Icons.code),
+                    label: const Text('Continue with GitHub'),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    children: [
+                      const Expanded(child: Divider()),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Text(
+                          'or with email',
+                          style: theme.textTheme.bodySmall,
+                        ),
+                      ),
+                      const Expanded(child: Divider()),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
                   TextFormField(
                     controller: _email,
                     autofillHints: const [AutofillHints.email],
