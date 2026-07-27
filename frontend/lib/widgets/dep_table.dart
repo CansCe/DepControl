@@ -93,15 +93,25 @@ class _DepTableState extends State<DepTable> {
           rows: [
             for (final n in _rows)
               DataRow(
-                onSelectChanged: widget.onSelect == null
-                    ? null
-                    : (_) => widget.onSelect!(n),
+                // Per-cell onTap rather than onSelectChanged: the latter turns
+                // the table into a selectable one, adding a checkbox column and
+                // a "select all" header. With onSelectAll unset, that header
+                // invokes onSelectChanged for every row at once — which here
+                // would try to open a sheet per dependency.
                 cells: [
-                  DataCell(Text(n.name)),
-                  DataCell(Text(n.kind.name)),
-                  DataCell(Text(n.installed)),
-                  DataCell(Text(n.latest ?? '—')),
-                  DataCell(DepStatusChip(status: n.status)),
+                  for (final cell in <Widget>[
+                    Text(n.name),
+                    Text(n.kind.name),
+                    Text(n.installed),
+                    Text(n.latest ?? '—'),
+                    DepStatusChip(status: n.status),
+                  ])
+                    DataCell(
+                      cell,
+                      onTap: widget.onSelect == null
+                          ? null
+                          : () => widget.onSelect!(n),
+                    ),
                 ],
               ),
           ],
