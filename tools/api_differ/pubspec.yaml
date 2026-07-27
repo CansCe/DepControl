@@ -1,0 +1,28 @@
+name: api_differ
+description: >-
+  Compares the public API of two published versions of a pub package.
+publish_to: none
+version: 0.1.0
+
+# Deliberately NOT a member of the root pub workspace, and deliberately not a
+# dependency of `backend`.
+#
+# The workspace resolves one `analyzer` version across all its members, and the
+# one dart_frog_cli pulls in is mid-migration: some AST nodes expose `.name`,
+# others moved to `.namePart`, and NamedCompilationUnitMember is gone. Pinning a
+# stable analyzer here keeps that churn out of the server.
+#
+# Staying out of process also keeps the API itself free of archive downloading
+# and source parsing — it only ever reads results this tool produces.
+environment:
+  sdk: ^3.6.0
+
+dependencies:
+  analyzer: ^7.0.0
+  archive: ^4.0.0
+  http: ^1.2.0
+  path: ^1.9.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.0
