@@ -64,14 +64,15 @@ List<List<String>> dependencyPathsTo(
   return results;
 }
 
-/// Explains why a single package is present, as one or more chains.
+/// Everything worth knowing about one package: why it is present, and what
+/// moving it to the latest version involves.
 ///
-/// This replaces a whole-graph view, which at real sizes — ~50 packages and
+/// The paths replace a whole-graph view, which at real sizes — ~50 packages and
 /// ~150 edges — rendered as an illegible cobweb regardless of layout. A chain
 /// answers the question people actually bring to a dependency graph, and stays
 /// readable because it is only ever a few steps long.
-class DependencyPathView extends StatelessWidget {
-  const DependencyPathView({
+class PackageDetailView extends StatelessWidget {
+  const PackageDetailView({
     required this.package,
     required this.nodes,
     super.key,
@@ -123,6 +124,10 @@ class DependencyPathView extends StatelessWidget {
                   ?.copyWith(color: theme.colorScheme.error),
             ),
           ],
+          if (node != null) ...[
+            const SizedBox(height: 20),
+            _Upgrade(assessment: assessUpgrade(node)),
+          ],
           const SizedBox(height: 20),
           if (paths.isEmpty)
             Text(
@@ -147,6 +152,83 @@ class DependencyPathView extends StatelessWidget {
             for (final path in paths) ...[
               _Chain(path: path, byName: byName),
               const SizedBox(height: 12),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// What upgrading this package to the latest published version involves.
+///
+/// States plainly that this is derived from semver — what the author declared —
+/// and not from any inspection of the project's own code, which would be the
+/// only way to know whether it actually breaks.
+class _Upgrade extends StatelessWidget {
+  const _Upgrade({required this.assessment});
+
+  final UpgradeAssessment assessment;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    final (label, color) = switch (assessment.risk) {
+      UpgradeRisk.breaking => ('Breaking upgrade', Colors.red),
+      UpgradeRisk.minor => ('Minor upgrade', Colors.blue),
+      UpgradeRisk.patch => ('Patch upgrade', Colors.green),
+      UpgradeRisk.none => ('Up to date', Colors.green),
+      UpgradeRisk.unknown => ('Unknown', Colors.blueGrey),
+    };
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.06),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                assessment.needsAttention
+                    ? Icons.warning_amber_outlined
+                    : Icons.info_outline,
+                size: 18,
+                color: color.shade700,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: theme.textTheme.titleSmall
+                    ?.copyWith(color: color.shade900),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(assessment.summary, style: theme.textTheme.bodyMedium),
+          if (assessment.risk != UpgradeRisk.none &&
+              assessment.risk != UpgradeRisk.unknown) ...[
+            const SizedBox(height: 10),
+            Text(
+              'This reflects what the author declared through semver. Whether '
+              'your own code still compiles is not something this can tell '
+              'you — check the changelog:',
+              style: theme.textTheme.bodySmall,
+            ),
+            if (assessment.changelogUrl != null) ...[
+              const SizedBox(height: 4),
+              SelectableText(
+                assessment.changelogUrl!,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.primary,
+                ),
+              ),
             ],
           ],
         ],

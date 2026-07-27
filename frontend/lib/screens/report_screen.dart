@@ -72,7 +72,7 @@ class _ReportScreenState extends State<ReportScreen> {
       showDragHandle: true,
       isScrollControlled: true,
       builder: (_) => SingleChildScrollView(
-        child: DependencyPathView(package: node.name, nodes: report.nodes),
+        child: PackageDetailView(package: node.name, nodes: report.nodes),
       ),
     );
   }
@@ -146,7 +146,8 @@ class _ReportScreenState extends State<ReportScreen> {
                         Padding(
                           padding: const EdgeInsets.only(bottom: 8),
                           child: Text(
-                            'Select a package to see why it is here.',
+                            'Select a package to see why it is here and what '
+                            'upgrading it involves.',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ),
@@ -180,6 +181,17 @@ class _Summary extends StatelessWidget {
         report.nodes.where((n) => n.status == DepStatus.unknown).length;
     final inferred =
         report.nodes.where((n) => n.source == DepSource.constraint).length;
+
+    // Split the available upgrades by whether the author declared them
+    // breaking, since that is what decides whether a human has to read
+    // anything before taking them.
+    final assessments = report.nodes.map(assessUpgrade).toList();
+    final breaking =
+        assessments.where((a) => a.risk == UpgradeRisk.breaking).length;
+    final routine = assessments
+        .where((a) =>
+            a.risk == UpgradeRisk.minor || a.risk == UpgradeRisk.patch)
+        .length;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
@@ -216,6 +228,24 @@ class _Summary extends StatelessWidget {
               if (unknown > 0) _Stat(label: 'unknown', value: unknown),
             ],
           ),
+          if (breaking > 0 || routine > 0) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 20,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                if (breaking > 0)
+                  _Stat(
+                    label: 'breaking upgrades',
+                    value: breaking,
+                    color: Colors.red,
+                  ),
+                if (routine > 0)
+                  _Stat(label: 'routine upgrades', value: routine),
+              ],
+            ),
+          ],
           if (inferred > 0) ...[
             const SizedBox(height: 8),
             Row(

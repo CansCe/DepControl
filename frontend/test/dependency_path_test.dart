@@ -10,11 +10,15 @@ DepNode node(
   String installed = '1.0.0',
   DepStatus status = DepStatus.upToDate,
   List<String> advisories = const [],
+  String? latest,
+  String? constraint,
 }) =>
     DepNode(
       name: name,
       kind: kind,
       installed: installed,
+      latest: latest,
+      constraint: constraint,
       status: status,
       advisories: advisories,
       dependencies: deps,
@@ -121,12 +125,12 @@ void main() {
     });
   });
 
-  group('DependencyPathView', () {
+  group('PackageDetailView', () {
     Future<void> pump(WidgetTester tester, String package, List<DepNode> nodes) =>
         tester.pumpWidget(
           MaterialApp(
             home: Scaffold(
-              body: DependencyPathView(package: package, nodes: nodes),
+              body: PackageDetailView(package: package, nodes: nodes),
             ),
           ),
         );
@@ -167,6 +171,58 @@ void main() {
 
       expect(find.textContaining('GHSA-1234'), findsOneWidget);
       expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('warns when the upgrade is breaking', (tester) async {
+      await pump(tester, 'http', [
+        node(
+          'http',
+          kind: DepKind.direct,
+          installed: '1.2.0',
+          latest: '2.0.0',
+          constraint: '^1.0.0',
+        ),
+      ]);
+
+      expect(find.text('Breaking upgrade'), findsOneWidget);
+      // Mentioned by the risk summary and by the "you declare this" line.
+      expect(find.textContaining('pubspec.yaml'), findsWidgets);
+      expect(find.textContaining('widened deliberately'), findsOneWidget);
+      // The claim must stay honest about what semver can and cannot tell us.
+      expect(find.textContaining('your own code'), findsOneWidget);
+      expect(find.textContaining('pub.dev/packages/http/changelog'),
+          findsOneWidget);
+    });
+
+    testWidgets('calls a routine bump out as such', (tester) async {
+      await pump(tester, 'http', [
+        node(
+          'http',
+          kind: DepKind.direct,
+          installed: '1.2.0',
+          latest: '1.4.0',
+          constraint: '^1.0.0',
+        ),
+      ]);
+
+      expect(find.text('Minor upgrade'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('says nothing to do when already latest', (tester) async {
+      await pump(tester, 'http', [
+        node(
+          'http',
+          kind: DepKind.direct,
+          installed: '2.0.0',
+          latest: '2.0.0',
+          constraint: '^2.0.0',
+        ),
+      ]);
+
+      expect(find.text('Up to date'), findsOneWidget);
+      // No changelog nagging when there is nothing to read about.
+      expect(find.textContaining('changelog'), findsNothing);
     });
 
     testWidgets('explains when nothing pulls the package in', (tester) async {

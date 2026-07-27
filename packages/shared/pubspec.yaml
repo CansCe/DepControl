@@ -6,3 +6,11 @@ resolution: workspace
 
 environment:
   sdk: ^3.6.0
+
+dependencies:
+  # Upgrade risk is derived from semver, so both the API and the UI need to
+  # compare versions the same way pub does.
+  pub_semver: ^2.1.4
+
+dev_dependencies:
+  test: ^1.25.0
