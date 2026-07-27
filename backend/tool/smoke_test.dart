@@ -104,9 +104,39 @@ Future<void> _authRejectionChecks() async {
   );
 }
 
+/// Catches the common mix-ups before blaming the server: a signing key, an API
+/// key, or a session object pasted in place of a user access token.
+String? _tokenShapeProblem(String token) {
+  if (token.contains('-----BEGIN')) {
+    return 'that is a PEM signing key, not an access token';
+  }
+  if (token.startsWith('sb_publishable_') || token.startsWith('sb_secret_')) {
+    return 'that is a Supabase API key, not a user access token';
+  }
+  if (token.trimLeft().startsWith('{')) {
+    return 'that is JSON - if it is a session object, use its access_token '
+        'field';
+  }
+  if (!token.startsWith('eyJ')) {
+    return 'a JWT always starts with "eyJ"';
+  }
+  if (token.split('.').length != 3) {
+    return 'a JWT has 3 dot-separated segments, this has '
+        '${token.split('.').length}';
+  }
+  return null;
+}
+
 Future<void> _authenticatedFlow(String token) async {
   stdout.writeln('');
   stdout.writeln('Authenticated flow:');
+
+  final problem = _tokenShapeProblem(token);
+  if (problem != null) {
+    _check('SMOKE_TOKEN looks like a JWT', false, problem);
+    stdout.writeln('  Run  dart run tool/inspect_token.dart  for detail.');
+    return;
+  }
 
   final me = await _get('/me', token: token);
   _check('GET /me with a valid token is 200', me.status == 200,
