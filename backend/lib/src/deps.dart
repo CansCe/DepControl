@@ -8,6 +8,7 @@ import 'services/logger.dart';
 import 'services/pub_api_client.dart';
 import 'services/pubspec_analyzer.dart';
 import 'services/resolver.dart';
+import 'services/upgrade_inspector.dart';
 
 /// Tiny process-wide service locator, provided into Dart Frog request context
 /// by `routes/_middleware.dart`. Swap the repository here for Postgres in
@@ -22,6 +23,7 @@ class Deps {
       pubApi: pubApi,
       analyzer: PubspecAnalyzer(pubApi),
       resolver: Resolver(pubApi),
+      inspector: UpgradeInspector(pubApi),
       authVerifier: _buildVerifier(),
     );
   }
@@ -36,6 +38,7 @@ class Deps {
     required PubspecAnalyzer analyzer,
     PubApiClient? pubApi,
     Resolver? resolver,
+    UpgradeInspector? inspector,
     JwtVerifier authVerifier = const UnconfiguredVerifier(),
   }) {
     final api = pubApi ?? PubApiClient();
@@ -45,6 +48,7 @@ class Deps {
       pubApi: api,
       analyzer: analyzer,
       resolver: resolver ?? Resolver(api),
+      inspector: inspector ?? UpgradeInspector(api),
       authVerifier: authVerifier,
     );
   }
@@ -55,6 +59,7 @@ class Deps {
     required this.pubApi,
     required this.analyzer,
     required this.resolver,
+    required this.inspector,
     required this.authVerifier,
   });
 
@@ -62,6 +67,7 @@ class Deps {
   final GitFetcher gitFetcher;
   final PubApiClient pubApi;
   final Resolver resolver;
+  final UpgradeInspector inspector;
   final JwtVerifier authVerifier;
   final PubspecAnalyzer analyzer;
 

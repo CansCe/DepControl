@@ -72,7 +72,12 @@ class _ReportScreenState extends State<ReportScreen> {
       showDragHandle: true,
       isScrollControlled: true,
       builder: (_) => SingleChildScrollView(
-        child: PackageDetailView(package: node.name, nodes: report.nodes),
+        child: PackageDetailView(
+          package: node.name,
+          nodes: report.nodes,
+          onLoadImpact: () =>
+              widget.api.upgradeImpact(_project.id, node.name),
+        ),
       ),
     );
   }

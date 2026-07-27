@@ -75,11 +75,16 @@ class PackageDetailView extends StatelessWidget {
   const PackageDetailView({
     required this.package,
     required this.nodes,
+    this.onLoadImpact,
     super.key,
   });
 
   final String package;
   final List<DepNode> nodes;
+
+  /// Fetches what the upgrade actually changes. Optional so the view can be
+  /// rendered without a backend.
+  final Future<UpgradeImpact?> Function()? onLoadImpact;
 
   @override
   Widget build(BuildContext context) {
@@ -127,6 +132,12 @@ class PackageDetailView extends StatelessWidget {
           if (node != null) ...[
             const SizedBox(height: 20),
             _Upgrade(assessment: assessUpgrade(node)),
+            if (onLoadImpact != null &&
+                assessUpgrade(node).risk != UpgradeRisk.none &&
+                assessUpgrade(node).risk != UpgradeRisk.unknown) ...[
+              const SizedBox(height: 12),
+              _Impact(load: onLoadImpact!),
+            ],
           ],
           const SizedBox(height: 20),
           if (paths.isEmpty)
@@ -231,6 +242,152 @@ class _Upgrade extends StatelessWidget {
               ),
             ],
           ],
+        ],
+      ),
+    );
+  }
+}
+
+/// The concrete differences between the installed and newest versions.
+///
+/// Every line here is a fact from published metadata. Nothing paraphrases the
+/// changelog, because a tool that summarises prose is a tool that can be
+/// confidently wrong about what breaks.
+class _Impact extends StatefulWidget {
+  const _Impact({required this.load});
+
+  final Future<UpgradeImpact?> Function() load;
+
+  @override
+  State<_Impact> createState() => _ImpactState();
+}
+
+class _ImpactState extends State<_Impact> {
+  late final Future<UpgradeImpact?> _future = widget.load();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return FutureBuilder<UpgradeImpact?>(
+      future: _future,
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return Row(
+            children: [
+              const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 10),
+              Text('Checking what changes…', style: theme.textTheme.bodySmall),
+            ],
+          );
+        }
+
+        // A failure here costs nothing important — the assessment above still
+        // stands — so it is reported quietly rather than as an error state.
+        if (snap.hasError) {
+          return Text(
+            'Could not load the details of this change.',
+            style: theme.textTheme.bodySmall,
+          );
+        }
+
+        final impact = snap.data;
+        if (impact == null || !impact.hasFindings) {
+          return const SizedBox.shrink();
+        }
+
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            border: Border.all(color: theme.dividerColor),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'What changes between ${impact.from} and ${impact.to}',
+                style: theme.textTheme.titleSmall,
+              ),
+              const SizedBox(height: 10),
+              if (impact.majorVersionsCrossed.isNotEmpty)
+                _Finding(
+                  icon: Icons.flag_outlined,
+                  text: impact.majorVersionsCrossed.length == 1
+                      ? 'Crosses one breaking release, '
+                          '${impact.majorVersionsCrossed.single}, across '
+                          '${impact.releasesBetween} releases.'
+                      : 'Crosses ${impact.majorVersionsCrossed.length} '
+                          'breaking releases '
+                          '(${impact.majorVersionsCrossed.join(', ')}) across '
+                          '${impact.releasesBetween} releases.',
+                ),
+              if (impact.sdkTooNew)
+                _Finding(
+                  icon: Icons.block_outlined,
+                  isBlocking: true,
+                  text: 'Needs Dart SDK ${impact.sdkAfter}, but this project '
+                      'declares ${impact.projectSdk}. The SDK constraint has '
+                      'to be raised first.',
+                ),
+              for (final change in impact.dependencyChanges)
+                _Finding(
+                  icon: switch (change.kind) {
+                    DependencyDeltaKind.added => Icons.add,
+                    DependencyDeltaKind.removed => Icons.remove,
+                    DependencyDeltaKind.changed => Icons.swap_horiz,
+                  },
+                  text: switch (change.kind) {
+                    DependencyDeltaKind.added =>
+                      'Starts requiring ${change.package} ${change.after}.',
+                    DependencyDeltaKind.removed =>
+                      'No longer requires ${change.package}.',
+                    DependencyDeltaKind.changed =>
+                      '${change.package}: ${change.before} → ${change.after}.',
+                  },
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _Finding extends StatelessWidget {
+  const _Finding({
+    required this.icon,
+    required this.text,
+    this.isBlocking = false,
+  });
+
+  final IconData icon;
+  final String text;
+  final bool isBlocking;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = isBlocking ? theme.colorScheme.error : null;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 15, color: color ?? theme.textTheme.bodySmall?.color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: theme.textTheme.bodySmall?.copyWith(color: color),
+            ),
+          ),
         ],
       ),
     );

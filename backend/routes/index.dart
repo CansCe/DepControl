@@ -10,6 +10,7 @@ Response onRequest(RequestContext context) {
         'POST /projects            {gitUrl, ref?} (Bearer JWT required)',
         'GET  /projects/<id>       -> dependency report (Bearer JWT required)',
         'POST /projects/<id>/refresh -> re-analyze (Bearer JWT required)',
+        'GET  /projects/<id>/upgrade/<package> -> what an upgrade changes',
         'POST /projects/<id>/resolve {package, targetConstraint} (Bearer JWT)',
         'GET  /me                  -> current user (Bearer JWT required)',
       ],

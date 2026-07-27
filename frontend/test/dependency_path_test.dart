@@ -225,6 +225,88 @@ void main() {
       expect(find.textContaining('changelog'), findsNothing);
     });
 
+    testWidgets('lists the concrete changes behind a breaking upgrade',
+        (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: PackageDetailView(
+              package: 'http',
+              nodes: [
+                node(
+                  'http',
+                  kind: DepKind.direct,
+                  installed: '1.0.0',
+                  latest: '3.0.0',
+                  constraint: '^1.0.0',
+                ),
+              ],
+              onLoadImpact: () async => const UpgradeImpact(
+                package: 'http',
+                from: '1.0.0',
+                to: '3.0.0',
+                majorVersionsCrossed: ['2.0.0', '3.0.0'],
+                releasesBetween: 7,
+                sdkAfter: '^3.8.0',
+                projectSdk: '^3.6.0',
+                sdkTooNew: true,
+                dependencyChanges: [
+                  DependencyDelta(
+                    package: 'meta',
+                    kind: DependencyDeltaKind.changed,
+                    before: '^1.0.0',
+                    after: '^2.0.0',
+                  ),
+                  DependencyDelta(
+                    package: 'path',
+                    kind: DependencyDeltaKind.added,
+                    after: '^1.9.0',
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('2 breaking releases'), findsOneWidget);
+      expect(find.textContaining('7 releases'), findsOneWidget);
+      expect(find.textContaining('Needs Dart SDK ^3.8.0'), findsOneWidget);
+      expect(find.textContaining('meta: ^1.0.0 → ^2.0.0'), findsOneWidget);
+      expect(find.textContaining('Starts requiring path'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('stays quiet when the impact cannot be loaded',
+        (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: PackageDetailView(
+              package: 'http',
+              nodes: [
+                node(
+                  'http',
+                  kind: DepKind.direct,
+                  installed: '1.0.0',
+                  latest: '2.0.0',
+                  constraint: '^1.0.0',
+                ),
+              ],
+              onLoadImpact: () async => throw Exception('offline'),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // The semver assessment still stands on its own.
+      expect(find.text('Breaking upgrade'), findsOneWidget);
+      expect(find.textContaining('Could not load'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('explains when nothing pulls the package in', (tester) async {
       await pump(tester, 'orphan', [
         node('root', kind: DepKind.direct),

@@ -133,9 +133,17 @@ class AdvisoryRange {
 /// One published version of a package, with the dependency constraints that
 /// version declares.
 class PackageVersion {
-  const PackageVersion({required this.version, this.dependencies = const {}});
+  const PackageVersion({
+    required this.version,
+    this.dependencies = const {},
+    this.sdkConstraint,
+  });
 
   final Version version;
+
+  /// The Dart SDK range this version declares, from `environment.sdk`.
+  /// A version demanding a newer SDK than the project allows cannot be taken.
+  final String? sdkConstraint;
 
   /// Regular (non-dev) dependencies: package name -> constraint string. Only
   /// hosted constraints are usable; git/path/sdk entries are dropped because
@@ -218,9 +226,11 @@ class PubApiClient {
 
       final pubspec = entry['pubspec'] as Map<String, dynamic>?;
       final deps = pubspec?['dependencies'] as Map<String, dynamic>?;
+      final environment = pubspec?['environment'] as Map<String, dynamic>?;
       out.add(
         PackageVersion(
           version: version,
+          sdkConstraint: environment?['sdk']?.toString(),
           dependencies: {
             for (final e in (deps ?? const {}).entries)
               // Only plain string constraints are hosted deps; a map means

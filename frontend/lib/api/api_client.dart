@@ -74,6 +74,21 @@ class ApiClient {
         : DepReport.fromJson(report as Map<String, dynamic>);
   }
 
+  /// What changes if [package] moves to its newest published version.
+  ///
+  /// Null when there is nothing to compare — already newest, or no resolved
+  /// version to start from.
+  Future<UpgradeImpact?> upgradeImpact(String projectId, String package) async {
+    final json = await _send(() async => _client.get(
+          Uri.parse('$baseUrl/projects/$projectId/upgrade/$package'),
+          headers: await _headers(),
+        ));
+    final impact = json['impact'];
+    return impact == null
+        ? null
+        : UpgradeImpact.fromJson(impact as Map<String, dynamic>);
+  }
+
   Future<ResolutionResult> simulate(
     String projectId,
     ResolutionRequest request,
