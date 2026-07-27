@@ -4,6 +4,7 @@ class Project {
     required this.id,
     required this.gitUrl,
     required this.name,
+    this.ownerId,
     this.ref = 'HEAD',
     this.addedAt,
     this.lastCheckedAt,
@@ -17,6 +18,12 @@ class Project {
 
   /// Package name from the fetched `pubspec.yaml`.
   final String name;
+
+  /// Supabase user id (JWT `sub`) of the user who added this project.
+  ///
+  /// Null only for projects constructed client-side before the server assigns
+  /// ownership; every persisted project has one.
+  final String? ownerId;
 
   /// Branch, tag, or commit fetched. Defaults to the repo's default branch.
   final String ref;
@@ -35,6 +42,7 @@ class Project {
       id: id,
       gitUrl: gitUrl,
       name: name ?? this.name,
+      ownerId: ownerId,
       ref: ref ?? this.ref,
       addedAt: addedAt,
       lastCheckedAt: lastCheckedAt ?? this.lastCheckedAt,
@@ -46,6 +54,7 @@ class Project {
       id: json['id'] as String,
       gitUrl: json['gitUrl'] as String,
       name: json['name'] as String,
+      ownerId: json['ownerId'] as String?,
       ref: (json['ref'] as String?) ?? 'HEAD',
       addedAt: _parseDate(json['addedAt']),
       lastCheckedAt: _parseDate(json['lastCheckedAt']),
@@ -56,6 +65,7 @@ class Project {
         'id': id,
         'gitUrl': gitUrl,
         'name': name,
+        'ownerId': ownerId,
         'ref': ref,
         'addedAt': addedAt?.toIso8601String(),
         'lastCheckedAt': lastCheckedAt?.toIso8601String(),

@@ -18,23 +18,28 @@ void main() {
         : null,
     () {
       late PostgresProjectRepository repo;
-      final id = '22222222-2222-2222-2222-222222222222';
+
+      const id = '22222222-2222-2222-2222-222222222222';
+      const owner = '33333333-3333-3333-3333-333333333333';
+      const otherOwner = '44444444-4444-4444-4444-444444444444';
+
+      Project fixture() => Project(
+            id: id,
+            gitUrl: 'https://example.com/acme.git',
+            name: 'acme',
+            ownerId: owner,
+            ref: 'main',
+            addedAt: DateTime.utc(2026, 1, 1),
+          );
 
       setUp(() => repo = PostgresProjectRepository.fromUrl(url!));
 
-      // The interface has no delete; the test uses a fixed UUID and upserts, so
+      // The interface has no delete; the test uses fixed UUIDs and upserts, so
       // re-runs overwrite the fixture rather than accumulating rows.
       tearDown(() => repo.close());
 
       test('round-trips a project and its report', () async {
-        final project = Project(
-          id: id,
-          gitUrl: 'https://example.com/acme.git',
-          name: 'acme',
-          ref: 'main',
-          addedAt: DateTime.utc(2026, 1, 1),
-        );
-        await repo.add(project);
+        await repo.add(fixture());
 
         final report = DepReport(
           projectId: id,
@@ -52,10 +57,11 @@ void main() {
         );
         await repo.saveReport(report);
 
-        final fetched = await repo.byId(id);
+        final fetched = await repo.byId(id, ownerId: owner);
         expect(fetched, isNotNull);
         expect(fetched!.name, 'acme');
         expect(fetched.ref, 'main');
+        expect(fetched.ownerId, owner);
         expect(fetched.gitUrl, 'https://example.com/acme.git');
 
         final fetchedReport = await repo.reportFor(id);
@@ -65,8 +71,31 @@ void main() {
         expect(fetchedReport.nodes.single.status, DepStatus.outdated);
         expect(fetchedReport.total, 1);
         expect(fetchedReport.outdated, 1);
+      });
 
-        expect(await repo.all(), isNotEmpty);
+      test('byId does not return a project owned by someone else', () async {
+        await repo.add(fixture());
+        expect(await repo.byId(id, ownerId: otherOwner), isNull);
+      });
+
+      test('allForOwner only returns that owner\'s projects', () async {
+        await repo.add(fixture());
+
+        final mine = await repo.allForOwner(owner);
+        expect(mine.map((p) => p.id), contains(id));
+        expect(mine.every((p) => p.ownerId == owner), isTrue);
+
+        final theirs = await repo.allForOwner(otherOwner);
+        expect(theirs.map((p) => p.id), isNot(contains(id)));
+      });
+
+      test('rejects a project with no owner', () async {
+        final orphan = Project(
+          id: '55555555-5555-5555-5555-555555555555',
+          gitUrl: 'https://example.com/x.git',
+          name: 'x',
+        );
+        expect(() => repo.add(orphan), throwsArgumentError);
       });
     },
   );

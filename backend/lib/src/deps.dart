@@ -13,21 +13,56 @@ import 'services/resolver.dart';
 /// by `routes/_middleware.dart`. Swap the repository here for Postgres in
 /// Phase 3.
 class Deps {
-  Deps()
-      : repository = _buildRepository(),
-        gitFetcher = GitFetcher(),
-        pubApi = PubApiClient(),
-        resolver = const Resolver(),
-        authVerifier = _buildVerifier() {
-    analyzer = PubspecAnalyzer(pubApi);
+  /// Builds the production graph from the environment.
+  factory Deps() {
+    final pubApi = PubApiClient();
+    return Deps._(
+      repository: _buildRepository(),
+      gitFetcher: GitFetcher(),
+      pubApi: pubApi,
+      analyzer: PubspecAnalyzer(pubApi),
+      resolver: const Resolver(),
+      authVerifier: _buildVerifier(),
+    );
   }
+
+  /// Builds a [Deps] from explicit collaborators, for tests.
+  ///
+  /// Nothing here touches the environment, the network, or a database, so route
+  /// tests can exercise handlers against in-memory fakes.
+  factory Deps.forTesting({
+    required ProjectRepository repository,
+    required GitFetcher gitFetcher,
+    required PubspecAnalyzer analyzer,
+    PubApiClient? pubApi,
+    Resolver resolver = const Resolver(),
+    JwtVerifier authVerifier = const UnconfiguredVerifier(),
+  }) {
+    return Deps._(
+      repository: repository,
+      gitFetcher: gitFetcher,
+      pubApi: pubApi ?? PubApiClient(),
+      analyzer: analyzer,
+      resolver: resolver,
+      authVerifier: authVerifier,
+    );
+  }
+
+  Deps._({
+    required this.repository,
+    required this.gitFetcher,
+    required this.pubApi,
+    required this.analyzer,
+    required this.resolver,
+    required this.authVerifier,
+  });
 
   final ProjectRepository repository;
   final GitFetcher gitFetcher;
   final PubApiClient pubApi;
   final Resolver resolver;
   final JwtVerifier authVerifier;
-  late final PubspecAnalyzer analyzer;
+  final PubspecAnalyzer analyzer;
 
   /// Builds the JWT verifier from the environment, preferring modern Supabase
   /// **signing keys** (asymmetric, verified against the project JWKS) over the

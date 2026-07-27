@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:backend/src/auth/auth_user.dart';
 import 'package:backend/src/deps.dart';
 import 'package:dart_frog/dart_frog.dart';
 import 'package:shared/shared.dart';
@@ -10,8 +11,11 @@ Future<Response> onRequest(RequestContext context, String id) async {
   if (context.request.method != HttpMethod.post) {
     return Response(statusCode: HttpStatus.methodNotAllowed);
   }
+
   final deps = context.read<Deps>();
-  final project = await deps.repository.byId(id);
+  final user = context.read<AuthUser>();
+
+  final project = await deps.repository.byId(id, ownerId: user.id);
   if (project == null) {
     return Response.json(
       statusCode: HttpStatus.notFound,
@@ -19,8 +23,16 @@ Future<Response> onRequest(RequestContext context, String id) async {
     );
   }
 
-  final body = await context.request.json() as Map<String, dynamic>;
-  final request = ResolutionRequest.fromJson(body);
+  final ResolutionRequest request;
+  try {
+    final body = await context.request.json() as Map<String, dynamic>;
+    request = ResolutionRequest.fromJson(body);
+  } catch (_) {
+    return Response.json(
+      statusCode: HttpStatus.badRequest,
+      body: {'error': 'body must be {package, targetConstraint}'},
+    );
+  }
 
   // Re-fetch the current pubspecs to resolve against live content.
   final files = await deps.gitFetcher.fetch(project.gitUrl, ref: project.ref);

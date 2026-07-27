@@ -86,21 +86,27 @@ class PostgresProjectRepository implements ProjectRepository {
 
   @override
   Future<Project> add(Project project) async {
+    if (project.ownerId == null) {
+      throw ArgumentError('Project.ownerId is required to persist a project');
+    }
     await _pool.execute(
       Sql.named('''
-        insert into projects (id, git_url, name, ref, added_at, last_checked_at)
-        values (@id:uuid, @gitUrl:text, @name:text, @ref:text,
+        insert into projects (id, git_url, name, owner_id, ref, added_at,
+                              last_checked_at)
+        values (@id:uuid, @gitUrl:text, @name:text, @ownerId:uuid, @ref:text,
                 @addedAt:timestamptz, @lastCheckedAt:timestamptz)
         on conflict (id) do update set
           git_url         = excluded.git_url,
           name            = excluded.name,
           ref             = excluded.ref,
           last_checked_at = excluded.last_checked_at
+        where projects.owner_id = excluded.owner_id
       '''),
       parameters: {
         'id': project.id,
         'gitUrl': project.gitUrl,
         'name': project.name,
+        'ownerId': project.ownerId,
         'ref': project.ref,
         'addedAt': project.addedAt ?? DateTime.now().toUtc(),
         'lastCheckedAt': project.lastCheckedAt,
@@ -110,20 +116,25 @@ class PostgresProjectRepository implements ProjectRepository {
   }
 
   @override
-  Future<List<Project>> all() async {
+  Future<List<Project>> allForOwner(String ownerId) async {
     final result = await _pool.execute(
-      'select id, git_url, name, ref, added_at, last_checked_at '
-      'from projects order by added_at desc',
+      Sql.named(
+        'select id, git_url, name, owner_id, ref, added_at, last_checked_at '
+        'from projects where owner_id = @ownerId:uuid order by added_at desc',
+      ),
+      parameters: {'ownerId': ownerId},
     );
     return result.map((row) => _projectFromRow(row.toColumnMap())).toList();
   }
 
   @override
-  Future<Project?> byId(String id) async {
+  Future<Project?> byId(String id, {required String ownerId}) async {
     final result = await _pool.execute(
-      Sql.named('select id, git_url, name, ref, added_at, last_checked_at '
-          'from projects where id = @id:uuid'),
-      parameters: {'id': id},
+      Sql.named(
+        'select id, git_url, name, owner_id, ref, added_at, last_checked_at '
+        'from projects where id = @id:uuid and owner_id = @ownerId:uuid',
+      ),
+      parameters: {'id': id, 'ownerId': ownerId},
     );
     if (result.isEmpty) return null;
     return _projectFromRow(result.first.toColumnMap());
@@ -176,6 +187,7 @@ class PostgresProjectRepository implements ProjectRepository {
         id: row['id'].toString(),
         gitUrl: row['git_url'] as String,
         name: row['name'] as String,
+        ownerId: row['owner_id']?.toString(),
         ref: (row['ref'] as String?) ?? 'HEAD',
         addedAt: row['added_at'] as DateTime?,
         lastCheckedAt: row['last_checked_at'] as DateTime?,
