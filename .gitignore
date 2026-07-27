@@ -47,4 +47,8 @@ app.*.map.json
 # Dart Frog build output (backend member)
 backend/.dart_frog/
 backend/build/
+
+# Flutter build output (frontend member) — /build/ above only matches the root
+frontend/build/
+
 .serena

@@ -3,6 +3,7 @@ import 'package:shared/shared.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'api/api_client.dart';
+import 'auth/auth_gate.dart';
 
 /// Shorthand for the Supabase client once [main] has initialized it.
 SupabaseClient get supabase => Supabase.instance.client;
@@ -29,7 +30,9 @@ class DepControlApp extends StatelessWidget {
         colorSchemeSeed: const Color(0xFF0553B1), // Dart blue
         useMaterial3: true,
       ),
-      home: const RegistryScreen(),
+      // Projects are owned by the signed-in user, so the registry is only
+      // reachable with a session.
+      home: const AuthGate(child: RegistryScreen()),
     );
   }
 }
@@ -66,6 +69,10 @@ class _RegistryScreenState extends State<RegistryScreen> {
       await _api.addProject(url);
       _urlController.clear();
       setState(() => _projects = _api.listProjects());
+    } on ApiAuthException catch (e) {
+      // The session died mid-use; drop it so AuthGate shows sign-in again.
+      setState(() => _error = e.message);
+      await supabase.auth.signOut();
     } on ApiException catch (e) {
       setState(() => _error = e.message);
     } finally {
@@ -75,8 +82,26 @@ class _RegistryScreenState extends State<RegistryScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final email = supabase.auth.currentUser?.email;
+
     return Scaffold(
-      appBar: AppBar(title: const Text('DepControl — Registry')),
+      appBar: AppBar(
+        title: const Text('DepControl — Registry'),
+        actions: [
+          if (email != null)
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Text(email, style: Theme.of(context).textTheme.bodySmall),
+              ),
+            ),
+          IconButton(
+            tooltip: 'Sign out',
+            icon: const Icon(Icons.logout),
+            onPressed: () => supabase.auth.signOut(),
+          ),
+        ],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
@@ -154,6 +179,26 @@ class _ProjectList extends StatelessWidget {
         if (snap.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
         }
+
+        // Surface failures instead of rendering them as "no projects yet".
+        if (snap.hasError) {
+          final error = snap.error;
+          if (error is ApiAuthException) {
+            // Session is gone; clearing it sends AuthGate back to sign-in.
+            WidgetsBinding.instance.addPostFrameCallback(
+              (_) => supabase.auth.signOut(),
+            );
+            return const Center(child: CircularProgressIndicator());
+          }
+          return Center(
+            child: Text(
+              error is ApiException ? error.message : 'Could not load projects.',
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+              textAlign: TextAlign.center,
+            ),
+          );
+        }
+
         final projects = snap.data ?? const [];
         if (projects.isEmpty) {
           return const Center(
