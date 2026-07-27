@@ -1,6 +1,45 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:graphview/GraphView.dart';
 import 'package:shared/shared.dart';
+
+/// Builds the [Graph] shown by [DepGraph]: one node per package, one edge per
+/// declared dependency.
+///
+/// Exposed for testing — the widget renders nodes lazily, so the structure
+/// cannot be verified through the widget tree.
+Graph buildDependencyGraph(List<DepNode> deps) {
+  final graph = Graph();
+  final nodeById = <String, Node>{};
+  Node nodeFor(String name) => nodeById.putIfAbsent(name, () => Node.Id(name));
+
+  // `addEdge` inserts both endpoints itself and skips ones already present,
+  // but `addNode` does NOT guard against duplicates — adding a node that an
+  // edge already introduced puts the same instance in the graph twice, which
+  // makes the layout build two children for one node and corrupts the tree.
+  // So track what is already in, and only add genuinely isolated nodes.
+  final inGraph = <String>{};
+  final known = {for (final d in deps) d.name};
+
+  for (final dep in deps) {
+    for (final child in dep.dependencies) {
+      // Skip self-edges and edges to packages outside the report; both only
+      // confuse the force layout.
+      if (child == dep.name || !known.contains(child)) continue;
+      graph.addEdge(nodeFor(dep.name), nodeFor(child));
+      inGraph
+        ..add(dep.name)
+        ..add(child);
+    }
+  }
+
+  for (final dep in deps) {
+    if (inGraph.add(dep.name)) graph.addNode(nodeFor(dep.name));
+  }
+
+  return graph;
+}
 
 /// Force-directed view of the dependency graph. Each [DepNode]'s
 /// `dependencies` become directed edges.
@@ -14,57 +53,80 @@ class DepGraph extends StatefulWidget {
 }
 
 class _DepGraphState extends State<DepGraph> {
-  late final Graph _graph;
-  late final Map<String, DepNode> _byName;
-
-  final _builder = FruchtermanReingoldAlgorithm(
-    FruchtermanReingoldConfiguration(iterations: 1000),
-  );
+  late Graph _graph;
+  late Map<String, DepNode> _byName;
+  late FruchtermanReingoldAlgorithm _builder;
 
   @override
   void initState() {
     super.initState();
+    _rebuild();
+  }
+
+  @override
+  void didUpdateWidget(DepGraph oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Reloading a report hands us a new node list; without this the graph
+    // would keep showing the previous one.
+    if (!identical(oldWidget.nodes, widget.nodes)) _rebuild();
+  }
+
+  void _rebuild() {
     _byName = {for (final n in widget.nodes) n.name: n};
-    _graph = _buildGraph();
+    _graph = buildDependencyGraph(widget.nodes);
+    // The algorithm carries per-run state, so it cannot be shared across graphs.
+    _builder = FruchtermanReingoldAlgorithm(
+      FruchtermanReingoldConfiguration(iterations: 500),
+    );
   }
 
-  Graph _buildGraph() {
-    final graph = Graph();
-    final nodeById = <String, Node>{};
-    Node nodeFor(String name) =>
-        nodeById.putIfAbsent(name, () => Node.Id(name));
-
-    for (final dep in widget.nodes) {
-      final from = nodeFor(dep.name);
-      if (dep.dependencies.isEmpty) {
-        graph.addNode(from); // keep leaves/roots visible
-      }
-      for (final child in dep.dependencies) {
-        graph.addEdge(from, nodeFor(child));
-      }
-    }
-    return graph;
-  }
+  /// Side length of the canvas the layout is given.
+  ///
+  /// Grows with the node count so a large graph isn't crammed, and is clamped
+  /// so a tiny one isn't lost in empty space.
+  double _canvasSide(int nodeCount) =>
+      (math.sqrt(nodeCount) * 240).clamp(600, 3000).toDouble();
 
   @override
   Widget build(BuildContext context) {
     if (_graph.nodeCount() == 0) {
-      return const Center(child: Text('No graph edges available.'));
+      return const Center(child: Text('No dependency graph available.'));
     }
-    return InteractiveViewer(
-      constrained: false,
-      boundaryMargin: const EdgeInsets.all(400),
-      minScale: 0.1,
-      maxScale: 3,
-      child: GraphView(
-        graph: _graph,
-        algorithm: _builder,
-        paint: Paint()
-          ..color = Colors.grey.shade400
-          ..strokeWidth = 1
-          ..style = PaintingStyle.stroke,
-        builder: (node) => _nodeChip(node.key!.value as String),
-      ),
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // GraphView sizes itself from `constraints.biggest`. Inside an
+        // unconstrained InteractiveViewer that is infinite, so it cannot
+        // compute a size and layout asserts. Bound it to a finite canvas —
+        // loosely, since GraphView picks its own size from the laid-out nodes
+        // and a tight box would force it to fill exactly and fail its
+        // constraints.
+        final side = _canvasSide(_graph.nodeCount());
+        final width = math.max(side, constraints.maxWidth);
+        final height = math.max(side, constraints.maxHeight);
+
+        return InteractiveViewer(
+          constrained: false,
+          boundaryMargin: const EdgeInsets.all(200),
+          minScale: 0.1,
+          maxScale: 3,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: width,
+              maxHeight: height,
+            ),
+            child: GraphView(
+              graph: _graph,
+              algorithm: _builder,
+              paint: Paint()
+                ..color = Colors.grey.shade400
+                ..strokeWidth = 1
+                ..style = PaintingStyle.stroke,
+              builder: (node) => _nodeChip(node.key!.value as String),
+            ),
+          ),
+        );
+      },
     );
   }
 
