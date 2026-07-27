@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:backend/src/repository/postgres_project_repository.dart';
+import 'package:postgres/postgres.dart';
 import 'package:shared/shared.dart';
 import 'package:test/test.dart';
 
@@ -34,9 +35,25 @@ void main() {
 
       setUp(() => repo = PostgresProjectRepository.fromUrl(url!));
 
-      // The interface has no delete; the test uses fixed UUIDs and upserts, so
-      // re-runs overwrite the fixture rather than accumulating rows.
-      tearDown(() => repo.close());
+      // Remove the fixtures so a test run leaves no rows behind in a shared
+      // development database. The report cascades with its project.
+      tearDown(() async {
+        await repo.close();
+        final connection = await Connection.openFromUrl(url!);
+        try {
+          await connection.execute(
+            Sql.named('delete from projects where owner_id = any(@owners)'),
+            parameters: {
+              'owners': TypedValue(
+                Type.uuidArray,
+                const [owner, otherOwner],
+              ),
+            },
+          );
+        } finally {
+          await connection.close();
+        }
+      });
 
       test('round-trips a project and its report', () async {
         await repo.add(fixture());
