@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:shared/shared.dart';
 
 import '../api/api_client.dart';
-import '../widgets/dep_graph.dart';
 import '../widgets/dep_status_chip.dart';
 import '../widgets/dep_table.dart';
+import '../widgets/dependency_path.dart';
 
 /// The dependency report for one project: a summary, a sortable table, and the
 /// dependency graph.
@@ -65,11 +65,22 @@ class _ReportScreenState extends State<ReportScreen> {
     }
   }
 
+  /// Shows how a package ends up in the project.
+  void _explain(DepNode node, DepReport report) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (_) => SingleChildScrollView(
+        child: DependencyPathView(package: node.name, nodes: report.nodes),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
+    return Builder(
+      builder: (context) => Scaffold(
         appBar: AppBar(
           title: Text(_project.name),
           actions: [
@@ -91,12 +102,6 @@ class _ReportScreenState extends State<ReportScreen> {
                 label: const Text('Re-analyze'),
               ),
           ],
-          bottom: const TabBar(
-            tabs: [
-              Tab(icon: Icon(Icons.table_rows_outlined), text: 'Table'),
-              Tab(icon: Icon(Icons.hub_outlined), text: 'Graph'),
-            ],
-          ),
         ),
         body: FutureBuilder<DepReport?>(
           future: _report,
@@ -129,23 +134,28 @@ class _ReportScreenState extends State<ReportScreen> {
                 _Summary(project: _project, report: report),
                 const Divider(height: 1),
                 Expanded(
-                  child: TabBarView(
-                    children: [
-                      SingleChildScrollView(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            if (report.vulnerable > 0) ...[
-                              _Advisories(nodes: report.nodes),
-                              const SizedBox(height: 16),
-                            ],
-                            DepTable(nodes: report.nodes),
-                          ],
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (report.vulnerable > 0) ...[
+                          _Advisories(nodes: report.nodes),
+                          const SizedBox(height: 16),
+                        ],
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Text(
+                            'Select a package to see why it is here.',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
                         ),
-                      ),
-                      DepGraph(nodes: report.nodes),
-                    ],
+                        DepTable(
+                          nodes: report.nodes,
+                          onSelect: (node) => _explain(node, report),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ],

@@ -5,9 +5,12 @@ import 'dep_status_chip.dart';
 
 /// A sortable table of a project's dependencies.
 class DepTable extends StatefulWidget {
-  const DepTable({super.key, required this.nodes});
+  const DepTable({super.key, required this.nodes, this.onSelect});
 
   final List<DepNode> nodes;
+
+  /// Called when a row is tapped, e.g. to explain why the package is present.
+  final void Function(DepNode node)? onSelect;
 
   @override
   State<DepTable> createState() => _DepTableState();
@@ -90,6 +93,9 @@ class _DepTableState extends State<DepTable> {
           rows: [
             for (final n in _rows)
               DataRow(
+                onSelectChanged: widget.onSelect == null
+                    ? null
+                    : (_) => widget.onSelect!(n),
                 cells: [
                   DataCell(Text(n.name)),
                   DataCell(Text(n.kind.name)),

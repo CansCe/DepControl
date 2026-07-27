@@ -13,11 +13,6 @@ dependencies:
   http: ^1.2.0
   # Resolves to the local workspace member `packages/shared`.
   shared: ^0.1.0
-  # Pinned below 1.5.0 deliberately. That release rewrote rendering with lazy
-  # child building and animations, which asserts inside performLayout when the
-  # view is inside a TabBarView + InteractiveViewer (size MISSING, no
-  # descendants). 1.2.0 uses the older, stable non-lazy renderer.
-  graphview: 1.2.0
   supabase_flutter: ^2.16.0
 
 dev_dependencies:
