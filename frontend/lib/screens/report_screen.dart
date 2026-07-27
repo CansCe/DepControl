@@ -126,6 +126,8 @@ class _Summary extends StatelessWidget {
     final theme = Theme.of(context);
     final unknown =
         report.nodes.where((n) => n.status == DepStatus.unknown).length;
+    final inferred =
+        report.nodes.where((n) => n.source == DepSource.constraint).length;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
@@ -156,12 +158,25 @@ class _Summary extends StatelessWidget {
               if (unknown > 0) _Stat(label: 'unknown', value: unknown),
             ],
           ),
-          if (unknown == report.total && report.total > 0) ...[
+          if (inferred > 0) ...[
             const SizedBox(height: 8),
-            Text(
-              'Versions are unknown because this repository has no '
-              'pubspec.lock, so only the declared constraints are visible.',
-              style: theme.textTheme.bodySmall,
+            Row(
+              children: [
+                Icon(
+                  Icons.info_outline,
+                  size: 15,
+                  color: theme.textTheme.bodySmall?.color,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'This repository has no pubspec.lock, so versions were '
+                    'inferred by resolving its constraints — what a fresh '
+                    'pub get would install today.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+              ],
             ),
           ],
         ],

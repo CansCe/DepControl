@@ -1,5 +1,5 @@
 /// Public surface of the shared DTO package.
-library shared;
+library;
 
 export 'src/models/project.dart';
 export 'src/models/dep_node.dart';

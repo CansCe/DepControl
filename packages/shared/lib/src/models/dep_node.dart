@@ -4,6 +4,22 @@ enum DepKind { direct, dev, transitive }
 /// Whether a newer version exists / a security advisory applies.
 enum DepStatus { upToDate, outdated, vulnerable, unknown }
 
+/// Where a dependency's [DepNode.installed] version came from.
+///
+/// Distinguishes fact from inference: a lockfile records what is actually
+/// installed, whereas a constraint only tells us what `pub get` would pick
+/// today, which may differ from what a developer has on disk.
+enum DepSource {
+  /// Read from `pubspec.lock` — authoritative.
+  lockfile,
+
+  /// Inferred by resolving the declared constraint against pub.dev.
+  constraint,
+
+  /// No version could be determined.
+  unresolved,
+}
+
 /// A single resolved dependency in a project's tree.
 class DepNode {
   const DepNode({
@@ -13,6 +29,7 @@ class DepNode {
     this.constraint,
     this.latest,
     this.status = DepStatus.unknown,
+    this.source = DepSource.unresolved,
     this.advisories = const [],
     this.dependencies = const [],
   });
@@ -31,6 +48,10 @@ class DepNode {
 
   final DepStatus status;
 
+  /// Whether [installed] is a fact from the lockfile or inferred from the
+  /// constraint. Surfaced so a report never presents a guess as a measurement.
+  final DepSource source;
+
   /// Security advisory ids affecting [installed], if any.
   final List<String> advisories;
 
@@ -47,6 +68,9 @@ class DepNode {
       status: DepStatus.values.byName(
         (json['status'] as String?) ?? 'unknown',
       ),
+      source: DepSource.values.byName(
+        (json['source'] as String?) ?? 'unresolved',
+      ),
       advisories: (json['advisories'] as List?)?.cast<String>() ?? const [],
       dependencies:
           (json['dependencies'] as List?)?.cast<String>() ?? const [],
@@ -60,6 +84,7 @@ class DepNode {
         'constraint': constraint,
         'latest': latest,
         'status': status.name,
+        'source': source.name,
         'advisories': advisories,
         'dependencies': dependencies,
       };

@@ -130,6 +130,19 @@ class AdvisoryRange {
   }
 }
 
+/// One published version of a package, with the dependency constraints that
+/// version declares.
+class PackageVersion {
+  const PackageVersion({required this.version, this.dependencies = const {}});
+
+  final Version version;
+
+  /// Regular (non-dev) dependencies: package name -> constraint string. Only
+  /// hosted constraints are usable; git/path/sdk entries are dropped because
+  /// pub.dev cannot resolve them.
+  final Map<String, String> dependencies;
+}
+
 /// Latest version + advisory info for a package from pub.dev.
 class PubInfo {
   const PubInfo({required this.latest, this.advisories = const []});
@@ -177,6 +190,47 @@ class PubApiClient {
         .map(Advisory.fromJson)
         .whereType<Advisory>()
         .toList();
+  }
+
+  /// Every published version of [package], each with the constraints it
+  /// declares.
+  ///
+  /// `/api/packages/<package>` already embeds each version's pubspec, so the
+  /// whole resolution input for a package costs a single request.
+  Future<List<PackageVersion>> versions(String package) async {
+    final res =
+        await _client.get(Uri.parse('$baseUrl/api/packages/$package'));
+    if (res.statusCode != 200) return const [];
+
+    final json = jsonDecode(res.body) as Map<String, dynamic>;
+    final list = (json['versions'] as List?) ?? const [];
+    final out = <PackageVersion>[];
+
+    for (final entry in list.whereType<Map<String, dynamic>>()) {
+      final raw = entry['version']?.toString();
+      if (raw == null) continue;
+      final Version version;
+      try {
+        version = Version.parse(raw);
+      } on FormatException {
+        continue;
+      }
+
+      final pubspec = entry['pubspec'] as Map<String, dynamic>?;
+      final deps = pubspec?['dependencies'] as Map<String, dynamic>?;
+      out.add(
+        PackageVersion(
+          version: version,
+          dependencies: {
+            for (final e in (deps ?? const {}).entries)
+              // Only plain string constraints are hosted deps; a map means
+              // git/path/sdk, which pub.dev cannot resolve for us.
+              if (e.value is String) e.key: e.value as String,
+          },
+        ),
+      );
+    }
+    return out;
   }
 
   /// The names of the regular (non-dev) dependencies declared by a specific
