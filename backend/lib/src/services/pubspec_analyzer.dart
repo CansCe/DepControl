@@ -32,10 +32,11 @@ class PubspecAnalyzer {
 
     final resolved = files.hasLock
         ? const <String, ResolvedPackage>{}
-        : await _resolver.resolve(
+        : (await _resolver.resolve(
             _hostedConstraints(pubspec.dependencies),
             dev: _hostedConstraints(pubspec.devDependencies),
-          );
+          ))
+            .packages;
 
     final names = <String>{
       ...directNames,

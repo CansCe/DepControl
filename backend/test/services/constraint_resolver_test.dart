@@ -39,6 +39,14 @@ ConstraintResolver resolverFor(Registry registry, {int maxPackages = 200}) {
   );
 }
 
+/// Most tests only care about what was pinned, not why something failed.
+Future<Map<String, ResolvedPackage>> resolvePackages(
+  ConstraintResolver resolver,
+  Map<String, String> direct, {
+  Map<String, String> dev = const {},
+}) async =>
+    (await resolver.resolve(direct, dev: dev)).packages;
+
 void main() {
   group('picking a version', () {
     test('takes the highest version the constraint allows', () async {
@@ -46,7 +54,7 @@ void main() {
         'http': {'1.0.0': {}, '1.2.0': {}, '1.3.0': {}, '2.0.0': {}},
       });
 
-      final resolved = await resolver.resolve({'http': '^1.0.0'});
+      final resolved = await resolvePackages(resolver, {'http': '^1.0.0'});
 
       // 2.0.0 is outside ^1.0.0, so 1.3.0 wins.
       expect(resolved['http']!.version.toString(), '1.3.0');
@@ -58,7 +66,7 @@ void main() {
         'http': {'1.2.0': {}, '1.3.0': {}, '1.4.0-beta.1': {}},
       });
 
-      final resolved = await resolver.resolve({'http': '>=1.0.0 <2.0.0'});
+      final resolved = await resolvePackages(resolver, {'http': '>=1.0.0 <2.0.0'});
 
       expect(resolved['http']!.version.toString(), '1.3.0');
     });
@@ -69,7 +77,7 @@ void main() {
         'http': {'1.0.0': {}, '2.0.0-beta.1': {}},
       });
 
-      final resolved = await resolver.resolve({'http': '^2.0.0-beta.1'});
+      final resolved = await resolvePackages(resolver, {'http': '^2.0.0-beta.1'});
 
       expect(resolved['http']!.version.toString(), '2.0.0-beta.1');
     });
@@ -79,14 +87,14 @@ void main() {
         'http': {'1.0.0': {}},
       });
 
-      final resolved = await resolver.resolve({'http': '^9.0.0'});
+      final resolved = await resolvePackages(resolver, {'http': '^9.0.0'});
 
       expect(resolved, isEmpty);
     });
 
     test('omits a package pub.dev does not serve', () async {
       final resolver = resolverFor({});
-      final resolved = await resolver.resolve({'nonexistent': '^1.0.0'});
+      final resolved = await resolvePackages(resolver, {'nonexistent': '^1.0.0'});
       expect(resolved, isEmpty);
     });
   });
@@ -104,7 +112,7 @@ void main() {
         'c': {'1.0.0': {}, '1.5.0': {}},
       });
 
-      final resolved = await resolver.resolve({'a': '^1.0.0'});
+      final resolved = await resolvePackages(resolver, {'a': '^1.0.0'});
 
       expect(resolved.keys, containsAll(['a', 'b', 'c']));
       expect(resolved['b']!.version.toString(), '1.1.0');
@@ -119,7 +127,7 @@ void main() {
         'b': {'1.0.0': {}},
       });
 
-      final resolved = await resolver.resolve({'a': '^1.0.0'});
+      final resolved = await resolvePackages(resolver, {'a': '^1.0.0'});
 
       expect(resolved['a']!.isDirect, isTrue);
       expect(resolved['b']!.isDirect, isFalse);
@@ -132,7 +140,7 @@ void main() {
       });
 
       final resolved =
-          await resolver.resolve({}, dev: {'test': '^1.20.0'});
+          await resolvePackages(resolver, {}, dev: {'test': '^1.20.0'});
 
       expect(resolved['test']!.version.toString(), '1.25.0');
       expect(resolved['test']!.isDirect, isTrue);
@@ -153,7 +161,7 @@ void main() {
         'shared': {'1.0.0': {}, '1.4.0': {}, '1.9.0': {}},
       });
 
-      final resolved = await resolver.resolve({
+      final resolved = await resolvePackages(resolver, {
         'a': '^1.0.0',
         'b': '^1.0.0',
       });
@@ -173,7 +181,7 @@ void main() {
         'shared': {'1.0.0': {}, '2.0.0': {}},
       });
 
-      final resolved = await resolver.resolve({
+      final resolved = await resolvePackages(resolver, {
         'a': '^1.0.0',
         'b': '^1.0.0',
       });
@@ -183,6 +191,51 @@ void main() {
       expect(resolved.containsKey('shared'), isFalse);
       expect(resolved.keys, containsAll(['a', 'b']));
     });
+
+    // A dropped package is not enough on its own: /resolve has to say what
+    // went wrong, so the outcome carries the reason and who asked for what.
+    test('reports the conflict, naming both dependents', () async {
+      final resolver = resolverFor({
+        'a': {
+          '1.0.0': {'shared': '^2.0.0'},
+        },
+        'b': {
+          '1.0.0': {'shared': '^1.0.0'},
+        },
+        'shared': {'1.0.0': {}, '2.0.0': {}},
+      });
+
+      final outcome = await resolver.resolve({'a': '^1.0.0', 'b': '^1.0.0'});
+
+      expect(outcome.hasConflicts, isTrue);
+      final conflict =
+          outcome.conflicts.firstWhere((c) => c.package == 'shared');
+      expect(conflict.requiredBy, containsAll(['a', 'b']));
+      expect(conflict.reason, contains('no published version'));
+      expect(conflict.describe(), contains('shared'));
+    });
+
+    test('reports a package pub.dev does not know', () async {
+      final resolver = resolverFor({});
+
+      final outcome = await resolver.resolve({'ghost': '^1.0.0'});
+
+      expect(outcome.packages, isEmpty);
+      expect(outcome.conflicts.single.package, 'ghost');
+      expect(outcome.conflicts.single.reason, contains('no such package'));
+      expect(outcome.conflicts.single.requiredBy, ['root']);
+    });
+
+    test('a clean resolution reports no conflicts', () async {
+      final resolver = resolverFor({
+        'http': {'1.0.0': {}},
+      });
+
+      final outcome = await resolver.resolve({'http': '^1.0.0'});
+
+      expect(outcome.hasConflicts, isFalse);
+      expect(outcome.conflicts, isEmpty);
+    });
   });
 
   group('safety', () {
@@ -191,7 +244,7 @@ void main() {
         'http': {'1.0.0': {}},
       });
 
-      final resolved = await resolver.resolve({
+      final resolved = await resolvePackages(resolver, {
         'http': '^1.0.0',
         'flutter': 'any-sdk-thing {sdk: flutter}',
       });
@@ -209,7 +262,7 @@ void main() {
       }
 
       final resolver = resolverFor(registry, maxPackages: 5);
-      final resolved = await resolver.resolve({'p0': '^1.0.0'});
+      final resolved = await resolvePackages(resolver, {'p0': '^1.0.0'});
 
       expect(resolved.length, lessThanOrEqualTo(6));
     });
@@ -224,7 +277,7 @@ void main() {
         },
       });
 
-      final resolved = await resolver.resolve({'a': '^1.0.0'});
+      final resolved = await resolvePackages(resolver, {'a': '^1.0.0'});
 
       expect(resolved.keys, containsAll(['a', 'b']));
     });

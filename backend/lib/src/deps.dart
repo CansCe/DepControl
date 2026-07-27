@@ -21,7 +21,7 @@ class Deps {
       gitFetcher: GitFetcher(),
       pubApi: pubApi,
       analyzer: PubspecAnalyzer(pubApi),
-      resolver: const Resolver(),
+      resolver: Resolver(pubApi),
       authVerifier: _buildVerifier(),
     );
   }
@@ -35,15 +35,16 @@ class Deps {
     required GitFetcher gitFetcher,
     required PubspecAnalyzer analyzer,
     PubApiClient? pubApi,
-    Resolver resolver = const Resolver(),
+    Resolver? resolver,
     JwtVerifier authVerifier = const UnconfiguredVerifier(),
   }) {
+    final api = pubApi ?? PubApiClient();
     return Deps._(
       repository: repository,
       gitFetcher: gitFetcher,
-      pubApi: pubApi ?? PubApiClient(),
+      pubApi: api,
       analyzer: analyzer,
-      resolver: resolver,
+      resolver: resolver ?? Resolver(api),
       authVerifier: authVerifier,
     );
   }

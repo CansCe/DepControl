@@ -26,17 +26,50 @@ class ResolvedPackage {
   final List<String> dependencies;
 }
 
-/// Works out which versions `pub get` would choose, for projects that have no
-/// `pubspec.lock`.
+/// A package that could not be pinned to any version.
+class ResolutionConflict {
+  const ResolutionConflict({
+    required this.package,
+    required this.constraint,
+    required this.requiredBy,
+    required this.reason,
+  });
+
+  final String package;
+
+  /// The combined constraint that nothing satisfied.
+  final VersionConstraint constraint;
+
+  /// Which packages contributed a constraint. `root` means the project itself.
+  final List<String> requiredBy;
+
+  final String reason;
+
+  String describe() {
+    final by = requiredBy.isEmpty ? '' : ' (required by ${requiredBy.join(', ')})';
+    return '$package $constraint$by: $reason';
+  }
+}
+
+/// The result of a resolution: what could be pinned, and what could not.
+class ResolutionOutcome {
+  const ResolutionOutcome({this.packages = const {}, this.conflicts = const []});
+
+  final Map<String, ResolvedPackage> packages;
+  final List<ResolutionConflict> conflicts;
+
+  bool get hasConflicts => conflicts.isNotEmpty;
+}
+
+/// Works out which versions `pub get` would choose, without running pub.
 ///
 /// This is an approximation, not a re-implementation of pub's solver. It picks
 /// the highest version satisfying the accumulated constraint for each package
 /// and iterates to a fixed point, intersecting constraints as new ones are
 /// discovered. It does **not** backtrack: if two packages demand genuinely
 /// incompatible ranges, pub would search for an older combination that works,
-/// whereas this reports the conflict as unresolvable and moves on. For the
-/// common case — where a compatible set exists without backtracking — it agrees
-/// with pub.
+/// whereas this reports the conflict. For the common case — where a compatible
+/// set exists without backtracking — it agrees with pub.
 ///
 /// Prereleases are skipped unless the constraint can only be satisfied by one,
 /// matching pub's own preference for stable versions.
@@ -58,11 +91,12 @@ class ConstraintResolver {
   ///
   /// Entries whose constraint cannot be parsed — git, path and sdk
   /// dependencies — are skipped, since pub.dev has no versions for them.
-  Future<Map<String, ResolvedPackage>> resolve(
+  Future<ResolutionOutcome> resolve(
     Map<String, String> direct, {
     Map<String, String> dev = const {},
   }) async {
     final constraints = <String, VersionConstraint>{};
+    final requiredBy = <String, Set<String>>{};
     final directNames = <String>{};
 
     void seed(Map<String, String> deps) {
@@ -70,6 +104,7 @@ class ConstraintResolver {
         final parsed = _parseConstraint(entry.value);
         if (parsed == null) continue;
         constraints[entry.key] = parsed;
+        (requiredBy[entry.key] ??= <String>{}).add('root');
         directNames.add(entry.key);
       }
     }
@@ -78,6 +113,7 @@ class ConstraintResolver {
     seed(dev);
 
     final resolved = <String, ResolvedPackage>{};
+    final failed = <String, ResolutionConflict>{};
     var pending = constraints.keys.toSet();
 
     for (var round = 0; round < maxRounds && pending.isNotEmpty; round++) {
@@ -88,13 +124,30 @@ class ConstraintResolver {
 
         final constraint = constraints[name]!;
         final versions = await _versionsOf(name);
-        final best = _best(versions, constraint);
 
-        // Unsatisfiable, or a package pub.dev doesn't serve.
-        if (best == null) {
+        if (versions.isEmpty) {
           resolved.remove(name);
+          failed[name] = ResolutionConflict(
+            package: name,
+            constraint: constraint,
+            requiredBy: (requiredBy[name] ?? {}).toList()..sort(),
+            reason: 'no such package on pub.dev',
+          );
           continue;
         }
+
+        final best = _best(versions, constraint);
+        if (best == null) {
+          resolved.remove(name);
+          failed[name] = ResolutionConflict(
+            package: name,
+            constraint: constraint,
+            requiredBy: (requiredBy[name] ?? {}).toList()..sort(),
+            reason: 'no published version satisfies this',
+          );
+          continue;
+        }
+        failed.remove(name);
 
         // Already at this version under the same constraint: nothing to redo.
         final existing = resolved[name];
@@ -114,6 +167,8 @@ class ConstraintResolver {
           final declared = _parseConstraint(dep.value);
           if (declared == null) continue;
 
+          (requiredBy[dep.key] ??= <String>{}).add(name);
+
           final current = constraints[dep.key];
           final merged =
               current == null ? declared : current.intersect(declared);
@@ -128,7 +183,11 @@ class ConstraintResolver {
       pending = next;
     }
 
-    return resolved;
+    return ResolutionOutcome(
+      packages: resolved,
+      conflicts: failed.values.toList()
+        ..sort((a, b) => a.package.compareTo(b.package)),
+    );
   }
 
   /// Highest version satisfying [constraint], preferring stable releases.
