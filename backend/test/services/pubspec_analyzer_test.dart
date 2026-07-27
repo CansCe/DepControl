@@ -30,12 +30,16 @@ packages:
 
 /// Stubs the three pub.dev endpoints the analyzer touches, so the tests never
 /// hit the network. `latest` is keyed by package name.
-PubApiClient _stubPub(Map<String, String> latest) {
+PubApiClient _stubPub(
+  Map<String, String> latest, {
+  Map<String, List<Map<String, dynamic>>> advisories = const {},
+}) {
   final client = MockClient((request) async {
     final path = request.url.path;
 
     if (path.endsWith('/advisories')) {
-      return _ok({'advisories': <dynamic>[]});
+      final name = path.split('/')[path.split('/').length - 2];
+      return _ok({'advisories': advisories[name] ?? <dynamic>[]});
     }
     if (path.contains('/versions/')) {
       return _ok({
@@ -107,6 +111,89 @@ void main() {
       expect(report.vulnerable, 0);
     });
 
+    // Regression: advisories were attached to a package wholesale, so any
+    // package with any historical CVE was reported vulnerable forever, no
+    // matter which version was installed.
+    group('advisories', () {
+      // "http before 0.13.3", as pub.dev publishes it: an explicit affected
+      // version list plus the equivalent range.
+      final httpAdvisory = {
+        'id': 'GHSA-4rgh-jx4f-qfcq',
+        'aliases': ['CVE-2020-35669'],
+        'summary': 'http before 0.13.3 vulnerable to header injection',
+        'affected': [
+          {
+            'package': {'name': 'http'},
+            'versions': ['0.13.0', '0.13.1', '0.13.2'],
+            'ranges': [
+              {
+                'type': 'ECOSYSTEM',
+                'events': [
+                  {'introduced': '0'},
+                  {'fixed': '0.13.3'},
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      Future<DepNode> analyzeWith(String installed) async {
+        final analyzer = _stubAnalyzer(
+          {'http': '1.3.0', 'test': '1.25.0'},
+          advisories: {
+            'http': [httpAdvisory],
+          },
+        );
+        final report = await analyzer.analyze(
+          'p',
+          FetchedPubspecs(
+            pubspecYaml: _pubspecYaml,
+            pubspecLock: 'packages:\n'
+                '  http:\n'
+                '    dependency: "direct main"\n'
+                '    version: "$installed"\n',
+          ),
+        );
+        return report.nodes.firstWhere((n) => n.name == 'http');
+      }
+
+      test('flags a version the advisory actually affects', () async {
+        final node = await analyzeWith('0.13.0');
+        expect(node.status, DepStatus.vulnerable);
+        expect(node.advisories, ['GHSA-4rgh-jx4f-qfcq']);
+      });
+
+      test('does not flag a version fixed years ago', () async {
+        final node = await analyzeWith('1.2.0');
+        expect(node.advisories, isEmpty);
+        expect(node.status, DepStatus.outdated);
+      });
+
+      test('does not flag the exact fixed version', () async {
+        final node = await analyzeWith('0.13.3');
+        expect(node.advisories, isEmpty);
+        expect(node.status, DepStatus.outdated);
+      });
+
+      test('claims no advisories when the version is unknown', () async {
+        final analyzer = _stubAnalyzer(
+          {'http': '1.3.0', 'test': '1.25.0'},
+          advisories: {
+            'http': [httpAdvisory],
+          },
+        );
+        // No lockfile, so nothing can be judged as affected.
+        final report = await analyzer.analyze(
+          'p',
+          const FetchedPubspecs(pubspecYaml: _pubspecYaml),
+        );
+        final node = report.nodes.firstWhere((n) => n.name == 'http');
+        expect(node.advisories, isEmpty);
+        expect(node.status, DepStatus.unknown);
+      });
+    });
+
     test('an unparseable locked version degrades to unknown', () async {
       final analyzer = _stubAnalyzer({'http': '1.3.0', 'test': '1.25.0'});
 
@@ -130,5 +217,8 @@ packages:
   });
 }
 
-PubspecAnalyzer _stubAnalyzer(Map<String, String> latest) =>
-    PubspecAnalyzer(_stubPub(latest));
+PubspecAnalyzer _stubAnalyzer(
+  Map<String, String> latest, {
+  Map<String, List<Map<String, dynamic>>> advisories = const {},
+}) =>
+    PubspecAnalyzer(_stubPub(latest, advisories: advisories));

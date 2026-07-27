@@ -4,7 +4,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:frontend/api/api_client.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:shared/shared.dart';
 
 void main() {
   /// Builds a client whose requests are captured, so tests can assert on the

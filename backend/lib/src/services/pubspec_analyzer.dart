@@ -37,7 +37,19 @@ class PubspecAnalyzer {
               : DepKind.transitive;
 
       final info = await _pub.info(name);
-      final status = _status(installed, info.latest, info.advisoryIds);
+
+      // An advisory applies to specific versions. Only those affecting the
+      // version actually in use are attached; without a resolved version we
+      // cannot judge, so none are claimed.
+      final current = _tryParseVersion(installed);
+      final advisories = current == null
+          ? const <String>[]
+          : [
+              for (final advisory in info.advisories)
+                if (advisory.affects(current)) advisory.id,
+            ];
+
+      final status = _status(installed, info.latest, advisories);
 
       // Graph edges: this package's regular deps, kept only if they're also in
       // the project's resolved set (so edges never dangle). Skipped when the
@@ -57,7 +69,7 @@ class PubspecAnalyzer {
           constraint: constraint,
           latest: info.latest,
           status: status,
-          advisories: info.advisoryIds,
+          advisories: advisories,
           dependencies: children,
         ),
       );

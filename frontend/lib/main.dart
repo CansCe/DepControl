@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'api/api_client.dart';
 import 'auth/auth_gate.dart';
+import 'screens/report_screen.dart';
 
 /// Shorthand for the Supabase client once [main] has initialized it.
 SupabaseClient get supabase => Supabase.instance.client;
@@ -117,7 +118,7 @@ class _RegistryScreenState extends State<RegistryScreen> {
               Text(_error!, style: TextStyle(color: Colors.red.shade700)),
             ],
             const SizedBox(height: 24),
-            Expanded(child: _ProjectList(future: _projects)),
+            Expanded(child: _ProjectList(future: _projects, api: _api)),
           ],
         ),
       ),
@@ -168,8 +169,10 @@ class _AddForm extends StatelessWidget {
 }
 
 class _ProjectList extends StatelessWidget {
-  const _ProjectList({required this.future});
+  const _ProjectList({required this.future, required this.api});
+
   final Future<List<Project>> future;
+  final ApiClient api;
 
   @override
   Widget build(BuildContext context) {
@@ -215,8 +218,11 @@ class _ProjectList extends StatelessWidget {
               title: Text(p.name),
               subtitle: Text('${p.gitUrl} @ ${p.ref}'),
               trailing: const Icon(Icons.chevron_right),
-              // TODO(phase1): push ReportScreen(projectId: p.id).
-              onTap: () {},
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => ReportScreen(project: p, api: api),
+                ),
+              ),
             );
           },
         );
