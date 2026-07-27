@@ -17,13 +17,23 @@ import 'dart:convert';
 import 'dart:io';
 
 late final String baseUrl;
+late final String repoUrl;
 final _client = HttpClient();
+
+/// A small, stable public package whose `pubspec.yaml` sits at the repository
+/// root. Note it ships no `pubspec.lock`, so this also exercises the
+/// unresolved-version path in production.
+///
+/// Monorepos (dart-lang/http, flutter/packages) will NOT work: their pubspec
+/// lives in a subdirectory and the API only reads the repository root.
+const _defaultRepo = 'https://github.com/dart-lang/collection.git';
 
 int _passed = 0;
 int _failed = 0;
 
 Future<void> main(List<String> args) async {
   baseUrl = _argValue(args, '--url') ?? 'http://localhost:8080';
+  repoUrl = _argValue(args, '--repo') ?? _defaultRepo;
   final token = Platform.environment['SMOKE_TOKEN'];
 
   stdout.writeln('Smoke testing $baseUrl');
@@ -154,15 +164,19 @@ Future<void> _authenticatedFlow(String token) async {
   final before = (list.json?['projects'] as List?)?.length ?? -1;
   _check('GET /projects returns a list', before >= 0, 'projects missing');
 
-  // Ingest a small, stable public repo.
-  final created = await _post(
-    '/projects',
-    {'gitUrl': 'https://github.com/dart-lang/http.git'},
-    token: token,
-  );
+  stdout.writeln('  ..    ingesting $repoUrl');
+  final created = await _post('/projects', {'gitUrl': repoUrl}, token: token);
   _check('POST /projects is 201', created.status == 201,
       'got ${created.status} - ${created.body}');
-  if (created.status != 201) return;
+  if (created.status != 201) {
+    final error = created.json?['error'] as String? ?? '';
+    if (error.contains('No pubspec.yaml')) {
+      stdout.writeln('  Hint: that repository has no pubspec.yaml at its root. '
+          'Monorepos keep theirs in a subdirectory, which is not supported.');
+      stdout.writeln('  Try:  --repo https://github.com/dart-lang/path.git');
+    }
+    return;
+  }
 
   final project = created.json?['project'] as Map<String, dynamic>?;
   final report = created.json?['report'] as Map<String, dynamic>?;
