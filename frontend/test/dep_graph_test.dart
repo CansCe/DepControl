@@ -258,6 +258,84 @@ void main() {
       expect(find.text('open'), findsOneWidget);
     });
 
+    testWidgets('re-analyze calls the refresh endpoint and updates the view',
+        (tester) async {
+      final requested = <String>[];
+      final api = ApiClient(
+        accessToken: () async => 'token',
+        client: MockClient((request) async {
+          requested.add('${request.method} ${request.url.path}');
+          // Refresh returns a smaller report so the change is observable.
+          final isRefresh = request.url.path.endsWith('/refresh');
+          final body = isRefresh
+              ? DepReport(
+                  projectId: 'p1',
+                  generatedAt: DateTime.utc(2026, 2, 1),
+                  nodes: _nodes,
+                )
+              : report;
+          return http.Response(
+            jsonEncode({
+              'project': project.toJson(),
+              'report': body.toJson(),
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(home: ReportScreen(project: project, api: api)),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Re-analyze'));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(
+        requested,
+        contains('POST /projects/p1/refresh'),
+        reason: 'must re-analyze, not just re-read the stored report',
+      );
+      expect(find.textContaining('Re-analyzed'), findsOneWidget);
+    });
+
+    testWidgets('a failed re-analyze surfaces the error', (tester) async {
+      final api = ApiClient(
+        accessToken: () async => 'token',
+        client: MockClient((request) async {
+          if (request.url.path.endsWith('/refresh')) {
+            return http.Response(
+              jsonEncode({'error': 'repository not found'}),
+              400,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          return http.Response(
+            jsonEncode({
+              'project': project.toJson(),
+              'report': report.toJson(),
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(home: ReportScreen(project: project, api: api)),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Re-analyze'));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('repository not found'), findsOneWidget);
+    });
+
     testWidgets('shows the dependency summary', (tester) async {
       await tester.pumpWidget(
         MaterialApp(

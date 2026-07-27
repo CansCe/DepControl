@@ -24,15 +24,45 @@ class ReportScreen extends StatefulWidget {
 
 class _ReportScreenState extends State<ReportScreen> {
   late Future<DepReport?> _report;
+  late Project _project;
+  bool _refreshing = false;
 
   @override
   void initState() {
     super.initState();
-    _report = widget.api.report(widget.project.id);
+    _project = widget.project;
+    _report = widget.api.report(_project.id);
   }
 
   void _reload() {
-    setState(() => _report = widget.api.report(widget.project.id));
+    setState(() => _report = widget.api.report(_project.id));
+  }
+
+  /// Re-fetches the repository and re-analyzes it, rather than re-reading the
+  /// stored report.
+  Future<void> _reanalyze() async {
+    setState(() => _refreshing = true);
+    try {
+      final (project, report) = await widget.api.refreshProject(_project.id);
+      if (!mounted) return;
+      setState(() {
+        _project = project;
+        _report = Future.value(report);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Re-analyzed ${report.total} dependencies.')),
+      );
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(e.message),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _refreshing = false);
+    }
   }
 
   @override
@@ -41,13 +71,25 @@ class _ReportScreenState extends State<ReportScreen> {
       length: 2,
       child: Scaffold(
         appBar: AppBar(
-          title: Text(widget.project.name),
+          title: Text(_project.name),
           actions: [
-            IconButton(
-              tooltip: 'Reload',
-              icon: const Icon(Icons.refresh),
-              onPressed: _reload,
-            ),
+            if (_refreshing)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16),
+                child: Center(
+                  child: SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              )
+            else
+              TextButton.icon(
+                onPressed: _reanalyze,
+                icon: const Icon(Icons.sync),
+                label: const Text('Re-analyze'),
+              ),
           ],
           bottom: const TabBar(
             tabs: [
@@ -84,7 +126,7 @@ class _ReportScreenState extends State<ReportScreen> {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _Summary(project: widget.project, report: report),
+                _Summary(project: _project, report: report),
                 const Divider(height: 1),
                 Expanded(
                   child: TabBarView(
@@ -138,6 +180,12 @@ class _Summary extends StatelessWidget {
             '${project.gitUrl} @ ${project.ref}',
             style: theme.textTheme.bodySmall,
           ),
+          Text(
+            project.lastCheckedAt != null
+                ? 'Last analyzed ${_ago(project.lastCheckedAt!)}'
+                : 'Analyzed when added',
+            style: theme.textTheme.bodySmall,
+          ),
           const SizedBox(height: 10),
           Wrap(
             spacing: 20,
@@ -183,6 +231,15 @@ class _Summary extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Coarse relative time — a report's age only matters in broad strokes.
+String _ago(DateTime time) {
+  final delta = DateTime.now().toUtc().difference(time.toUtc());
+  if (delta.inMinutes < 1) return 'just now';
+  if (delta.inHours < 1) return '${delta.inMinutes}m ago';
+  if (delta.inDays < 1) return '${delta.inHours}h ago';
+  return '${delta.inDays}d ago';
 }
 
 class _Stat extends StatelessWidget {

@@ -14,6 +14,7 @@ import '../support/fakes.dart';
 // Route handlers live outside lib/, so they're imported by path.
 import '../../routes/projects/index.dart' as projects_route;
 import '../../routes/projects/[id]/index.dart' as project_detail_route;
+import '../../routes/projects/[id]/refresh.dart' as project_refresh_route;
 
 class _MockRequestContext extends Mock implements RequestContext {}
 
@@ -204,6 +205,100 @@ void main() {
         'p1',
       );
       expect(response.statusCode, HttpStatus.methodNotAllowed);
+    });
+  });
+
+  group('POST /projects/<id>/refresh', () {
+    test('re-analyzes in place instead of creating a second project',
+        () async {
+      await repository.add(projectFor(alice, id: 'p-alice'));
+
+      final response = await project_refresh_route.onRequest(
+        contextFor(method: HttpMethod.post, user: alice),
+        'p-alice',
+      );
+
+      expect(response.statusCode, HttpStatus.ok);
+      final body = await jsonOf(response);
+      expect((body['project'] as Map)['id'], 'p-alice');
+      expect(body['report'], isNotNull);
+
+      // Still exactly one project, with a fresh report.
+      expect(await repository.allForOwner(alice.id), hasLength(1));
+      expect(await repository.reportFor('p-alice'), isNotNull);
+    });
+
+    test('stamps lastCheckedAt', () async {
+      await repository.add(projectFor(alice, id: 'p-alice'));
+      expect((await repository.byId('p-alice', ownerId: alice.id))!.lastCheckedAt,
+          isNull);
+
+      await project_refresh_route.onRequest(
+        contextFor(method: HttpMethod.post, user: alice),
+        'p-alice',
+      );
+
+      final updated = await repository.byId('p-alice', ownerId: alice.id);
+      expect(updated!.lastCheckedAt, isNotNull);
+    });
+
+    test('re-fetches the repository at the recorded ref', () async {
+      final fetcher = FakeGitFetcher();
+      deps = Deps.forTesting(
+        repository: repository,
+        gitFetcher: fetcher,
+        analyzer: FakeAnalyzer(),
+      );
+      await repository.add(
+        projectFor(alice, id: 'p-alice').copyWith(ref: 'develop'),
+      );
+
+      await project_refresh_route.onRequest(
+        contextFor(method: HttpMethod.post, user: alice),
+        'p-alice',
+      );
+
+      expect(fetcher.calls.single.ref, 'develop');
+    });
+
+    test('404s for a project owned by another user', () async {
+      await repository.add(projectFor(alice, id: 'p-alice'));
+
+      final response = await project_refresh_route.onRequest(
+        contextFor(method: HttpMethod.post, user: bob),
+        'p-alice',
+      );
+
+      expect(response.statusCode, HttpStatus.notFound);
+    });
+
+    test('GET is rejected with 405', () async {
+      final response = await project_refresh_route.onRequest(
+        contextFor(method: HttpMethod.get, user: alice),
+        'p-alice',
+      );
+
+      expect(response.statusCode, HttpStatus.methodNotAllowed);
+    });
+
+    test('a repository that can no longer be fetched is 400, not 500',
+        () async {
+      await repository.add(projectFor(alice, id: 'p-alice'));
+      deps = Deps.forTesting(
+        repository: repository,
+        gitFetcher: FakeGitFetcher(
+          onFetch: (_, __) => throw StateError('repository not found'),
+        ),
+        analyzer: FakeAnalyzer(),
+      );
+
+      final response = await project_refresh_route.onRequest(
+        contextFor(method: HttpMethod.post, user: alice),
+        'p-alice',
+      );
+
+      expect(response.statusCode, HttpStatus.badRequest);
+      expect((await jsonOf(response))['error'], 'repository not found');
     });
   });
 

@@ -48,6 +48,21 @@ class ApiClient {
     );
   }
 
+  /// Re-fetches the repository and re-analyzes it, replacing the stored report.
+  ///
+  /// Distinct from [report], which only reads what was already stored: a report
+  /// goes stale as soon as a dependency publishes a new version or advisory.
+  Future<(Project, DepReport)> refreshProject(String projectId) async {
+    final json = await _send(() async => _client.post(
+          Uri.parse('$baseUrl/projects/$projectId/refresh'),
+          headers: await _headers(json: true),
+        ));
+    return (
+      Project.fromJson(json['project'] as Map<String, dynamic>),
+      DepReport.fromJson(json['report'] as Map<String, dynamic>),
+    );
+  }
+
   Future<DepReport?> report(String projectId) async {
     final json = await _send(() async => _client.get(
           Uri.parse('$baseUrl/projects/$projectId'),
