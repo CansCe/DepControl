@@ -7,8 +7,8 @@ import 'package:shared/shared.dart';
 /// Builds the [Graph] shown by [DepGraph]: one node per package, one edge per
 /// declared dependency.
 ///
-/// Exposed for testing — the widget renders nodes lazily, so the structure
-/// cannot be verified through the widget tree.
+/// Exposed so the structure can be asserted directly, rather than inferred from
+/// whichever node chips happen to be laid out on screen.
 Graph buildDependencyGraph(List<DepNode> deps) {
   final graph = Graph();
   final nodeById = <String, Node>{};
@@ -75,9 +75,7 @@ class _DepGraphState extends State<DepGraph> {
     _byName = {for (final n in widget.nodes) n.name: n};
     _graph = buildDependencyGraph(widget.nodes);
     // The algorithm carries per-run state, so it cannot be shared across graphs.
-    _builder = FruchtermanReingoldAlgorithm(
-      FruchtermanReingoldConfiguration(iterations: 500),
-    );
+    _builder = FruchtermanReingoldAlgorithm(iterations: 500);
   }
 
   /// Side length of the canvas the layout is given.

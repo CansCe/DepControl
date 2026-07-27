@@ -33,6 +33,49 @@ const _nodes = [
   ),
 ];
 
+/// ~50 packages with ~150 edges, matching the size of a real report. Graph size
+/// matters: the crash only appeared with a full dependency set.
+List<DepNode> largeReport() {
+  const names = [
+    '_fe_analyzer_shared', 'analyzer', 'args', 'async', 'boolean_selector',
+    'cli_config', 'collection', 'convert', 'coverage', 'crypto',
+    'dart_flutter_team_lints', 'file', 'frontend_server_client', 'glob',
+    'graphs', 'http', 'http_multi_server', 'http_parser', 'io', 'js',
+    'lints', 'logging', 'matcher', 'meta', 'mime', 'node_preamble',
+    'package_config', 'path', 'pool', 'pub_semver', 'shelf', 'shelf_packages',
+    'shelf_static', 'shelf_web_socket', 'source_map_stack_trace', 'source_maps',
+    'source_span', 'stack_trace', 'stream_channel', 'string_scanner',
+    'term_glyph', 'test', 'test_api', 'test_core', 'typed_data', 'vm_service',
+    'watcher', 'web_socket_channel', 'yaml',
+  ];
+
+  return [
+    for (var i = 0; i < names.length; i++)
+      DepNode(
+        name: names[i],
+        kind: i < 3
+            ? DepKind.direct
+            : i < 6
+                ? DepKind.dev
+                : DepKind.transitive,
+        installed: '1.${i % 9}.0',
+        latest: '1.${(i % 9) + 1}.0',
+        status: switch (i % 4) {
+          0 => DepStatus.upToDate,
+          1 => DepStatus.outdated,
+          2 => DepStatus.vulnerable,
+          _ => DepStatus.unknown,
+        },
+        source: DepSource.constraint,
+        advisories: i % 4 == 2 ? ['GHSA-demo-$i'] : const [],
+        dependencies: [
+          for (var k = 1; k <= 3; k++)
+            if (i + k * 2 < names.length) names[i + k * 2],
+        ],
+      ),
+  ];
+}
+
 void main() {
   // The widget renders nodes lazily, so structure is asserted on the graph
   // itself rather than through the widget tree.
@@ -101,6 +144,17 @@ void main() {
   });
 
   group('DepGraph widget', () {
+    // A three-node graph did not reproduce the crash reported against a real
+    // report, so this exercises a realistic one: ~50 packages and ~150 edges.
+    testWidgets('lays out a realistically sized graph', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: DepGraph(nodes: largeReport()))),
+      );
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('lays out without error', (tester) async {
       await tester.pumpWidget(
         const MaterialApp(home: Scaffold(body: DepGraph(nodes: _nodes))),
@@ -156,10 +210,11 @@ void main() {
       ownerId: 'u1',
     );
 
+    // Full-size report: the crash only showed up with a real dependency set.
     final report = DepReport(
       projectId: 'p1',
       generatedAt: DateTime.utc(2026, 1, 1),
-      nodes: _nodes,
+      nodes: largeReport(),
     );
 
     // Regression: opening the graph tab and navigating back asserted inside
@@ -213,9 +268,9 @@ void main() {
 
       expect(tester.takeException(), isNull);
       expect(find.text('dependencies'), findsOneWidget);
-      // "outdated" appears both as a summary label and as a row's status chip.
+      // These appear both as summary labels and as per-row status chips.
       expect(find.text('outdated'), findsWidgets);
-      expect(find.text('vulnerable'), findsOneWidget);
+      expect(find.text('vulnerable'), findsWidgets);
     });
   });
 }
