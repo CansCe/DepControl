@@ -85,8 +85,33 @@ void main() {
       expect(handled, 10);
     });
 
-    // The exception among reads: it re-fetches the pubspec and asks pub.dev for
-    // a release history.
+    // Reading one stored report is a single database round trip.
+    test('reading one project is free', () async {
+      for (var i = 0; i < 10; i++) {
+        final response = await pipeline()(
+          contextFor('/projects/p1', method: HttpMethod.get),
+        );
+        expect(response.statusCode, HttpStatus.ok);
+      }
+      expect(handled, 10);
+    });
+
+    // Anything deeper than /projects/<id> re-reads the pubspec and queries
+    // pub.dev, so it is charged even though it is a GET.
+    test('a deeper GET is charged', () async {
+      await pipeline()(
+        contextFor('/projects/p1/remediation', method: HttpMethod.get),
+      );
+      await pipeline()(
+        contextFor('/projects/p1/remediation', method: HttpMethod.get),
+      );
+      final third = await pipeline()(
+        contextFor('/projects/p1/remediation', method: HttpMethod.get),
+      );
+
+      expect(third.statusCode, HttpStatus.tooManyRequests);
+    });
+
     test('the upgrade endpoint is charged despite being a GET', () async {
       await pipeline()(
         contextFor('/projects/p1/upgrade/http', method: HttpMethod.get),

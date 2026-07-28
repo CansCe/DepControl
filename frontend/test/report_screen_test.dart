@@ -281,6 +281,82 @@ void main() {
         ],
       );
 
+      /// Two packages whose advisories differ in severity, listed in the
+      /// report in the *wrong* order so the sort has something to do.
+      final graded = DepReport(
+        projectId: 'p1',
+        generatedAt: DateTime.utc(2026, 1, 1),
+        nodes: const [
+          DepNode(
+            name: 'mild_dep',
+            kind: DepKind.direct,
+            installed: '1.0.0',
+            status: DepStatus.vulnerable,
+            advisories: [
+              DepAdvisory(
+                id: 'GHSA-mild',
+                severity: AdvisorySeverity.low,
+                cvssScore: 3.1,
+              ),
+            ],
+          ),
+          DepNode(
+            name: 'nasty_dep',
+            kind: DepKind.direct,
+            installed: '1.0.0',
+            status: DepStatus.vulnerable,
+            advisories: [
+              DepAdvisory(
+                id: 'GHSA-nasty',
+                severity: AdvisorySeverity.critical,
+                cvssScore: 9.8,
+              ),
+            ],
+          ),
+        ],
+      );
+
+      testWidgets('shows the band and the score', (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ReportScreen(project: project, api: apiReturning(graded)),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Critical  9.8'), findsOneWidget);
+        expect(find.text('Low  3.1'), findsOneWidget);
+      });
+
+      testWidgets('summarises the breakdown by band', (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ReportScreen(project: project, api: apiReturning(graded)),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('1 critical'), findsOneWidget);
+        expect(find.text('1 low'), findsOneWidget);
+      });
+
+      // The reader deals with the top of this list and runs out of time
+      // somewhere further down, so the worst thing has to be at the top.
+      testWidgets('lists the worst package first', (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ReportScreen(project: project, api: apiReturning(graded)),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // The chips are unique to the advisories card; the package names also
+        // appear in the dependency table below, which sorts independently.
+        final critical = tester.getTopLeft(find.text('Critical  9.8')).dy;
+        final low = tester.getTopLeft(find.text('Low  3.1')).dy;
+        expect(critical, lessThan(low));
+      });
+
       testWidgets('names the version that fixes each advisory',
           (tester) async {
         await tester.pumpWidget(

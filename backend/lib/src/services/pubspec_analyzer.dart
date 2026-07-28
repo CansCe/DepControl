@@ -4,6 +4,7 @@ import 'package:shared/shared.dart';
 import 'package:yaml/yaml.dart';
 
 import 'constraint_resolver.dart';
+import 'cvss.dart';
 import 'git_fetcher.dart';
 import 'pub_api_client.dart';
 
@@ -186,12 +187,22 @@ class PubspecAnalyzer {
         }
       }
 
+      final cvss = CvssV3.parse(advisory.cvssVector);
       result.add(
         DepAdvisory(
           id: advisory.id,
           aliases: advisory.aliases,
           summary: advisory.summary,
           fixedIn: fixed?.toString(),
+          // Prefer the vector: it is a number anyone can recompute, and it
+          // bands identically across every advisory. The database's own word
+          // for it is the fallback when no vector was published.
+          severity: cvss != null
+              ? AdvisorySeverity.fromScore(cvss.baseScore)
+              : AdvisorySeverity.fromName(advisory.databaseSeverity) ??
+                  AdvisorySeverity.unknown,
+          cvssScore: cvss?.baseScore,
+          cvssVector: advisory.cvssVector,
         ),
       );
     }

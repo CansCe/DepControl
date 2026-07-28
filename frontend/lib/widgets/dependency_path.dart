@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:shared/shared.dart';
 
 import 'dep_status_chip.dart';
+import 'severity_chip.dart';
 
 /// Chains explaining how [package] ends up in the project.
 ///
@@ -181,28 +182,32 @@ class _Advisory extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final error = theme.colorScheme.error;
+    final accent = severityColor(advisory.severity, theme);
 
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: error.withValues(alpha: 0.06),
-        border: Border.all(color: error.withValues(alpha: 0.4)),
+        color: accent.withValues(alpha: 0.06),
+        border: Border.all(color: accent.withValues(alpha: 0.4)),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(Icons.gpp_maybe_outlined, size: 16, color: error),
+              SeverityChip(
+                severity: advisory.severity,
+                score: advisory.cvssScore,
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   [advisory.id, ...advisory.aliases].join('  ·  '),
-                  style: theme.textTheme.titleSmall?.copyWith(color: error),
+                  style: theme.textTheme.titleSmall?.copyWith(color: accent),
                 ),
               ),
             ],

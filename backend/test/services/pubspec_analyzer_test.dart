@@ -126,6 +126,13 @@ void main() {
         'id': 'GHSA-4rgh-jx4f-qfcq',
         'aliases': ['CVE-2020-35669'],
         'summary': 'http before 0.13.3 vulnerable to header injection',
+        'severity': [
+          {
+            'type': 'CVSS_V3',
+            'score': 'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N',
+          },
+        ],
+        'database_specific': {'severity': 'MODERATE'},
         'affected': [
           {
             'package': {'name': 'http'},
@@ -176,6 +183,87 @@ void main() {
         expect(advisory.summary, contains('header injection'));
         // The whole point: which version to move to.
         expect(advisory.fixedIn, '0.13.3');
+      });
+
+      test('scores severity from the published CVSS vector', () async {
+        final advisory = (await analyzeWith('0.13.0')).advisories.single;
+
+        expect(advisory.cvssScore, 6.1);
+        expect(advisory.severity, AdvisorySeverity.medium);
+        expect(advisory.cvssVector, startsWith('CVSS:3.1/'));
+      });
+
+      // Not every advisory publishes a vector, but GitHub always bands them.
+      test('falls back to the database band when there is no vector', () async {
+        final analyzer = _stubAnalyzer(
+          {'http': '1.3.0', 'test': '1.25.0'},
+          advisories: {
+            'http': [
+              {
+                'id': 'GHSA-no-vector',
+                'database_specific': {'severity': 'CRITICAL'},
+                'affected': [
+                  {
+                    'package': {'name': 'http'},
+                    'versions': ['0.13.0'],
+                  },
+                ],
+              },
+            ],
+          },
+        );
+
+        final report = await analyzer.analyze(
+          'p',
+          const FetchedPubspecs(
+            pubspecYaml: _pubspecYaml,
+            pubspecLock: 'packages:\n'
+                '  http:\n'
+                '    dependency: "direct main"\n'
+                '    version: "0.13.0"\n',
+          ),
+        );
+
+        final advisory =
+            report.nodes.firstWhere((n) => n.name == 'http').advisories.single;
+        expect(advisory.severity, AdvisorySeverity.critical);
+        expect(advisory.cvssScore, isNull);
+      });
+
+      // "We could not tell" must not read as "it is mild".
+      test('reports unknown severity when the advisory bands it neither way',
+          () async {
+        final analyzer = _stubAnalyzer(
+          {'http': '1.3.0', 'test': '1.25.0'},
+          advisories: {
+            'http': [
+              {
+                'id': 'GHSA-unscored',
+                'affected': [
+                  {
+                    'package': {'name': 'http'},
+                    'versions': ['0.13.0'],
+                  },
+                ],
+              },
+            ],
+          },
+        );
+
+        final report = await analyzer.analyze(
+          'p',
+          const FetchedPubspecs(
+            pubspecYaml: _pubspecYaml,
+            pubspecLock: 'packages:\n'
+                '  http:\n'
+                '    dependency: "direct main"\n'
+                '    version: "0.13.0"\n',
+          ),
+        );
+
+        final advisory =
+            report.nodes.firstWhere((n) => n.name == 'http').advisories.single;
+        expect(advisory.severity, AdvisorySeverity.unknown);
       });
 
       test('does not flag a version fixed years ago', () async {

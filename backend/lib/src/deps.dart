@@ -11,6 +11,7 @@ import 'services/logger.dart';
 import 'services/pub_api_client.dart';
 import 'services/pubspec_analyzer.dart';
 import 'services/rate_limiter.dart';
+import 'services/remediation_planner.dart';
 import 'services/resolver.dart';
 import 'services/upgrade_inspector.dart';
 
@@ -85,6 +86,11 @@ class Deps {
   final GitFetcher gitFetcher;
   final PubApiClient pubApi;
   final Resolver resolver;
+
+  /// Plans verified fixes for a report's advisories. Built from [resolver],
+  /// since a remediation is only offered once it has been resolved.
+  RemediationPlanner get planner => RemediationPlanner(resolver);
+
   final UpgradeInspector inspector;
   final JwtVerifier authVerifier;
   final PubspecAnalyzer analyzer;

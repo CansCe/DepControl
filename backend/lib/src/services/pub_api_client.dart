@@ -15,6 +15,8 @@ class Advisory {
     this.summary,
     this.affectedVersions = const {},
     this.ranges = const [],
+    this.cvssVector,
+    this.databaseSeverity,
   });
 
   final String id;
@@ -28,6 +30,13 @@ class Advisory {
 
   /// Version ranges, used when no explicit version list is published.
   final List<AdvisoryRange> ranges;
+
+  /// The CVSS v3 base vector, when one was published. Scored by [CvssV3].
+  final String? cvssVector;
+
+  /// The publishing database's own band — GitHub writes `MODERATE` where CVSS
+  /// says medium. Used only when there is no vector to score.
+  final String? databaseSeverity;
 
   /// Whether [version] is actually affected by this advisory.
   bool affects(Version version) {
@@ -81,7 +90,24 @@ class Advisory {
       summary: json['summary']?.toString(),
       affectedVersions: versions,
       ranges: ranges,
+      cvssVector: _cvssVector(json['severity']),
+      databaseSeverity: (json['database_specific']
+          as Map<String, dynamic>?)?['severity']
+          ?.toString(),
     );
+  }
+
+  /// The CVSS v3 vector from an OSV `severity` array.
+  ///
+  /// The array may carry several scoring systems. v3 is the one taken: it is
+  /// what every advisory in this ecosystem publishes, and mixing scales would
+  /// make the numbers incomparable across packages.
+  static String? _cvssVector(Object? severity) {
+    if (severity is! List) return null;
+    for (final entry in severity.whereType<Map<String, dynamic>>()) {
+      if (entry['type'] == 'CVSS_V3') return entry['score']?.toString();
+    }
+    return null;
   }
 }
 

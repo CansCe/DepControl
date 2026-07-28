@@ -57,10 +57,15 @@ Middleware rateLimitOutboundWork({Logger? logger}) {
 /// Whether serving this request means calling something else.
 ///
 /// Every write does: adding, re-analyzing and simulating all re-fetch the
-/// repository. Among reads only the upgrade endpoint does, because it re-reads
-/// the pubspec and asks pub.dev for a package's release history — listing
-/// projects and reading a stored report do not.
+/// repository. Among reads, only the two that serve stored data are free —
+/// `GET /projects` and `GET /projects/<id>`. Anything deeper (upgrade,
+/// remediation) re-reads the pubspec and queries pub.dev.
+///
+/// Stated as "everything except these two" rather than as a list of the
+/// expensive ones so that an endpoint added later is limited by default. The
+/// failure mode of guessing wrong in that direction is a needless 429; the
+/// other way round it is an unmetered hole.
 bool _doesOutboundWork(Request request) {
   if (request.method != HttpMethod.get) return true;
-  return request.uri.pathSegments.contains('upgrade');
+  return request.uri.pathSegments.length > 2;
 }

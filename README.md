@@ -115,17 +115,53 @@ cd frontend && flutter run -d chrome
 
 ## Security
 
-### What the app reports
+### Vulnerability scanning
 
-Dependencies carry their advisories through to the UI: identifier and CVE
-aliases, the summary as published, and **the version that fixes it**. Where the
-advisory names no fix, that is said outright rather than left blank — "no fix
-listed" and "no fix needed" are not the same thing.
+Advisories come from pub.dev's `/advisories` endpoint, which serves **OSV
+documents sourced from the GitHub Advisory Database** — GHSA identifiers, CVE
+aliases, affected ranges and CVSS vectors. That is the same data a direct
+OSV/CVE integration would fetch, so there is deliberately only one source here
+rather than three overlapping ones.
 
-An advisory is matched against the version actually in use, not the package as a
-whole, so a package with a historical CVE is not reported vulnerable forever.
-For a vulnerable *transitive* package the report names the direct dependency
-that pulls it in, because that is the only thing you can actually bump.
+What the report does with it:
+
+- **Matched by version, not by package.** An advisory applies to the version
+  actually in use, so a package with a historical CVE is not reported vulnerable
+  forever.
+- **Scored.** The published CVSS v3 vector is parsed to a base score and banded
+  critical/high/medium/low (`backend/lib/src/services/cvss.dart`, checked
+  against published scores). Where an advisory ships no vector, the database's
+  own band is used; where it ships neither, the severity reads *unrated* — never
+  "low".
+- **Ordered.** Packages are listed worst-first and the card leads with a
+  breakdown, because the reader deals with the top of the list.
+- **Fixed version named.** Taken from the advisory range covering your version,
+  or failing that from the release history. Where no fix is published, that is
+  said outright — "no fix listed" and "no fix needed" are not the same thing.
+- **Blame assigned.** For a vulnerable *transitive* package, the report names
+  the direct dependency that pulls it in, because that is the only thing you can
+  actually bump.
+
+### Remediation
+
+`GET /projects/<id>/remediation` returns a **verified** fix for each advisory.
+Nothing is offered on the strength of the constraint arithmetic looking right:
+every candidate is put through the resolver, and kept only if the vulnerable
+package actually lands on a fixed version. Three shapes, in order of preference:
+
+1. **Raise the constraint** — the project declares the package.
+2. **Bump the parent** — it does not, but bumping what pulls it in reaches the
+   fix. The right fix for a transitive problem: the tree keeps its shape.
+3. **Promote to direct** — nothing declared owns it, so the package is declared
+   with a floor. Flagged as a pin somebody will have to remove.
+
+Where none of those resolve, the response says whether no fix is *published* or
+no change to this pubspec can *reach* one — different problems with different
+next steps. Each plan reports the knock-on version changes too, since one
+advisory can drag a dozen packages with it.
+
+Remediations are shown as a pubspec diff. Opening pull requests would need
+GitHub write credentials, which this app deliberately does not hold.
 
 ### What the server assumes about its inputs
 

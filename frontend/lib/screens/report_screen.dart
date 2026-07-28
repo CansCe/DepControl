@@ -5,6 +5,8 @@ import '../api/api_client.dart';
 import '../widgets/dep_status_chip.dart';
 import '../widgets/dep_table.dart';
 import '../widgets/dependency_path.dart';
+import '../widgets/remediation_panel.dart';
+import '../widgets/severity_chip.dart';
 
 /// The dependency report for one project: a summary, a sortable table, and the
 /// dependency graph.
@@ -145,7 +147,11 @@ class _ReportScreenState extends State<ReportScreen> {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         if (report.vulnerable > 0) ...[
-                          _Advisories(nodes: report.nodes),
+                          _Advisories(
+                            report: report,
+                            onLoadRemediation: () =>
+                                widget.api.remediation(_project.id),
+                          ),
                           const SizedBox(height: 16),
                         ],
                         Padding(
@@ -316,24 +322,31 @@ class _Stat extends StatelessWidget {
   }
 }
 
-/// Lists the packages carrying advisories that apply to the installed version.
+/// Lists the packages carrying advisories that apply to the installed version,
+/// worst first.
 class _Advisories extends StatelessWidget {
-  const _Advisories({required this.nodes});
+  const _Advisories({required this.report, this.onLoadRemediation});
 
-  final List<DepNode> nodes;
+  final DepReport report;
+
+  /// Fetches verified fixes. Optional so the card renders without a backend.
+  final Future<RemediationPlan> Function()? onLoadRemediation;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final affected =
-        nodes.where((n) => n.advisories.isNotEmpty).toList(growable: false);
+    final affected = report.affectedNodes;
     if (affected.isEmpty) return const SizedBox.shrink();
 
+    final worst = report.worstSeverity ?? AdvisorySeverity.unknown;
+    final accent = severityColor(worst, theme);
+    final counts = report.advisoryCounts;
+
     return Card(
-      color: Colors.red.withValues(alpha: 0.06),
+      color: accent.withValues(alpha: 0.06),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.red.withValues(alpha: 0.4)),
+        side: BorderSide(color: accent.withValues(alpha: 0.4)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -342,22 +355,63 @@ class _Advisories extends StatelessWidget {
           children: [
             Row(
               children: [
-                const Icon(Icons.gpp_maybe_outlined, color: Colors.red),
+                Icon(Icons.gpp_maybe_outlined, color: accent),
                 const SizedBox(width: 8),
                 Text(
                   'Security advisories',
                   style: theme.textTheme.titleMedium,
                 ),
+                const SizedBox(width: 12),
+                // The breakdown, so the headline is the shape of the problem
+                // rather than a single count that treats every finding alike.
+                Expanded(
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final entry in counts.entries)
+                        _SeverityCount(
+                          severity: entry.key,
+                          count: entry.value,
+                        ),
+                    ],
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 12),
             for (final node in affected) ...[
-              _AffectedPackage(node: node, nodes: nodes),
+              _AffectedPackage(node: node, nodes: report.nodes),
               const SizedBox(height: 14),
+            ],
+            if (onLoadRemediation != null) ...[
+              const Divider(height: 8),
+              const SizedBox(height: 8),
+              RemediationPanel(load: onLoadRemediation!),
             ],
           ],
         ),
       ),
+    );
+  }
+}
+
+/// `3 critical` in that band's colour.
+class _SeverityCount extends StatelessWidget {
+  const _SeverityCount({required this.severity, required this.count});
+
+  final AdvisorySeverity severity;
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = severityColor(severity, theme);
+
+    return Text(
+      '$count ${severityLabel(severity).toLowerCase()}',
+      style: theme.textTheme.labelMedium
+          ?.copyWith(color: color, fontWeight: FontWeight.w700),
     );
   }
 }
@@ -407,10 +461,22 @@ class _AffectedPackage extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  [advisory.id, ...advisory.aliases].join('  ·  '),
-                  style: theme.textTheme.bodySmall
-                      ?.copyWith(fontWeight: FontWeight.w600),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SeverityChip(
+                      severity: advisory.severity,
+                      score: advisory.cvssScore,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        [advisory.id, ...advisory.aliases].join('  ·  '),
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
                 ),
                 if (advisory.summary != null)
                   Text(advisory.summary!, style: theme.textTheme.bodySmall),

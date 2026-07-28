@@ -92,6 +92,19 @@ class ApiClient {
     return UpgradeDetails.fromJson(json);
   }
 
+  /// Verified fixes for the advisories in this project's stored report.
+  ///
+  /// Every suggestion has been through the resolver on the server, so anything
+  /// returned here is known to reach a fixed version rather than merely to look
+  /// like it should.
+  Future<RemediationPlan> remediation(String projectId) async {
+    final json = await _send(() async => _client.get(
+          Uri.parse('$baseUrl/projects/$projectId/remediation'),
+          headers: await _headers(),
+        ));
+    return RemediationPlan.fromJson(json);
+  }
+
   Future<ResolutionResult> simulate(
     String projectId,
     ResolutionRequest request,

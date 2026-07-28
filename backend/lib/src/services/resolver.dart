@@ -91,6 +91,42 @@ class Resolver {
     );
   }
 
+  /// The complete version set a proposed change resolves to, or null when it
+  /// does not resolve.
+  ///
+  /// [simulate] reports only what *moved*, which is the right answer for a
+  /// human reading a diff and the wrong one for a caller asking "what version
+  /// does this land on" — a package already sitting at the wanted version does
+  /// not appear in a diff at all. The remediation planner needs the latter, and
+  /// guessing "absent means unchanged" would make it depend on which baseline
+  /// the simulation happened to use.
+  Future<Map<String, String>?> resolvedVersionsFor(
+    FetchedPubspecs files,
+    ResolutionRequest request,
+  ) async {
+    final target = _parseConstraint(request.targetConstraint);
+    if (target == null) return null;
+
+    final Pubspec pubspec;
+    try {
+      pubspec = Pubspec.parse(files.pubspecYaml);
+    } on Exception {
+      return null;
+    }
+
+    final deps = _hosted(pubspec.dependencies);
+    final devDeps = _hosted(pubspec.devDependencies);
+
+    final isDev = devDeps.containsKey(request.package);
+    final proposedDeps = {...deps};
+    final proposedDev = {...devDeps};
+    (isDev ? proposedDev : proposedDeps)[request.package] =
+        request.targetConstraint;
+
+    final outcome = await _resolve(proposedDeps, proposedDev);
+    return outcome.hasConflicts ? null : _versionsOf(outcome);
+  }
+
   Future<ResolutionOutcome> _resolve(
     Map<String, String> deps,
     Map<String, String> dev,
