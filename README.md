@@ -44,6 +44,48 @@ Upgrade reporting sits on top of these: what a version jump changes in published
 metadata (`UpgradeImpact`), and what it changes in the package's public API
 (`ApiDiff`, see below).
 
+## What a scan covers
+
+A repository is not always one package. Adding a project reads **every**
+`pubspec.yaml` in the repository, not only the one at its root: a pub workspace
+resolves its members into a single root lockfile, but a directory deliberately
+kept *out* of the workspace resolves independently.
+
+Packages are merged on **name and version, not name**. This repository is its
+own example — the root lockfile has `analyzer 12.1.0` while
+`tools/api_differ/pubspec.lock` has `7.7.1`, and those are two different things
+to assess, because an advisory applies to a version. Each entry records which
+pubspecs it came from.
+
+That makes the count *distinct resolved packages*. GitHub's dependency graph
+counts dependency edges per manifest and does not deduplicate across them, so
+its number for a monorepo is legitimately higher — it counts a shared package
+once per manifest.
+
+Discovery uses the forge's tree API, which is rate limited. When it is
+unavailable the scan falls back to the repository root and the report says so
+rather than implying the repository holds one package.
+
+## Managing the registry
+
+Projects can be **archived** (reversible — the project and its report are kept,
+and it leaves the default listing) or **deleted** (the project and its report,
+with nothing kept). In the list, swipe left to archive and right to delete; the
+same two actions are in each row's menu, since a swipe is invisible with a
+mouse and this is a web app.
+
+Archiving offers an undo. Deleting asks first: the server keeps no copy, so an
+"undo" would mean re-adding and re-analyzing under a new id, which is not the
+same thing and is not presented as if it were.
+
+**An archived project is frozen.** Re-analysis, simulation, upgrade detail and
+remediation all refuse with `409` — a snapshot that keeps re-fetching a
+repository and re-querying pub.dev is not archived in any sense that matters. It
+still serves its stored report, showing what the project depended on: no
+`Latest` or `Status` columns, no upgrade assessment, no remediation. Advisories
+stay, because they are facts about the versions in the snapshot rather than a
+comparison with today. Restoring the project makes all of it work again.
+
 ## Public API diffs
 
 Semver says whether an author *considers* a release breaking. It cannot say

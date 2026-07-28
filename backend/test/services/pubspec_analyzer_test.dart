@@ -384,6 +384,137 @@ void main() {
       });
     });
 
+    group('a repository holding several packages', () {
+      /// A manifest declaring `analyzer` at [analyzerVersion].
+      RepositoryManifest manifest(String directory, String analyzerVersion) =>
+          RepositoryManifest(
+            directory: directory,
+            files: FetchedPubspecs(
+              pubspecYaml: 'name: ${directory.isEmpty ? 'root' : directory}\n'
+                  'environment:\n'
+                  '  sdk: ^3.6.0\n'
+                  'dependencies:\n'
+                  '  analyzer: any\n',
+              pubspecLock: 'packages:\n'
+                  '  analyzer:\n'
+                  '    dependency: "direct main"\n'
+                  '    version: "$analyzerVersion"\n',
+            ),
+          );
+
+      // The case the whole design turns on: a directory kept out of the pub
+      // workspace resolves independently, so one repository holds two versions
+      // of the same package. Collapsing them would mean assessing one version's
+      // advisories against the other.
+      test('keeps two versions of one package as two entries', () async {
+        final analyzer = _stubAnalyzer({'analyzer': '12.1.0'});
+
+        final report = await analyzer.analyzeRepository(
+          'p',
+          FetchedRepository(
+            manifests: [
+              manifest('', '12.1.0'),
+              manifest('tools/api_differ', '7.7.1'),
+            ],
+          ),
+        );
+
+        final analyzers = report.nodes.where((n) => n.name == 'analyzer');
+        expect(analyzers, hasLength(2));
+        expect(
+          analyzers.map((n) => n.installed),
+          containsAll(['7.7.1', '12.1.0']),
+        );
+      });
+
+      test('records which manifest each version came from', () async {
+        final analyzer = _stubAnalyzer({'analyzer': '12.1.0'});
+
+        final report = await analyzer.analyzeRepository(
+          'p',
+          FetchedRepository(
+            manifests: [
+              manifest('', '12.1.0'),
+              manifest('tools/api_differ', '7.7.1'),
+            ],
+          ),
+        );
+
+        final old =
+            report.nodes.firstWhere((n) => n.installed == '7.7.1');
+        expect(old.manifests, ['tools/api_differ']);
+
+        final current =
+            report.nodes.firstWhere((n) => n.installed == '12.1.0');
+        expect(current.manifests, ['repository root']);
+      });
+
+      test('merges a package resolved identically in both', () async {
+        final analyzer = _stubAnalyzer({'analyzer': '12.1.0'});
+
+        final report = await analyzer.analyzeRepository(
+          'p',
+          FetchedRepository(
+            manifests: [
+              manifest('', '12.1.0'),
+              manifest('tools/api_differ', '12.1.0'),
+            ],
+          ),
+        );
+
+        final analyzers =
+            report.nodes.where((n) => n.name == 'analyzer').toList();
+        expect(analyzers, hasLength(1));
+        // Counted once, but both origins are recorded.
+        expect(analyzers.single.manifests, [
+          'repository root',
+          'tools/api_differ',
+        ]);
+      });
+
+      test('lists the manifests it covered', () async {
+        final analyzer = _stubAnalyzer({'analyzer': '12.1.0'});
+
+        final report = await analyzer.analyzeRepository(
+          'p',
+          FetchedRepository(
+            manifests: [manifest('', '12.1.0'), manifest('tools/x', '7.7.1')],
+          ),
+        );
+
+        expect(report.manifests, ['repository root', 'tools/x']);
+      });
+
+      test('carries a partial-coverage note into the report', () async {
+        final analyzer = _stubAnalyzer({'analyzer': '12.1.0'});
+
+        final report = await analyzer.analyzeRepository(
+          'p',
+          FetchedRepository(
+            manifests: [manifest('', '12.1.0')],
+            discoveryNote: 'Could not list this repository.',
+          ),
+        );
+
+        expect(report.coverageNote, 'Could not list this repository.');
+      });
+
+      // A single-package repository must not grow manifest noise it has no
+      // use for.
+      test('says nothing about manifests for a one-package repository',
+          () async {
+        final analyzer = _stubAnalyzer({'analyzer': '12.1.0'});
+
+        final report = await analyzer.analyzeRepository(
+          'p',
+          FetchedRepository(manifests: [manifest('', '12.1.0')]),
+        );
+
+        expect(report.manifests, isEmpty);
+        expect(report.nodes.single.manifests, isEmpty);
+      });
+    });
+
     test('an unparseable locked version degrades to unknown', () async {
       final analyzer = _stubAnalyzer({'http': '1.3.0', 'test': '1.25.0'});
 

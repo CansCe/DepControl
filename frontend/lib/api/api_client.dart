@@ -25,14 +25,40 @@ class ApiClient {
   static Future<String?> _sessionToken() async =>
       Supabase.instance.client.auth.currentSession?.accessToken;
 
-  Future<List<Project>> listProjects() async {
+  /// The caller's projects — active ones by default, archived ones when
+  /// [archived] is true. Never both: archiving is how someone puts a project
+  /// out of the way.
+  Future<List<Project>> listProjects({bool archived = false}) async {
     final json = await _send(() async => _client.get(
-          Uri.parse('$baseUrl/projects'),
+          Uri.parse('$baseUrl/projects${archived ? '?archived=true' : ''}'),
           headers: await _headers(),
         ));
     return (json['projects'] as List? ?? const [])
         .map((e) => Project.fromJson(e as Map<String, dynamic>))
         .toList();
+  }
+
+  /// Archives or restores a project. The project and its report are kept
+  /// either way.
+  Future<Project> setArchived(
+    String projectId, {
+    required bool archived,
+  }) async {
+    final json = await _send(() async => _client.patch(
+          Uri.parse('$baseUrl/projects/$projectId'),
+          headers: await _headers(json: true),
+          body: jsonEncode({'archived': archived}),
+        ));
+    return Project.fromJson(json['project'] as Map<String, dynamic>);
+  }
+
+  /// Deletes a project and its report. There is no undo on the server, so
+  /// callers are responsible for confirming first.
+  Future<void> deleteProject(String projectId) async {
+    await _sendNoContent(() async => _client.delete(
+          Uri.parse('$baseUrl/projects/$projectId'),
+          headers: await _headers(),
+        ));
   }
 
   /// Ingests a project by git URL and returns its first report.
@@ -123,6 +149,40 @@ class ApiClient {
       if (json) 'Content-Type': 'application/json',
       if (token != null) 'Authorization': 'Bearer $token',
     };
+  }
+
+  /// Runs a request that succeeds with no body, such as a delete.
+  ///
+  /// [_send] cannot serve these: it requires a JSON object back, and a 204 has
+  /// nothing in it by definition.
+  Future<void> _sendNoContent(
+    Future<http.Response> Function() request,
+  ) async {
+    final http.Response res;
+    try {
+      res = await request();
+    } catch (e) {
+      throw ApiException('Cannot reach the API at $baseUrl — is it running?');
+    }
+    if (res.statusCode < 400) return;
+
+    Map<String, dynamic>? json;
+    try {
+      final decoded = jsonDecode(res.body);
+      if (decoded is Map<String, dynamic>) json = decoded;
+    } catch (_) {
+      // Reported using the status code alone.
+    }
+
+    if (res.statusCode == 401) {
+      throw ApiAuthException(
+        json?['reason']?.toString() ??
+            'Your session has expired. Please sign in again.',
+      );
+    }
+    throw ApiException(
+      json?['error']?.toString() ?? 'Request failed (${res.statusCode})',
+    );
   }
 
   /// Runs a request and decodes it, turning every non-2xx response into an

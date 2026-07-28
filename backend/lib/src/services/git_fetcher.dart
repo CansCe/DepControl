@@ -13,6 +13,43 @@ class FetchedPubspecs {
   bool get hasLock => pubspecLock != null;
 }
 
+/// One package's pubspec files, and where in the repository they live.
+class RepositoryManifest {
+  const RepositoryManifest({required this.directory, required this.files});
+
+  /// Path from the repository root, empty for the root itself.
+  final String directory;
+
+  final FetchedPubspecs files;
+
+  /// What to call this manifest in a report.
+  String get label => directory.isEmpty ? 'repository root' : directory;
+}
+
+/// Every pubspec in a repository, root first.
+///
+/// A repository is not always one package. A pub workspace resolves its members
+/// into a single root lockfile, but a directory deliberately kept *out* of the
+/// workspace — this project's own `tools/api_differ` is one — resolves
+/// separately and can hold quite different versions of the same packages. Only
+/// reading the root would report those as though they did not exist.
+class FetchedRepository {
+  const FetchedRepository({required this.manifests, this.discoveryNote});
+
+  final List<RepositoryManifest> manifests;
+
+  /// Set when the repository could not be listed and only the root was read.
+  ///
+  /// Discovery uses the forge's tree API, which is rate limited and can simply
+  /// be unavailable. Falling back to the root is far better than failing the
+  /// scan, but the report must say the coverage is partial rather than imply
+  /// the repository holds one package.
+  final String? discoveryNote;
+
+  /// The root manifest, which is the one that exists in every repository.
+  RepositoryManifest get primary => manifests.first;
+}
+
 /// Fetches just `pubspec.yaml` (+ `pubspec.lock`) from a Git URL.
 ///
 /// Targets the common hosts (GitHub/GitLab) via their raw-file HTTP endpoints,
@@ -56,6 +93,12 @@ class GitFetcher {
   /// keeps them honest.
   static final _refPattern = RegExp(r'^[A-Za-z0-9._\-/]{1,255}$');
 
+  /// Most manifests to read from one repository.
+  ///
+  /// Each costs two requests, and a repository with hundreds of packages is not
+  /// something anyone is going to read a single report about.
+  static const maxManifests = 25;
+
   Future<FetchedPubspecs> fetch(String gitUrl, {String ref = 'HEAD'}) async {
     final raw = _rawBaseFor(gitUrl, ref);
 
@@ -65,6 +108,139 @@ class GitFetcher {
     }
     final lock = await _get(raw.resolve('pubspec.lock'));
     return FetchedPubspecs(pubspecYaml: yaml, pubspecLock: lock);
+  }
+
+  /// Every pubspec in the repository, root first.
+  ///
+  /// Falls back to the root alone — with a note saying so — when the repository
+  /// cannot be listed. Discovery runs against a rate-limited API that is not
+  /// worth failing a whole scan over.
+  Future<FetchedRepository> fetchAll(
+    String gitUrl, {
+    String ref = 'HEAD',
+  }) async {
+    final root = await fetch(gitUrl, ref: ref);
+    final rootManifest = RepositoryManifest(directory: '', files: root);
+
+    final String? note;
+    List<String> directories;
+    try {
+      final found = await _discoverManifestDirectories(gitUrl, ref);
+      if (found == null) {
+        return FetchedRepository(
+          manifests: [rootManifest],
+          discoveryNote: 'Could not list this repository, so only the '
+              'pubspec.yaml at its root was read. Any package in a '
+              'subdirectory is missing from this report.',
+        );
+      }
+      directories = found.where((d) => d.isNotEmpty).toList();
+      note = directories.length > maxManifests
+          ? 'This repository has ${directories.length} pubspecs; the first '
+              '$maxManifests were read.'
+          : null;
+      directories = directories.take(maxManifests).toList();
+    } on StateError {
+      rethrow;
+    }
+
+    final manifests = <RepositoryManifest>[rootManifest];
+    final raw = _rawBaseFor(gitUrl, ref);
+
+    for (final directory in directories) {
+      final base = raw.resolve('$directory/');
+      final yaml = await _get(base.resolve('pubspec.yaml'));
+      if (yaml == null) continue; // listed but unreadable; not worth failing on
+
+      manifests.add(
+        RepositoryManifest(
+          directory: directory,
+          files: FetchedPubspecs(
+            pubspecYaml: yaml,
+            pubspecLock: await _get(base.resolve('pubspec.lock')),
+          ),
+        ),
+      );
+    }
+
+    return FetchedRepository(manifests: manifests, discoveryNote: note);
+  }
+
+  /// Directories holding a `pubspec.yaml`, or null when the repository could
+  /// not be listed.
+  ///
+  /// Uses each forge's tree API, which returns the whole file list in one
+  /// request rather than walking directories.
+  Future<List<String>?> _discoverManifestDirectories(
+    String gitUrl,
+    String ref,
+  ) async {
+    final url = _treeApiFor(gitUrl, ref);
+    if (url == null) return null;
+
+    final http.Response response;
+    try {
+      response = await _client.get(url).timeout(_timeout);
+    } on TimeoutException {
+      return null;
+    }
+    // 403 is the unauthenticated rate limit, which is low and shared by IP.
+    if (response.statusCode != 200) return null;
+
+    final Object? json;
+    try {
+      json = jsonDecode(response.body);
+    } on FormatException {
+      return null;
+    }
+
+    // GitHub wraps the list in an object; GitLab returns a bare array.
+    final entries = switch (json) {
+      final List list => list,
+      final Map map => map['tree'] as List? ?? const [],
+      _ => const [],
+    };
+
+    final directories = <String>{};
+    for (final entry in entries.whereType<Map<String, dynamic>>()) {
+      final path = entry['path']?.toString();
+      if (path == null || !path.endsWith('pubspec.yaml')) continue;
+
+      // Generated and vendored trees are not the project's own packages.
+      if (path.contains('.dart_tool/') || path.contains('/build/')) continue;
+
+      final slash = path.lastIndexOf('/');
+      directories.add(slash < 0 ? '' : path.substring(0, slash));
+    }
+
+    final sorted = directories.toList()..sort();
+    return sorted;
+  }
+
+  /// The tree endpoint listing every file at [ref], or null for a host without
+  /// one this knows.
+  static Uri? _treeApiFor(String gitUrl, String ref) {
+    final base = _rawBaseFor(gitUrl, ref);
+    final segments = base.pathSegments.where((s) => s.isNotEmpty).toList();
+    if (segments.length < 2) return null;
+    final owner = segments[0];
+    final repo = segments[1];
+    final safeRef = _validateRef(ref);
+
+    return switch (base.host) {
+      'raw.githubusercontent.com' => Uri.https(
+          'api.github.com',
+          '/repos/$owner/$repo/git/trees/$safeRef',
+          {'recursive': '1'},
+        ),
+      'gitlab.com' => Uri.https(
+          'gitlab.com',
+          '/api/v4/projects/${Uri.encodeComponent('$owner/$repo')}'
+              '/repository/tree',
+          {'ref': safeRef, 'recursive': 'true', 'per_page': '100'},
+        ),
+      _ => null,
+    };
   }
 
   /// Fetches [url], returning null for a 404 and throwing for anything that

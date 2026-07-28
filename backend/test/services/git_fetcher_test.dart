@@ -220,6 +220,137 @@ void main() {
     });
   });
 
+  group('discovering every manifest', () {
+    /// Serves the GitHub tree API from [paths] plus raw files from [bodies].
+    GitFetcher repoWith({
+      required List<String> paths,
+      required Map<String, String> bodies,
+      int treeStatus = 200,
+    }) {
+      final client = MockClient((request) async {
+        if (request.url.host == 'api.github.com') {
+          if (treeStatus != 200) {
+            return http.Response('{"message":"rate limited"}', treeStatus);
+          }
+          return http.Response(
+            jsonEncode({
+              'tree': [
+                for (final path in paths) {'path': path, 'type': 'blob'},
+              ],
+            }),
+            200,
+          );
+        }
+        final body = bodies[request.url.path];
+        return body == null
+            ? http.Response('not found', 404)
+            : http.Response(body, 200);
+      });
+      return GitFetcher(client: client);
+    }
+
+    test('reads a pubspec in a subdirectory as well as the root', () async {
+      final fetcher = repoWith(
+        paths: ['pubspec.yaml', 'tools/differ/pubspec.yaml', 'README.md'],
+        bodies: {
+          '/acme/demo/HEAD/pubspec.yaml': 'name: root\n',
+          '/acme/demo/HEAD/tools/differ/pubspec.yaml': 'name: differ\n',
+          '/acme/demo/HEAD/tools/differ/pubspec.lock': 'packages:\n',
+        },
+      );
+
+      final repo = await fetcher.fetchAll('https://github.com/acme/demo');
+
+      expect(repo.manifests.map((m) => m.directory), ['', 'tools/differ']);
+      expect(repo.manifests.first.files.pubspecYaml, 'name: root\n');
+      expect(repo.manifests.last.files.pubspecYaml, 'name: differ\n');
+      expect(repo.manifests.last.files.hasLock, isTrue);
+      expect(repo.discoveryNote, isNull);
+    });
+
+    test('labels the root manifest readably', () async {
+      final fetcher = repoWith(
+        paths: ['pubspec.yaml'],
+        bodies: {'/acme/demo/HEAD/pubspec.yaml': 'name: root\n'},
+      );
+
+      final repo = await fetcher.fetchAll('https://github.com/acme/demo');
+      expect(repo.primary.label, 'repository root');
+    });
+
+    test('ignores generated and build trees', () async {
+      final fetcher = repoWith(
+        paths: [
+          'pubspec.yaml',
+          '.dart_tool/pub/pubspec.yaml',
+          'frontend/build/web/pubspec.yaml',
+        ],
+        bodies: {'/acme/demo/HEAD/pubspec.yaml': 'name: root\n'},
+      );
+
+      final repo = await fetcher.fetchAll('https://github.com/acme/demo');
+      expect(repo.manifests, hasLength(1));
+    });
+
+    // The tree API is rate limited and shared by IP. Losing it should cost
+    // coverage, not the whole scan.
+    test('falls back to the root and says so when listing fails', () async {
+      final fetcher = repoWith(
+        paths: const [],
+        bodies: {'/acme/demo/HEAD/pubspec.yaml': 'name: root\n'},
+        treeStatus: 403,
+      );
+
+      final repo = await fetcher.fetchAll('https://github.com/acme/demo');
+
+      expect(repo.manifests, hasLength(1));
+      expect(repo.discoveryNote, contains('only the pubspec.yaml at its root'));
+    });
+
+    test('caps how many manifests it reads, and says it capped', () async {
+      final many = [
+        'pubspec.yaml',
+        for (var i = 0; i < GitFetcher.maxManifests + 5; i++)
+          'pkg$i/pubspec.yaml',
+      ];
+      final fetcher = repoWith(
+        paths: many,
+        bodies: {
+          '/acme/demo/HEAD/pubspec.yaml': 'name: root\n',
+          for (var i = 0; i < GitFetcher.maxManifests + 5; i++)
+            '/acme/demo/HEAD/pkg$i/pubspec.yaml': 'name: pkg$i\n',
+        },
+      );
+
+      final repo = await fetcher.fetchAll('https://github.com/acme/demo');
+
+      expect(repo.manifests, hasLength(GitFetcher.maxManifests + 1));
+      expect(repo.discoveryNote, contains('were read'));
+    });
+
+    test('skips a listed manifest that cannot be read', () async {
+      final fetcher = repoWith(
+        paths: ['pubspec.yaml', 'ghost/pubspec.yaml'],
+        bodies: {'/acme/demo/HEAD/pubspec.yaml': 'name: root\n'},
+      );
+
+      final repo = await fetcher.fetchAll('https://github.com/acme/demo');
+      expect(repo.manifests, hasLength(1));
+    });
+
+    test('still refuses a traversing ref while discovering', () async {
+      final fetcher = repoWith(
+        paths: const [],
+        bodies: const {},
+      );
+
+      await expectLater(
+        fetcher.fetchAll('https://github.com/acme/demo', ref: '../../other/x'),
+        throwsA(isA<StateError>()),
+      );
+    });
+  });
+
   test('decodes a pubspec that is not valid UTF-8 rather than throwing',
       () async {
     final client = MockClient((request) async {

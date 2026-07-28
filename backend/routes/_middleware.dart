@@ -35,6 +35,8 @@ Middleware _cors() {
 
 const _corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  // PATCH and DELETE archive and remove projects. Without them here the
+  // browser's preflight fails and the request never reaches a route.
+  'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };

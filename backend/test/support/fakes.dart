@@ -13,10 +13,14 @@ dependencies:
 /// A [GitFetcher] that returns canned pubspec content instead of hitting the
 /// network. Pass [onFetch] to simulate a failure or vary the response.
 class FakeGitFetcher implements GitFetcher {
-  FakeGitFetcher({this.onFetch});
+  FakeGitFetcher({this.onFetch, this.extraManifests = const []});
 
   /// Called in place of the real fetch. Receives the git URL and ref.
   final FetchedPubspecs Function(String gitUrl, String ref)? onFetch;
+
+  /// Manifests discovery should find besides the root, for tests that exercise
+  /// a repository holding more than one package.
+  final List<RepositoryManifest> extraManifests;
 
   /// Every (gitUrl, ref) this fake was asked for, in order.
   final calls = <({String gitUrl, String ref})>[];
@@ -27,6 +31,21 @@ class FakeGitFetcher implements GitFetcher {
     if (onFetch != null) return onFetch!(gitUrl, ref);
     return const FetchedPubspecs(pubspecYaml: samplePubspecYaml);
   }
+
+  @override
+  Future<FetchedRepository> fetchAll(
+    String gitUrl, {
+    String ref = 'HEAD',
+  }) async =>
+      FetchedRepository(
+        manifests: [
+          RepositoryManifest(
+            directory: '',
+            files: await fetch(gitUrl, ref: ref),
+          ),
+          ...extraManifests,
+        ],
+      );
 
   @override
   Future<FetchedPubspecs> fetchViaGitArchive(String gitUrl, String ref) =>
@@ -60,4 +79,21 @@ class FakeAnalyzer implements PubspecAnalyzer {
         generatedAt: DateTime.utc(2026, 1, 1),
         nodes: nodes,
       );
+
+  @override
+  Future<DepReport> analyzeRepository(
+    String projectId,
+    FetchedRepository repository,
+  ) async {
+    final report = await analyze(projectId, repository.primary.files);
+    return DepReport(
+      projectId: report.projectId,
+      generatedAt: report.generatedAt,
+      nodes: report.nodes,
+      manifests: repository.manifests.length > 1
+          ? repository.manifests.map((m) => m.label).toList()
+          : const [],
+      coverageNote: repository.discoveryNote,
+    );
+  }
 }

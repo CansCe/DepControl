@@ -6,8 +6,9 @@ import 'package:dart_frog/dart_frog.dart';
 import 'package:shared/shared.dart';
 import 'package:uuid/uuid.dart';
 
-/// GET  /projects        -> the caller's tracked projects
-/// POST /projects        -> ingest a project by git URL, returns the report
+/// GET  /projects              -> the caller's active projects
+/// GET  /projects?archived=true -> the caller's archived projects instead
+/// POST /projects              -> ingest by git URL, returns the report
 ///
 /// Guarded by `requireAuth` in `_middleware.dart`, so the `AuthUser` is
 /// guaranteed present and every project is scoped to its owner.
@@ -17,9 +18,22 @@ Future<Response> onRequest(RequestContext context) async {
 
   switch (context.request.method) {
     case HttpMethod.get:
-      final projects = await deps.repository.allForOwner(user.id);
+      // Archived projects are a separate view rather than a flag in the same
+      // list: mixing them would put the things someone chose to hide back in
+      // front of them.
+      final archived =
+          context.request.uri.queryParameters['archived'] == 'true';
+      final projects = await deps.repository.allForOwner(
+        user.id,
+        includeArchived: archived,
+      );
       return Response.json(
-        body: {'projects': projects.map((p) => p.toJson()).toList()},
+        body: {
+          'projects': projects
+              .where((p) => p.isArchived == archived)
+              .map((p) => p.toJson())
+              .toList(),
+        },
       );
     case HttpMethod.post:
       return _add(context, deps, user);
@@ -53,9 +67,11 @@ Future<Response> _add(
   final ref = (body['ref'] as String?) ?? 'HEAD';
 
   try {
-    final files = await deps.gitFetcher.fetch(gitUrl, ref: ref);
+    // Every pubspec in the repository, not just the one at its root: a
+    // monorepo's other packages are dependencies of the project too.
+    final files = await deps.gitFetcher.fetchAll(gitUrl, ref: ref);
     final id = const Uuid().v4();
-    final report = await deps.analyzer.analyze(id, files);
+    final report = await deps.analyzer.analyzeRepository(id, files);
 
     final project = Project(
       id: id,

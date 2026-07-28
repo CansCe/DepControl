@@ -77,8 +77,13 @@ class _ReportScreenState extends State<ReportScreen> {
         child: PackageDetailView(
           package: node.name,
           nodes: report.nodes,
-          onLoadDetails: () =>
-              widget.api.upgradeDetails(_project.id, node.name),
+          selected: node,
+          showCurrency: !_project.isArchived,
+          // No loader for an archived project: the sheet then explains why the
+          // package is present without asking what upgrading it would involve.
+          onLoadDetails: _project.isArchived
+              ? null
+              : () => widget.api.upgradeDetails(_project.id, node.name),
         ),
       ),
     );
@@ -91,7 +96,11 @@ class _ReportScreenState extends State<ReportScreen> {
         appBar: AppBar(
           title: Text(_project.name),
           actions: [
-            if (_refreshing)
+            // An archived project is a snapshot; the server refuses to
+            // re-analyze it, so offering the button would be a dead end.
+            if (_project.isArchived)
+              const SizedBox.shrink()
+            else if (_refreshing)
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 16),
                 child: Center(
@@ -146,24 +155,32 @@ class _ReportScreenState extends State<ReportScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
+                        // Advisories are facts about the versions in the
+                        // snapshot, so they stay. Planning a fix is not — it
+                        // re-fetches the repository, which archiving opted out
+                        // of — so an archived project gets no remediation.
                         if (report.vulnerable > 0) ...[
                           _Advisories(
                             report: report,
-                            onLoadRemediation: () =>
-                                widget.api.remediation(_project.id),
+                            onLoadRemediation: _project.isArchived
+                                ? null
+                                : () => widget.api.remediation(_project.id),
                           ),
                           const SizedBox(height: 16),
                         ],
                         Padding(
                           padding: const EdgeInsets.only(bottom: 8),
                           child: Text(
-                            'Select a package to see why it is here and what '
-                            'upgrading it involves.',
+                            _project.isArchived
+                                ? 'Select a package to see why it is here.'
+                                : 'Select a package to see why it is here and '
+                                    'what upgrading it involves.',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ),
                         DepTable(
                           nodes: report.nodes,
+                          showCurrency: !_project.isArchived,
                           onSelect: (node) => _explain(node, report),
                         ),
                       ],
@@ -214,10 +231,16 @@ class _Summary extends StatelessWidget {
             style: theme.textTheme.bodySmall,
           ),
           Text(
-            project.lastCheckedAt != null
-                ? 'Last analyzed ${_ago(project.lastCheckedAt!)}'
-                : 'Analyzed when added',
-            style: theme.textTheme.bodySmall,
+            project.isArchived
+                ? 'Archived ${_ago(project.archivedAt!)} — a snapshot of what '
+                    'this depended on, not kept up to date.'
+                : project.lastCheckedAt != null
+                    ? 'Last analyzed ${_ago(project.lastCheckedAt!)}'
+                    : 'Analyzed when added',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: project.isArchived ? Colors.blueGrey.shade700 : null,
+              fontWeight: project.isArchived ? FontWeight.w600 : null,
+            ),
           ),
           const SizedBox(height: 10),
           Wrap(
@@ -226,20 +249,25 @@ class _Summary extends StatelessWidget {
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               _Stat(label: 'dependencies', value: report.total),
-              _Stat(
-                label: 'outdated',
-                value: report.outdated,
-                color: report.outdated > 0 ? Colors.orange : null,
-              ),
+              // "Outdated" and the upgrade counts are comparisons against
+              // pub.dev as it is now, which is what archiving stepped away
+              // from. Advisories are facts about the snapshot, so they stay.
+              if (!project.isArchived)
+                _Stat(
+                  label: 'outdated',
+                  value: report.outdated,
+                  color: report.outdated > 0 ? Colors.orange : null,
+                ),
               _Stat(
                 label: 'vulnerable',
                 value: report.vulnerable,
                 color: report.vulnerable > 0 ? Colors.red : null,
               ),
-              if (unknown > 0) _Stat(label: 'unknown', value: unknown),
+              if (unknown > 0 && !project.isArchived)
+                _Stat(label: 'unknown', value: unknown),
             ],
           ),
-          if (breaking > 0 || routine > 0) ...[
+          if (!project.isArchived && (breaking > 0 || routine > 0)) ...[
             const SizedBox(height: 8),
             Wrap(
               spacing: 20,
@@ -257,29 +285,73 @@ class _Summary extends StatelessWidget {
               ],
             ),
           ],
+          if (report.manifests.length > 1) ...[
+            const SizedBox(height: 8),
+            _Note(
+              icon: Icons.folder_copy_outlined,
+              // The count is of distinct name+version pairs, so a package
+              // resolved at two versions is genuinely two of them.
+              text: 'Covers ${report.manifests.length} pubspecs in this '
+                  'repository (${report.manifests.join(', ')}). A package '
+                  'resolved at two versions is counted once per version.',
+            ),
+          ],
+          if (report.coverageNote != null) ...[
+            const SizedBox(height: 8),
+            _Note(
+              icon: Icons.warning_amber_outlined,
+              text: report.coverageNote!,
+              isWarning: true,
+            ),
+          ],
           if (inferred > 0) ...[
             const SizedBox(height: 8),
-            Row(
-              children: [
-                Icon(
-                  Icons.info_outline,
-                  size: 15,
-                  color: theme.textTheme.bodySmall?.color,
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    'This repository has no pubspec.lock, so versions were '
-                    'inferred by resolving its constraints — what a fresh '
-                    'pub get would install today.',
-                    style: theme.textTheme.bodySmall,
-                  ),
-                ),
-              ],
+            _Note(
+              icon: Icons.info_outline,
+              text: 'This repository has no pubspec.lock, so versions were '
+                  'inferred by resolving its constraints — what a fresh '
+                  'pub get would install today.',
             ),
           ],
         ],
       ),
+    );
+  }
+}
+
+/// A line of context under the summary: what the report covers, or what it
+/// could not.
+class _Note extends StatelessWidget {
+  const _Note({
+    required this.icon,
+    required this.text,
+    this.isWarning = false,
+  });
+
+  final IconData icon;
+  final String text;
+  final bool isWarning;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color =
+        isWarning ? Colors.orange.shade800 : theme.textTheme.bodySmall?.color;
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 15, color: color),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            text,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: isWarning ? color : null,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

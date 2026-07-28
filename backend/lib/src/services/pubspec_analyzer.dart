@@ -16,6 +16,85 @@ class PubspecAnalyzer {
   final PubApiClient _pub;
   final ConstraintResolver _resolver;
 
+  /// Analyzes every pubspec in [repository] and merges them into one report.
+  ///
+  /// Packages are merged on **name and version**, not name alone. A repository
+  /// can resolve the same package twice at different versions — a directory
+  /// kept out of the pub workspace resolves independently — and collapsing
+  /// those would either hide an advisory that applies to one of them or claim
+  /// one against the other.
+  Future<DepReport> analyzeRepository(
+    String projectId,
+    FetchedRepository repository,
+  ) async {
+    // One manifest is the common case, and merging machinery would only make
+    // its result harder to read.
+    if (repository.manifests.length == 1) {
+      final report = await analyze(projectId, repository.primary.files);
+      return DepReport(
+        projectId: report.projectId,
+        generatedAt: report.generatedAt,
+        nodes: report.nodes,
+        coverageNote: repository.discoveryNote,
+      );
+    }
+
+    // name@version -> the node, plus every manifest it turned up in.
+    final merged = <String, DepNode>{};
+    final origins = <String, List<String>>{};
+
+    for (final manifest in repository.manifests) {
+      final report = await analyze(projectId, manifest.files);
+      for (final node in report.nodes) {
+        final where = origins.putIfAbsent(node.key, () => <String>[]);
+        if (!where.contains(manifest.label)) where.add(manifest.label);
+
+        // Merge the graph edges: the same version can be reached from
+        // different packages in different manifests.
+        final existing = merged[node.key];
+        merged[node.key] = existing == null
+            ? node
+            : _mergeEdges(existing, node);
+      }
+    }
+
+    final nodes = [
+      for (final entry in merged.entries)
+        entry.value.inManifests(origins[entry.key]!),
+    ]..sort((a, b) {
+        final byName = a.name.compareTo(b.name);
+        return byName != 0 ? byName : a.installed.compareTo(b.installed);
+      });
+
+    return DepReport(
+      projectId: projectId,
+      generatedAt: DateTime.now().toUtc(),
+      nodes: nodes,
+      manifests: repository.manifests.map((m) => m.label).toList(),
+      coverageNote: repository.discoveryNote,
+    );
+  }
+
+  /// Keeps the union of two manifests' edges for the same package version, and
+  /// the stronger of the two kinds — declared beats transitive, because a
+  /// package the repository declares somewhere is one you can act on.
+  static DepNode _mergeEdges(DepNode a, DepNode b) {
+    final edges = {...a.dependencies, ...b.dependencies}.toList()..sort();
+    final declared = a.kind != DepKind.transitive ? a : b;
+
+    return DepNode(
+      name: a.name,
+      kind: declared.kind,
+      installed: a.installed,
+      constraint: a.constraint ?? b.constraint,
+      latest: a.latest ?? b.latest,
+      status: a.status,
+      source: a.source,
+      advisories: a.advisories,
+      dependencies: edges,
+    );
+  }
+
   Future<DepReport> analyze(
     String projectId,
     FetchedPubspecs files,

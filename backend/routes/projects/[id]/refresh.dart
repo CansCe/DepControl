@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:backend/src/archived_project.dart';
 import 'package:backend/src/auth/auth_user.dart';
 import 'package:backend/src/deps.dart';
 import 'package:dart_frog/dart_frog.dart';
@@ -27,9 +28,13 @@ Future<Response> onRequest(RequestContext context, String id) async {
     );
   }
 
+  final refusal = archivedProjectRefusal(project, 're-analysis');
+  if (refusal != null) return refusal;
+
   try {
-    final files = await deps.gitFetcher.fetch(project.gitUrl, ref: project.ref);
-    final report = await deps.analyzer.analyze(project.id, files);
+    final files =
+        await deps.gitFetcher.fetchAll(project.gitUrl, ref: project.ref);
+    final report = await deps.analyzer.analyzeRepository(project.id, files);
 
     final updated = project.copyWith(lastCheckedAt: DateTime.now().toUtc());
     await deps.repository.add(updated);

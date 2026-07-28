@@ -508,6 +508,51 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    // A repository with more than one pubspec can hold the same package at two
+    // versions; looking it up by name alone would show whichever came last.
+    testWidgets('shows the row that was tapped, not one with the same name',
+        (tester) async {
+      const older = DepNode(
+        name: 'analyzer',
+        kind: DepKind.direct,
+        installed: '7.7.1',
+        manifests: ['tools/api_differ'],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: PackageDetailView(
+              package: 'analyzer',
+              selected: older,
+              nodes: const [
+                DepNode(
+                  name: 'analyzer',
+                  kind: DepKind.direct,
+                  installed: '12.1.0',
+                  manifests: ['repository root'],
+                ),
+                older,
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('installed 7.7.1'), findsOneWidget);
+      expect(find.text('From tools/api_differ'), findsOneWidget);
+    });
+
+    testWidgets('says nothing about manifests in a single-package repo',
+        (tester) async {
+      await pump(tester, 'http', [
+        node('http', kind: DepKind.direct),
+      ]);
+
+      expect(find.textContaining('From '), findsNothing);
+    });
+
     testWidgets('explains when nothing pulls the package in', (tester) async {
       await pump(tester, 'orphan', [
         node('root', kind: DepKind.direct),

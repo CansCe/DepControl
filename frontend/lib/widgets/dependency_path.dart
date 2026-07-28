@@ -76,12 +76,26 @@ class PackageDetailView extends StatelessWidget {
   const PackageDetailView({
     required this.package,
     required this.nodes,
+    this.selected,
     this.onLoadDetails,
+    this.showCurrency = true,
     super.key,
   });
 
+  /// Whether to say anything about moving to a newer version.
+  ///
+  /// False for an archived project: the sheet then answers only "why is this
+  /// here", which is what a snapshot can honestly answer.
+  final bool showCurrency;
+
   final String package;
   final List<DepNode> nodes;
+
+  /// The row that was tapped.
+  ///
+  /// A repository with more than one pubspec can hold the same package at two
+  /// versions, so looking it up by name alone would show the wrong one.
+  final DepNode? selected;
 
   /// Fetches what the upgrade actually changes. Optional so the view can be
   /// rendered without a backend.
@@ -91,7 +105,7 @@ class PackageDetailView extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final byName = {for (final node in nodes) node.name: node};
-    final node = byName[package];
+    final node = selected ?? byName[package];
     final paths = dependencyPathsTo(package, nodes);
 
     return Padding(
@@ -122,12 +136,21 @@ class PackageDetailView extends StatelessWidget {
               style: theme.textTheme.bodySmall,
             ),
           ],
+          if (node != null && node.manifests.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              node.manifests.length == 1
+                  ? 'From ${node.manifests.single}'
+                  : 'From ${node.manifests.join(', ')}',
+              style: theme.textTheme.bodySmall,
+            ),
+          ],
           if (node != null && node.advisories.isNotEmpty) ...[
             const SizedBox(height: 12),
             for (final advisory in node.advisories)
               _Advisory(advisory: advisory),
           ],
-          if (node != null) ...[
+          if (node != null && showCurrency) ...[
             const SizedBox(height: 20),
             _Upgrade(assessment: assessUpgrade(node)),
             if (onLoadDetails != null &&

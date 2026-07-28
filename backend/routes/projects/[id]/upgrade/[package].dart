@@ -4,6 +4,7 @@
 
 import 'dart:io';
 
+import 'package:backend/src/archived_project.dart';
 import 'package:backend/src/auth/auth_user.dart';
 import 'package:backend/src/deps.dart';
 import 'package:dart_frog/dart_frog.dart';
@@ -42,6 +43,9 @@ Future<Response> onRequest(
       body: {'error': 'project not found'},
     );
   }
+
+  final refusal = archivedProjectRefusal(project, 'upgrade detail');
+  if (refusal != null) return refusal;
 
   final report = await deps.repository.reportFor(id);
   final node = report?.nodes.where((n) => n.name == package).firstOrNull;

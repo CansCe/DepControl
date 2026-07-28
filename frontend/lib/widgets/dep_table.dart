@@ -11,7 +11,19 @@ const _compactBreakpoint = 600.0;
 /// A project's dependencies, as a sortable table on wide screens and a stacked
 /// list on narrow ones.
 class DepTable extends StatefulWidget {
-  const DepTable({super.key, required this.nodes, this.onSelect});
+  const DepTable({
+    super.key,
+    required this.nodes,
+    this.onSelect,
+    this.showCurrency = true,
+  });
+
+  /// Whether to show how each version compares to the newest published one.
+  ///
+  /// False for an archived project, where the report is a snapshot of what was
+  /// depended on. "Outdated" against today's pub.dev would be a comparison
+  /// nobody asked for and could not act on without restoring the project.
+  final bool showCurrency;
 
   final List<DepNode> nodes;
 
@@ -49,13 +61,19 @@ class _DepTableState extends State<DepTable> {
     });
   }
 
-  static const _columnLabels = [
+  static const _allColumnLabels = [
     'Package',
     'Kind',
     'Installed',
     'Latest',
     'Status',
   ];
+
+  /// The last two columns are the comparison against pub.dev, which an
+  /// archived project does not make.
+  List<String> get _columnLabels => widget.showCurrency
+      ? _allColumnLabels
+      : _allColumnLabels.take(3).toList();
 
   Comparable Function(DepNode) _keyForColumn(int column) => switch (column) {
         1 => (n) => n.kind.name,
@@ -111,7 +129,11 @@ class _DepTableState extends State<DepTable> {
         ),
         const Divider(height: 1),
         for (final node in _rows) ...[
-          _CompactRow(node: node, onTap: widget.onSelect),
+          _CompactRow(
+            node: node,
+            onTap: widget.onSelect,
+            showCurrency: widget.showCurrency,
+          ),
           const Divider(height: 1),
         ],
       ],
@@ -170,8 +192,10 @@ class _DepTableState extends State<DepTable> {
                     Text(n.name),
                     Text(n.kind.name),
                     Text(n.installed),
-                    Text(n.latest ?? '—'),
-                    DepStatusChip(status: n.status),
+                    if (widget.showCurrency) ...[
+                      Text(n.latest ?? '—'),
+                      DepStatusChip(status: n.status),
+                    ],
                   ])
                     DataCell(
                       cell,
@@ -191,13 +215,20 @@ class _DepTableState extends State<DepTable> {
 /// One dependency as a stacked row: name and kind, the version beneath, and the
 /// status on the right.
 class _CompactRow extends StatelessWidget {
-  const _CompactRow({required this.node, this.onTap});
+  const _CompactRow({
+    required this.node,
+    this.onTap,
+    this.showCurrency = true,
+  });
 
   final DepNode node;
   final void Function(DepNode node)? onTap;
+  final bool showCurrency;
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return InkWell(
       onTap: onTap == null ? null : () => onTap!(node),
       child: Padding(
@@ -216,21 +247,24 @@ class _CompactRow extends StatelessWidget {
                     children: [
                       Text(
                         node.name,
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodyMedium
+                        style: theme.textTheme.bodyMedium
                             ?.copyWith(fontWeight: FontWeight.w500),
                       ),
                       DepKindBadge(kind: node.kind),
                     ],
                   ),
                   const SizedBox(height: 3),
-                  _VersionLine(node: node),
+                  if (showCurrency)
+                    _VersionLine(node: node)
+                  else
+                    Text(node.installed, style: theme.textTheme.bodySmall),
                 ],
               ),
             ),
-            const SizedBox(width: 10),
-            DepStatusChip(status: node.status),
+            if (showCurrency) ...[
+              const SizedBox(width: 10),
+              DepStatusChip(status: node.status),
+            ],
           ],
         ),
       ),

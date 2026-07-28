@@ -61,12 +61,19 @@ class PostgresProjectRepository implements ProjectRepository {
     return project;
   }
 
+  static const _columns = 'id, git_url, name, owner_id, ref, added_at, '
+      'last_checked_at, archived_at';
+
   @override
-  Future<List<Project>> allForOwner(String ownerId) async {
+  Future<List<Project>> allForOwner(
+    String ownerId, {
+    bool includeArchived = false,
+  }) async {
     final result = await _pool.execute(
       Sql.named(
-        'select id, git_url, name, owner_id, ref, added_at, last_checked_at '
-        'from projects where owner_id = @ownerId:uuid order by added_at desc',
+        'select $_columns from projects where owner_id = @ownerId:uuid '
+        '${includeArchived ? '' : 'and archived_at is null '}'
+        'order by added_at desc',
       ),
       parameters: {'ownerId': ownerId},
     );
@@ -77,13 +84,50 @@ class PostgresProjectRepository implements ProjectRepository {
   Future<Project?> byId(String id, {required String ownerId}) async {
     final result = await _pool.execute(
       Sql.named(
-        'select id, git_url, name, owner_id, ref, added_at, last_checked_at '
-        'from projects where id = @id:uuid and owner_id = @ownerId:uuid',
+        'select $_columns from projects '
+        'where id = @id:uuid and owner_id = @ownerId:uuid',
       ),
       parameters: {'id': id, 'ownerId': ownerId},
     );
     if (result.isEmpty) return null;
     return _projectFromRow(result.first.toColumnMap());
+  }
+
+  @override
+  Future<Project?> setArchived(
+    String id, {
+    required String ownerId,
+    required bool archived,
+  }) async {
+    // Ownership is in the WHERE clause rather than checked first, so there is
+    // no window between the check and the write.
+    final result = await _pool.execute(
+      Sql.named(
+        'update projects set archived_at = @archivedAt:timestamptz '
+        'where id = @id:uuid and owner_id = @ownerId:uuid '
+        'returning $_columns',
+      ),
+      parameters: {
+        'id': id,
+        'ownerId': ownerId,
+        'archivedAt': archived ? DateTime.now().toUtc() : null,
+      },
+    );
+    if (result.isEmpty) return null;
+    return _projectFromRow(result.first.toColumnMap());
+  }
+
+  @override
+  Future<bool> delete(String id, {required String ownerId}) async {
+    // The report is removed by the foreign key's ON DELETE CASCADE.
+    final result = await _pool.execute(
+      Sql.named(
+        'delete from projects '
+        'where id = @id:uuid and owner_id = @ownerId:uuid returning id',
+      ),
+      parameters: {'id': id, 'ownerId': ownerId},
+    );
+    return result.isNotEmpty;
   }
 
   @override
@@ -137,6 +181,7 @@ class PostgresProjectRepository implements ProjectRepository {
         ref: (row['ref'] as String?) ?? 'HEAD',
         addedAt: row['added_at'] as DateTime?,
         lastCheckedAt: row['last_checked_at'] as DateTime?,
+        archivedAt: row['archived_at'] as DateTime?,
       );
 }
 

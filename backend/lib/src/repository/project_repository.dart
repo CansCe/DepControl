@@ -11,7 +11,14 @@ abstract class ProjectRepository {
   Future<Project> add(Project project);
 
   /// Projects belonging to [ownerId], newest first.
-  Future<List<Project>> allForOwner(String ownerId);
+  ///
+  /// Archived projects are left out unless [includeArchived] — archiving is
+  /// how someone says "not now", and the registry should honour that by
+  /// default rather than making them filter every time.
+  Future<List<Project>> allForOwner(
+    String ownerId, {
+    bool includeArchived = false,
+  });
 
   /// The project with [id], but only if [ownerId] owns it; null otherwise.
   Future<Project?> byId(String id, {required String ownerId});
@@ -21,6 +28,21 @@ abstract class ProjectRepository {
   /// The stored report for [projectId]. Callers must have already established
   /// ownership via [byId].
   Future<DepReport?> reportFor(String projectId);
+
+  /// Archives or restores [id], returning the updated project, or null when
+  /// [ownerId] does not own it.
+  Future<Project?> setArchived(
+    String id, {
+    required String ownerId,
+    required bool archived,
+  });
+
+  /// Deletes [id] and its report, returning whether anything was deleted.
+  ///
+  /// Returns false rather than throwing for a project owned by someone else,
+  /// so a caller cannot tell the two apart — the same reason [byId] returns
+  /// null instead of a 403.
+  Future<bool> delete(String id, {required String ownerId});
 }
 
 class InMemoryProjectRepository implements ProjectRepository {
@@ -34,12 +56,42 @@ class InMemoryProjectRepository implements ProjectRepository {
   }
 
   @override
-  Future<List<Project>> allForOwner(String ownerId) async {
-    final owned =
-        _projects.values.where((p) => p.ownerId == ownerId).toList()
-          ..sort((a, b) => (b.addedAt ?? DateTime(0))
-              .compareTo(a.addedAt ?? DateTime(0)));
+  Future<List<Project>> allForOwner(
+    String ownerId, {
+    bool includeArchived = false,
+  }) async {
+    final owned = _projects.values
+        .where((p) => p.ownerId == ownerId)
+        .where((p) => includeArchived || !p.isArchived)
+        .toList()
+      ..sort((a, b) =>
+          (b.addedAt ?? DateTime(0)).compareTo(a.addedAt ?? DateTime(0)));
     return owned;
+  }
+
+  @override
+  Future<Project?> setArchived(
+    String id, {
+    required String ownerId,
+    required bool archived,
+  }) async {
+    final project = _projects[id];
+    if (project == null || project.ownerId != ownerId) return null;
+
+    final updated = archived
+        ? project.copyWith(archivedAt: DateTime.now().toUtc())
+        : project.copyWith(clearArchivedAt: true);
+    _projects[id] = updated;
+    return updated;
+  }
+
+  @override
+  Future<bool> delete(String id, {required String ownerId}) async {
+    final project = _projects[id];
+    if (project == null || project.ownerId != ownerId) return false;
+    _projects.remove(id);
+    _reports.remove(id);
+    return true;
   }
 
   @override

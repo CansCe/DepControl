@@ -34,7 +34,25 @@ class DepNode {
     this.source = DepSource.unresolved,
     this.advisories = const [],
     this.dependencies = const [],
+    this.manifests = const [],
   });
+
+  /// Identity within a report: two versions of one package are two entries.
+  String get key => '$name@$installed';
+
+  /// A copy carrying [manifests].
+  DepNode inManifests(List<String> manifests) => DepNode(
+        name: name,
+        kind: kind,
+        installed: installed,
+        constraint: constraint,
+        latest: latest,
+        status: status,
+        source: source,
+        advisories: advisories,
+        dependencies: dependencies,
+        manifests: manifests,
+      );
 
   final String name;
   final DepKind kind;
@@ -60,6 +78,15 @@ class DepNode {
   /// Direct children (names) in the dependency graph.
   final List<String> dependencies;
 
+  /// Which of the repository's pubspecs resolve this package at this version.
+  /// Empty for a single-package repository, where there is nothing to
+  /// disambiguate.
+  ///
+  /// A repository can resolve the same package at two versions — a directory
+  /// kept out of the pub workspace resolves separately — and those are two
+  /// different things to assess, since an advisory applies to a version.
+  final List<String> manifests;
+
   factory DepNode.fromJson(Map<String, dynamic> json) {
     return DepNode(
       name: json['name'] as String,
@@ -76,6 +103,7 @@ class DepNode {
       advisories: _advisoriesFrom(json['advisories']),
       dependencies:
           (json['dependencies'] as List?)?.cast<String>() ?? const [],
+      manifests: (json['manifests'] as List?)?.cast<String>() ?? const [],
     );
   }
 
@@ -106,5 +134,6 @@ class DepNode {
         'source': source.name,
         'advisories': advisories.map((a) => a.toJson()).toList(),
         'dependencies': dependencies,
+        if (manifests.isNotEmpty) 'manifests': manifests,
       };
 }

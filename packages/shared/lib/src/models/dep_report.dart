@@ -7,10 +7,23 @@ class DepReport {
     required this.projectId,
     required this.generatedAt,
     required this.nodes,
+    this.manifests = const [],
+    this.coverageNote,
   });
 
   final String projectId;
   final DateTime generatedAt;
+
+  /// The repository's pubspec directories that this report covers, root first
+  /// (the root is the empty string). Empty for a single-package repository.
+  final List<String> manifests;
+
+  /// Set when the report knowingly covers less than the whole repository —
+  /// discovery was unavailable, or there were more pubspecs than it will read.
+  ///
+  /// Surfaced rather than swallowed: a dependency count that quietly omits half
+  /// a monorepo is worse than one that says what it missed.
+  final String? coverageNote;
 
   /// Flat list of every resolved dependency. Graph edges live on each node's
   /// [DepNode.dependencies].
@@ -74,6 +87,8 @@ class DepReport {
       nodes: (json['nodes'] as List)
           .map((e) => DepNode.fromJson(e as Map<String, dynamic>))
           .toList(),
+      manifests: (json['manifests'] as List?)?.cast<String>() ?? const [],
+      coverageNote: json['coverageNote'] as String?,
     );
   }
 
@@ -81,5 +96,7 @@ class DepReport {
         'projectId': projectId,
         'generatedAt': generatedAt.toIso8601String(),
         'nodes': nodes.map((n) => n.toJson()).toList(),
+        if (manifests.isNotEmpty) 'manifests': manifests,
+        if (coverageNote != null) 'coverageNote': coverageNote,
       };
 }

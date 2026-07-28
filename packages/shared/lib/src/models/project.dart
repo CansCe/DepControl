@@ -8,6 +8,7 @@ class Project {
     this.ref = 'HEAD',
     this.addedAt,
     this.lastCheckedAt,
+    this.archivedAt,
   });
 
   /// Server-assigned identifier.
@@ -33,10 +34,21 @@ class Project {
   /// Last time pub.dev latest-versions were re-checked (Phase 3 drift).
   final DateTime? lastCheckedAt;
 
+  /// When this project was archived, or null while it is active.
+  ///
+  /// Archiving keeps the project and its report and takes it out of the way;
+  /// it is the reversible half of "stop showing me this". Deleting is the other
+  /// half and keeps nothing.
+  final DateTime? archivedAt;
+
+  bool get isArchived => archivedAt != null;
+
   Project copyWith({
     String? name,
     String? ref,
     DateTime? lastCheckedAt,
+    DateTime? archivedAt,
+    bool clearArchivedAt = false,
   }) {
     return Project(
       id: id,
@@ -46,6 +58,7 @@ class Project {
       ref: ref ?? this.ref,
       addedAt: addedAt,
       lastCheckedAt: lastCheckedAt ?? this.lastCheckedAt,
+      archivedAt: clearArchivedAt ? null : (archivedAt ?? this.archivedAt),
     );
   }
 
@@ -58,6 +71,7 @@ class Project {
       ref: (json['ref'] as String?) ?? 'HEAD',
       addedAt: _parseDate(json['addedAt']),
       lastCheckedAt: _parseDate(json['lastCheckedAt']),
+      archivedAt: _parseDate(json['archivedAt']),
     );
   }
 
@@ -69,6 +83,7 @@ class Project {
         'ref': ref,
         'addedAt': addedAt?.toIso8601String(),
         'lastCheckedAt': lastCheckedAt?.toIso8601String(),
+        'archivedAt': archivedAt?.toIso8601String(),
       };
 }
 

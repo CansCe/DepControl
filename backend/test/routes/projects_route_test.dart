@@ -35,9 +35,11 @@ void main() {
     required HttpMethod method,
     required AuthUser user,
     Object? body,
+    String path = '/projects',
   }) {
     final request = _MockRequest();
     when(() => request.method).thenReturn(method);
+    when(() => request.uri).thenReturn(Uri.parse('http://localhost$path'));
     when(request.json).thenAnswer((_) async => body);
 
     final context = _MockRequestContext();
@@ -199,9 +201,9 @@ void main() {
       expect(response.statusCode, HttpStatus.methodNotAllowed);
     });
 
-    test('DELETE /projects/<id> is 405', () async {
+    test('PUT /projects/<id> is 405', () async {
       final response = await project_detail_route.onRequest(
-        contextFor(method: HttpMethod.delete, user: alice),
+        contextFor(method: HttpMethod.put, user: alice),
         'p1',
       );
       expect(response.statusCode, HttpStatus.methodNotAllowed);
@@ -299,6 +301,177 @@ void main() {
 
       expect(response.statusCode, HttpStatus.badRequest);
       expect((await jsonOf(response))['error'], 'repository not found');
+    });
+  });
+
+  group('archiving', () {
+    setUp(() async {
+      await repository.add(projectFor(alice, id: 'p-alice'));
+    });
+
+    test('takes the project out of the default listing', () async {
+      await project_detail_route.onRequest(
+        contextFor(
+          method: HttpMethod.patch,
+          user: alice,
+          body: {'archived': true},
+        ),
+        'p-alice',
+      );
+
+      final listed = await projects_route.onRequest(
+        contextFor(method: HttpMethod.get, user: alice),
+      );
+      expect((await jsonOf(listed))['projects'], isEmpty);
+    });
+
+    test('shows it under ?archived=true', () async {
+      await repository.setArchived(
+        'p-alice',
+        ownerId: alice.id,
+        archived: true,
+      );
+
+      final listed = await projects_route.onRequest(
+        contextFor(
+          method: HttpMethod.get,
+          user: alice,
+          path: '/projects?archived=true',
+        ),
+      );
+
+      final projects = (await jsonOf(listed))['projects'] as List;
+      expect(projects, hasLength(1));
+      expect((projects.single as Map)['archivedAt'], isNotNull);
+    });
+
+    test('restoring puts it back', () async {
+      await repository.setArchived(
+        'p-alice',
+        ownerId: alice.id,
+        archived: true,
+      );
+
+      final response = await project_detail_route.onRequest(
+        contextFor(
+          method: HttpMethod.patch,
+          user: alice,
+          body: {'archived': false},
+        ),
+        'p-alice',
+      );
+
+      expect(response.statusCode, HttpStatus.ok);
+      final project = (await jsonOf(response))['project'] as Map;
+      expect(project['archivedAt'], isNull);
+
+      final listed = await projects_route.onRequest(
+        contextFor(method: HttpMethod.get, user: alice),
+      );
+      expect((await jsonOf(listed))['projects'], hasLength(1));
+    });
+
+    test('keeps the report', () async {
+      await repository.saveReport(
+        DepReport(
+          projectId: 'p-alice',
+          generatedAt: DateTime.utc(2026, 1, 2),
+          nodes: const [
+            DepNode(name: 'http', kind: DepKind.direct, installed: '1.2.0'),
+          ],
+        ),
+      );
+
+      await project_detail_route.onRequest(
+        contextFor(
+          method: HttpMethod.patch,
+          user: alice,
+          body: {'archived': true},
+        ),
+        'p-alice',
+      );
+
+      expect(await repository.reportFor('p-alice'), isNotNull);
+    });
+
+    test('404s for a project owned by another user', () async {
+      final response = await project_detail_route.onRequest(
+        contextFor(
+          method: HttpMethod.patch,
+          user: bob,
+          body: {'archived': true},
+        ),
+        'p-alice',
+      );
+
+      expect(response.statusCode, HttpStatus.notFound);
+      // And Alice's project is untouched.
+      expect(
+        (await repository.byId('p-alice', ownerId: alice.id))!.isArchived,
+        isFalse,
+      );
+    });
+
+    test('rejects a body without an archived flag', () async {
+      final response = await project_detail_route.onRequest(
+        contextFor(
+          method: HttpMethod.patch,
+          user: alice,
+          body: <String, dynamic>{},
+        ),
+        'p-alice',
+      );
+
+      expect(response.statusCode, HttpStatus.badRequest);
+    });
+  });
+
+  group('deleting', () {
+    setUp(() async {
+      await repository.add(projectFor(alice, id: 'p-alice'));
+      await repository.saveReport(
+        DepReport(
+          projectId: 'p-alice',
+          generatedAt: DateTime.utc(2026, 1, 2),
+          nodes: const [
+            DepNode(name: 'http', kind: DepKind.direct, installed: '1.2.0'),
+          ],
+        ),
+      );
+    });
+
+    test('removes the project and its report', () async {
+      final response = await project_detail_route.onRequest(
+        contextFor(method: HttpMethod.delete, user: alice),
+        'p-alice',
+      );
+
+      expect(response.statusCode, HttpStatus.noContent);
+      expect(await repository.byId('p-alice', ownerId: alice.id), isNull);
+      expect(await repository.reportFor('p-alice'), isNull);
+    });
+
+    // The one that matters: a destructive verb must not act across owners, and
+    // must not reveal that the id exists either.
+    test('404s for a project owned by another user, and deletes nothing',
+        () async {
+      final response = await project_detail_route.onRequest(
+        contextFor(method: HttpMethod.delete, user: bob),
+        'p-alice',
+      );
+
+      expect(response.statusCode, HttpStatus.notFound);
+      expect(await repository.byId('p-alice', ownerId: alice.id), isNotNull);
+      expect(await repository.reportFor('p-alice'), isNotNull);
+    });
+
+    test('404s for an id that does not exist', () async {
+      final response = await project_detail_route.onRequest(
+        contextFor(method: HttpMethod.delete, user: alice),
+        'does-not-exist',
+      );
+
+      expect(response.statusCode, HttpStatus.notFound);
     });
   });
 

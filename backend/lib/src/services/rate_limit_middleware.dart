@@ -66,6 +66,18 @@ Middleware rateLimitOutboundWork({Logger? logger}) {
 /// failure mode of guessing wrong in that direction is a needless 429; the
 /// other way round it is an unmetered hole.
 bool _doesOutboundWork(Request request) {
+  final segments = request.uri.pathSegments;
+
+  // Archiving and deleting are single statements against the database. Charging
+  // them from the same budget would mean someone tidying their registry runs
+  // out of allowance for the work that actually costs something.
+  final isProjectItself = segments.length == 2;
+  if (isProjectItself &&
+      (request.method == HttpMethod.delete ||
+          request.method == HttpMethod.patch)) {
+    return false;
+  }
+
   if (request.method != HttpMethod.get) return true;
-  return request.uri.pathSegments.length > 2;
+  return segments.length > 2;
 }

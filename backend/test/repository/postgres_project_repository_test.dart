@@ -106,6 +106,71 @@ void main() {
         expect(theirs.map((p) => p.id), isNot(contains(id)));
       });
 
+      test('archiving hides it from the default listing and is reversible',
+          () async {
+        await repo.add(fixture());
+
+        final archived = await repo.setArchived(
+          id,
+          ownerId: owner,
+          archived: true,
+        );
+        expect(archived!.isArchived, isTrue);
+        expect(await repo.allForOwner(owner), isEmpty);
+        expect(
+          (await repo.allForOwner(owner, includeArchived: true))
+              .map((p) => p.id),
+          contains(id),
+        );
+
+        final restored = await repo.setArchived(
+          id,
+          ownerId: owner,
+          archived: false,
+        );
+        expect(restored!.isArchived, isFalse);
+        expect(await repo.allForOwner(owner), hasLength(1));
+      });
+
+      test('does not archive a project owned by someone else', () async {
+        await repo.add(fixture());
+
+        expect(
+          await repo.setArchived(id, ownerId: otherOwner, archived: true),
+          isNull,
+        );
+        expect(
+          (await repo.byId(id, ownerId: owner))!.isArchived,
+          isFalse,
+        );
+      });
+
+      // The report is removed by the foreign key's cascade rather than by a
+      // second statement, so it is worth proving against a real database.
+      test('deleting takes the report with it', () async {
+        await repo.add(fixture());
+        await repo.saveReport(
+          DepReport(
+            projectId: id,
+            generatedAt: DateTime.utc(2026, 1, 2),
+            nodes: const [
+              DepNode(name: 'http', kind: DepKind.direct, installed: '1.2.0'),
+            ],
+          ),
+        );
+
+        expect(await repo.delete(id, ownerId: owner), isTrue);
+        expect(await repo.byId(id, ownerId: owner), isNull);
+        expect(await repo.reportFor(id), isNull);
+      });
+
+      test('does not delete a project owned by someone else', () async {
+        await repo.add(fixture());
+
+        expect(await repo.delete(id, ownerId: otherOwner), isFalse);
+        expect(await repo.byId(id, ownerId: owner), isNotNull);
+      });
+
       test('rejects a project with no owner', () async {
         final orphan = Project(
           id: '55555555-5555-5555-5555-555555555555',

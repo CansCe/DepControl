@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:backend/src/archived_project.dart';
 import 'package:backend/src/auth/auth_user.dart';
 import 'package:backend/src/deps.dart';
 import 'package:dart_frog/dart_frog.dart';
@@ -30,6 +31,9 @@ Future<Response> onRequest(RequestContext context, String id) async {
       body: {'error': 'project not found'},
     );
   }
+
+  final refusal = archivedProjectRefusal(project, 'planning remediations');
+  if (refusal != null) return refusal;
 
   final report = await deps.repository.reportFor(id);
   if (report == null) {
