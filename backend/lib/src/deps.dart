@@ -1,30 +1,37 @@
 import 'dart:io';
 
 import 'auth/jwt_verifier.dart';
+import 'repository/api_diff_store.dart';
+import 'repository/postgres_api_diff_store.dart';
+import 'repository/postgres_pool.dart';
 import 'repository/postgres_project_repository.dart';
 import 'repository/project_repository.dart';
 import 'services/git_fetcher.dart';
 import 'services/logger.dart';
 import 'services/pub_api_client.dart';
 import 'services/pubspec_analyzer.dart';
+import 'services/rate_limiter.dart';
 import 'services/resolver.dart';
 import 'services/upgrade_inspector.dart';
 
 /// Tiny process-wide service locator, provided into Dart Frog request context
-/// by `routes/_middleware.dart`. Swap the repository here for Postgres in
-/// Phase 3.
+/// by `routes/_middleware.dart`. Everything the environment decides — which
+/// persistence backend, which JWT verifier — is decided once, here.
 class Deps {
   /// Builds the production graph from the environment.
   factory Deps() {
     final pubApi = PubApiClient();
+    final stores = _buildStores();
     return Deps._(
-      repository: _buildRepository(),
+      repository: stores.repository,
+      apiDiffs: stores.apiDiffs,
       gitFetcher: GitFetcher(),
       pubApi: pubApi,
       analyzer: PubspecAnalyzer(pubApi),
       resolver: Resolver(pubApi),
       inspector: UpgradeInspector(pubApi),
       authVerifier: _buildVerifier(),
+      limiter: _buildLimiter(),
     );
   }
 
@@ -36,40 +43,55 @@ class Deps {
     required ProjectRepository repository,
     required GitFetcher gitFetcher,
     required PubspecAnalyzer analyzer,
+    ApiDiffStore? apiDiffs,
     PubApiClient? pubApi,
     Resolver? resolver,
     UpgradeInspector? inspector,
     JwtVerifier authVerifier = const UnconfiguredVerifier(),
+    RateLimiter? limiter,
   }) {
     final api = pubApi ?? PubApiClient();
     return Deps._(
       repository: repository,
+      apiDiffs: apiDiffs ?? InMemoryApiDiffStore(),
       gitFetcher: gitFetcher,
       pubApi: api,
       analyzer: analyzer,
       resolver: resolver ?? Resolver(api),
       inspector: inspector ?? UpgradeInspector(api),
       authVerifier: authVerifier,
+      limiter: limiter,
     );
   }
 
   Deps._({
     required this.repository,
+    required this.apiDiffs,
     required this.gitFetcher,
     required this.pubApi,
     required this.analyzer,
     required this.resolver,
     required this.inspector,
     required this.authVerifier,
+    required this.limiter,
   });
 
   final ProjectRepository repository;
+
+  /// Public-API comparisons computed out of process by `tools/api_differ`. The
+  /// server only ever reads from here, and records what it could not find.
+  final ApiDiffStore apiDiffs;
+
   final GitFetcher gitFetcher;
   final PubApiClient pubApi;
   final Resolver resolver;
   final UpgradeInspector inspector;
   final JwtVerifier authVerifier;
   final PubspecAnalyzer analyzer;
+
+  /// Per-user limit on the endpoints that fetch repositories and query pub.dev.
+  /// Null when limiting is switched off, which tests and local dev do.
+  final RateLimiter? limiter;
 
   /// Builds the JWT verifier from the environment, preferring modern Supabase
   /// **signing keys** (asymmetric, verified against the project JWKS) over the
@@ -110,14 +132,21 @@ class Deps {
   /// `DATABASE_URL` is set (Phase 3), otherwise the in-memory scaffold. The
   /// in-memory fallback keeps local dev working before a database is wired up,
   /// but its state is lost on every restart — a warning makes that explicit.
-  static ProjectRepository _buildRepository() {
+  ///
+  /// Both stores come from one connection pool, so the process holds a single
+  /// connection budget however many stores are added later.
+  static ({ProjectRepository repository, ApiDiffStore apiDiffs})
+      _buildStores() {
     final db = log.tagged('db');
     final url = Platform.environment['DATABASE_URL'];
     if (url != null && url.isNotEmpty) {
       try {
-        final repo = PostgresProjectRepository.fromUrl(url);
+        final pool = postgresPoolFromUrl(url);
         db.info('Using Postgres repository (DATABASE_URL).');
-        return repo;
+        return (
+          repository: PostgresProjectRepository(pool),
+          apiDiffs: PostgresApiDiffStore(pool),
+        );
       } catch (e) {
         // A malformed DATABASE_URL used to blow up lazily on the first request,
         // taking down every route with an opaque stack trace. In development,
@@ -129,15 +158,42 @@ class Deps {
           'Falling back to the in-memory repository so the dev server can '
           'still start. Fix DATABASE_URL in backend/.env to persist data.',
         );
-        return InMemoryProjectRepository();
+        return _inMemoryStores();
       }
     }
-    log.tagged('db').warn(
-          'DATABASE_URL not set — using in-memory repository. State is lost '
-          'on restart; set DATABASE_URL to persist to Supabase Postgres.',
-        );
-    return InMemoryProjectRepository();
+    db.warn(
+      'DATABASE_URL not set — using in-memory repository. State is lost '
+      'on restart; set DATABASE_URL to persist to Supabase Postgres.',
+    );
+    return _inMemoryStores();
   }
+
+  /// Builds the per-user rate limiter, reporting what it settled on: a limit
+  /// nobody knows about is a limit that gets blamed on the network.
+  static RateLimiter? _buildLimiter() {
+    final rate = log.tagged('rate');
+    final limiter = RateLimiter.fromEnvironment(Platform.environment);
+
+    if (limiter == null) {
+      rate.warn(
+        'Rate limiting is off (RATE_LIMIT_PER_MINUTE=0). One signed-in user '
+        'can drive unbounded outbound traffic from this server.',
+      );
+      return null;
+    }
+
+    rate.info(
+      'Limiting repository/pub.dev work to a burst of ${limiter.burst} per '
+      'user, refilling one every ${limiter.refill.inMilliseconds}ms.',
+    );
+    return limiter;
+  }
+
+  static ({ProjectRepository repository, ApiDiffStore apiDiffs})
+      _inMemoryStores() => (
+            repository: InMemoryProjectRepository(),
+            apiDiffs: InMemoryApiDiffStore(),
+          );
 
   static String? _jwksFromSupabaseUrl(String? base) {
     if (base == null || base.isEmpty) return null;

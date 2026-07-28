@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:postgres/postgres.dart';
 import 'package:shared/shared.dart';
 
+import 'postgres_pool.dart';
 import 'project_repository.dart';
 
 /// Postgres-backed [ProjectRepository] (Phase 3). Persists tracked projects and
@@ -15,69 +16,14 @@ import 'project_repository.dart';
 class PostgresProjectRepository implements ProjectRepository {
   PostgresProjectRepository(this._pool);
 
-  /// Builds a repository from a `postgres://user:pass@host:port/db` URL, as
-  /// provided by Supabase (Project Settings → Database → Connection string).
+  /// Builds a repository owning a pool of its own, from a
+  /// `postgres://user:pass@host:port/db` URL.
   ///
-  /// TLS is required by Supabase, so `sslmode` defaults to `require`; pass
-  /// `?sslmode=disable` in the URL for a plaintext local Postgres.
-  factory PostgresProjectRepository.fromUrl(String url) {
-    // The .env.example ships a `[YOUR-DB-PASSWORD]` placeholder. Catch it
-    // explicitly: `Uri.parse` would otherwise fail deep in the stack with an
-    // opaque "Invalid character" FormatException.
-    if (url.contains('[') || url.contains(']')) {
-      throw ArgumentError(
-        'DATABASE_URL still contains a placeholder (e.g. [YOUR-DB-PASSWORD]). '
-        'Replace it with the real password from the Supabase dashboard: '
-        'Project Settings -> Database -> Connection string. '
-        'If the password itself contains special characters (@ : / ? # []), '
-        'URL-encode it.',
-      );
-    }
-
-    final Uri uri;
-    try {
-      uri = Uri.parse(url);
-    } on FormatException catch (e) {
-      throw ArgumentError(
-        'DATABASE_URL is not a valid URL (${e.message}). If your password '
-        'contains special characters (@ : / ? # []), URL-encode it.',
-      );
-    }
-
-    if (uri.scheme != 'postgres' && uri.scheme != 'postgresql') {
-      throw ArgumentError(
-        'DATABASE_URL must be a postgres:// URL (got scheme "${uri.scheme}")',
-      );
-    }
-
-    final userInfo = uri.userInfo.split(':');
-    final endpoint = Endpoint(
-      host: uri.host,
-      port: uri.hasPort ? uri.port : 5432,
-      database: uri.pathSegments.isNotEmpty && uri.pathSegments.first.isNotEmpty
-          ? uri.pathSegments.first
-          : 'postgres',
-      username: userInfo.isNotEmpty && userInfo.first.isNotEmpty
-          ? Uri.decodeComponent(userInfo.first)
-          : null,
-      password: userInfo.length > 1
-          ? Uri.decodeComponent(userInfo.sublist(1).join(':'))
-          : null,
-    );
-
-    final sslMode = switch (uri.queryParameters['sslmode']) {
-      'disable' => SslMode.disable,
-      'verify-full' || 'verify-ca' => SslMode.verifyFull,
-      _ => SslMode.require,
-    };
-
-    return PostgresProjectRepository(
-      Pool.withEndpoints(
-        [endpoint],
-        settings: PoolSettings(sslMode: sslMode, maxConnectionCount: 5),
-      ),
-    );
-  }
+  /// The server shares one pool across its stores instead — see `Deps` — so
+  /// this is for callers that only need the repository, such as a CLI or an
+  /// integration test.
+  factory PostgresProjectRepository.fromUrl(String url) =>
+      PostgresProjectRepository(postgresPoolFromUrl(url));
 
   final Pool _pool;
 

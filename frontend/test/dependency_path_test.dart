@@ -9,7 +9,7 @@ DepNode node(
   List<String> deps = const [],
   String installed = '1.0.0',
   DepStatus status = DepStatus.upToDate,
-  List<String> advisories = const [],
+  List<DepAdvisory> advisories = const [],
   String? latest,
   String? constraint,
 }) =>
@@ -165,12 +165,64 @@ void main() {
           'http',
           kind: DepKind.direct,
           status: DepStatus.vulnerable,
-          advisories: ['GHSA-1234'],
+          advisories: const [
+            DepAdvisory(
+              id: 'GHSA-1234',
+              aliases: ['CVE-2026-0001'],
+              summary: 'Header injection through unvalidated input.',
+              fixedIn: '1.4.2',
+            ),
+          ],
         ),
       ]);
 
-      expect(find.textContaining('GHSA-1234'), findsOneWidget);
+      // Once in the heading, once in the link to read it.
+      expect(find.textContaining('GHSA-1234'), findsNWidgets(2));
       expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('leads an advisory with the version that fixes it',
+        (tester) async {
+      await pump(tester, 'http', [
+        node(
+          'http',
+          kind: DepKind.direct,
+          installed: '1.2.0',
+          status: DepStatus.vulnerable,
+          advisories: const [
+            DepAdvisory(
+              id: 'GHSA-1234',
+              aliases: ['CVE-2026-0001'],
+              summary: 'Header injection through unvalidated input.',
+              fixedIn: '1.4.2',
+            ),
+          ],
+        ),
+      ]);
+
+      expect(find.text('GHSA-1234  ·  CVE-2026-0001'), findsOneWidget);
+      expect(find.textContaining('Header injection'), findsOneWidget);
+      expect(find.text('Fixed in 1.4.2.'), findsOneWidget);
+      expect(
+        find.textContaining('osv.dev/vulnerability/GHSA-1234'),
+        findsOneWidget,
+      );
+    });
+
+    // "No fix listed" must not read as "upgrading clears it".
+    testWidgets('says when an advisory names no fixed version', (tester) async {
+      await pump(tester, 'http', [
+        node(
+          'http',
+          kind: DepKind.direct,
+          installed: '1.2.0',
+          status: DepStatus.vulnerable,
+          advisories: const [DepAdvisory(id: 'GHSA-unfixed')],
+        ),
+      ]);
+
+      expect(find.textContaining('names no fixed version'), findsOneWidget);
+      expect(find.textContaining('Fixed in'), findsNothing);
     });
 
     testWidgets('warns when the upgrade is breaking', (tester) async {
@@ -241,28 +293,30 @@ void main() {
                   constraint: '^1.0.0',
                 ),
               ],
-              onLoadImpact: () async => const UpgradeImpact(
-                package: 'http',
-                from: '1.0.0',
-                to: '3.0.0',
-                majorVersionsCrossed: ['2.0.0', '3.0.0'],
-                releasesBetween: 7,
-                sdkAfter: '^3.8.0',
-                projectSdk: '^3.6.0',
-                sdkTooNew: true,
-                dependencyChanges: [
-                  DependencyDelta(
-                    package: 'meta',
-                    kind: DependencyDeltaKind.changed,
-                    before: '^1.0.0',
-                    after: '^2.0.0',
-                  ),
-                  DependencyDelta(
-                    package: 'path',
-                    kind: DependencyDeltaKind.added,
-                    after: '^1.9.0',
-                  ),
-                ],
+              onLoadDetails: () async => const UpgradeDetails(
+                impact: UpgradeImpact(
+                  package: 'http',
+                  from: '1.0.0',
+                  to: '3.0.0',
+                  majorVersionsCrossed: ['2.0.0', '3.0.0'],
+                  releasesBetween: 7,
+                  sdkAfter: '^3.8.0',
+                  projectSdk: '^3.6.0',
+                  sdkTooNew: true,
+                  dependencyChanges: [
+                    DependencyDelta(
+                      package: 'meta',
+                      kind: DependencyDeltaKind.changed,
+                      before: '^1.0.0',
+                      after: '^2.0.0',
+                    ),
+                    DependencyDelta(
+                      package: 'path',
+                      kind: DependencyDeltaKind.added,
+                      after: '^1.9.0',
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -276,6 +330,153 @@ void main() {
       expect(find.textContaining('meta: ^1.0.0 → ^2.0.0'), findsOneWidget);
       expect(find.textContaining('Starts requiring path'), findsOneWidget);
       expect(tester.takeException(), isNull);
+    });
+
+    /// Pumps the sheet for a breaking upgrade of `http`, with [apiDiff] as the
+    /// stored public-API comparison.
+    Future<void> pumpWithDiff(WidgetTester tester, ApiDiff? apiDiff) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: PackageDetailView(
+                package: 'http',
+                nodes: [
+                  node(
+                    'http',
+                    kind: DepKind.direct,
+                    installed: '1.0.0',
+                    latest: '2.0.0',
+                    constraint: '^1.0.0',
+                  ),
+                ],
+                onLoadDetails: () async => UpgradeDetails(
+                  impact: const UpgradeImpact(
+                    package: 'http',
+                    from: '1.0.0',
+                    to: '2.0.0',
+                    majorVersionsCrossed: ['2.0.0'],
+                    releasesBetween: 3,
+                  ),
+                  apiDiff: apiDiff,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('names the declarations an upgrade removes', (tester) async {
+      await pumpWithDiff(
+        tester,
+        const ApiDiff(
+          package: 'http',
+          from: '1.0.0',
+          to: '2.0.0',
+          changes: [
+            ApiChange(
+              kind: ApiChangeKind.removed,
+              declaration: 'Client.send',
+              before: 'Future<Response> (Request request)',
+            ),
+            ApiChange(
+              kind: ApiChangeKind.changed,
+              declaration: 'Response.url',
+              before: 'String',
+              after: 'Uri',
+            ),
+          ],
+        ),
+      );
+
+      expect(find.textContaining('1 declaration removed'), findsOneWidget);
+      expect(find.textContaining('1 changed signature'), findsOneWidget);
+      expect(find.text('Client.send'), findsOneWidget);
+      expect(find.text('Response.url'), findsOneWidget);
+      expect(find.text('String'), findsOneWidget);
+      expect(find.text('→ Uri'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('does not claim to know whether this project breaks',
+        (tester) async {
+      await pumpWithDiff(
+        tester,
+        const ApiDiff(
+          package: 'http',
+          from: '1.0.0',
+          to: '2.0.0',
+          changes: [
+            ApiChange(
+              kind: ApiChangeKind.removed,
+              declaration: 'Client.send',
+              before: 'Future<Response> (Request request)',
+            ),
+          ],
+        ),
+      );
+
+      expect(find.textContaining('is not checked'), findsOneWidget);
+    });
+
+    testWidgets('caps a long list and counts the rest', (tester) async {
+      await pumpWithDiff(
+        tester,
+        ApiDiff(
+          package: 'http',
+          from: '1.0.0',
+          to: '2.0.0',
+          changes: [
+            for (var i = 0; i < 11; i++)
+              ApiChange(
+                kind: ApiChangeKind.removed,
+                declaration: 'Client.gone$i',
+                before: 'void ()',
+              ),
+          ],
+        ),
+      );
+
+      expect(find.text('Client.gone0'), findsOneWidget);
+      expect(find.text('Client.gone7'), findsOneWidget);
+      expect(find.text('Client.gone8'), findsNothing);
+      expect(find.textContaining('and 3 more'), findsOneWidget);
+    });
+
+    testWidgets('says so when the public API is unchanged', (tester) async {
+      await pumpWithDiff(
+        tester,
+        const ApiDiff(
+          package: 'http',
+          from: '1.0.0',
+          to: '2.0.0',
+          changes: [
+            ApiChange(
+              kind: ApiChangeKind.added,
+              declaration: 'Client.head',
+              after: 'Future<Response> (Uri url)',
+            ),
+          ],
+        ),
+      );
+
+      expect(
+        find.textContaining('Nothing was removed or changed'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('1 addition only'), findsOneWidget);
+    });
+
+    // "Not computed" and "nothing changed" are different answers, and reading
+    // the first as the second is exactly the mistake that would matter.
+    testWidgets('distinguishes an uncomputed diff from an empty one',
+        (tester) async {
+      await pumpWithDiff(tester, null);
+
+      expect(find.textContaining('have not been compared yet'), findsOneWidget);
+      expect(find.textContaining('Nothing changed'), findsNothing);
     });
 
     testWidgets('stays quiet when the impact cannot be loaded',
@@ -294,7 +495,7 @@ void main() {
                   constraint: '^1.0.0',
                 ),
               ],
-              onLoadImpact: () async => throw Exception('offline'),
+              onLoadDetails: () async => throw Exception('offline'),
             ),
           ),
         ),

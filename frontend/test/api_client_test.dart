@@ -62,7 +62,8 @@ void main() {
       await c.api.addProject('https://example.com/a.git');
 
       expect(c.sent.single.headers['Authorization'], 'Bearer test-token');
-      expect(c.sent.single.headers['Content-Type'], contains('application/json'));
+      expect(
+          c.sent.single.headers['Content-Type'], contains('application/json'));
     });
 
     test('omits the header entirely when there is no session', () async {
@@ -191,6 +192,75 @@ void main() {
       );
 
       expect(await c.api.report('p1'), isNull);
+    });
+
+    test('reads both halves of an upgrade answer', () async {
+      final c = clientFor(
+        (_) => ok({
+          'impact': {
+            'package': 'yaml',
+            'from': '3.1.2',
+            'to': '3.1.3',
+            'releasesBetween': 1,
+          },
+          'apiDiff': {
+            'package': 'yaml',
+            'from': '3.1.2',
+            'to': '3.1.3',
+            'changes': [
+              {
+                'kind': 'removed',
+                'declaration': 'class Pair',
+                'before': 'Pair',
+                'after': null,
+              },
+            ],
+          },
+        }),
+      );
+
+      final details = await c.api.upgradeDetails('p1', 'yaml');
+
+      expect(details.impact!.to, '3.1.3');
+      expect(details.apiDiff!.removed.single.declaration, 'class Pair');
+    });
+
+    // The endpoint answers with both keys null when there is nothing to
+    // compare, which must not read as a failure.
+    test('an upgrade answer with nothing to report carries the reason',
+        () async {
+      final c = clientFor(
+        (_) => ok({
+          'impact': null,
+          'apiDiff': null,
+          'reason': 'already the newest published',
+        }),
+      );
+
+      final details = await c.api.upgradeDetails('p1', 'yaml');
+
+      expect(details.impact, isNull);
+      expect(details.apiDiff, isNull);
+      expect(details.reason, 'already the newest published');
+    });
+
+    // A diff missing from an otherwise fine answer means "not computed yet".
+    test('a missing diff does not disturb the impact', () async {
+      final c = clientFor(
+        (_) => ok({
+          'impact': {
+            'package': 'yaml',
+            'from': '3.1.2',
+            'to': '3.1.3',
+          },
+          'apiDiff': null,
+        }),
+      );
+
+      final details = await c.api.upgradeDetails('p1', 'yaml');
+
+      expect(details.impact, isNotNull);
+      expect(details.apiDiff, isNull);
     });
   });
 }

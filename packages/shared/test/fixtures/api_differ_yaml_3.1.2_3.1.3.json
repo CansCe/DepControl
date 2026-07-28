@@ -1,0 +1,79 @@
+{
+  "package": "yaml",
+  "from": "3.1.2",
+  "to": "3.1.3",
+  "changes": [
+    {
+      "kind": "removed",
+      "declaration": "Pair.first",
+      "before": "E",
+      "after": null
+    },
+    {
+      "kind": "removed",
+      "declaration": "Pair.last",
+      "before": "F",
+      "after": null
+    },
+    {
+      "kind": "removed",
+      "declaration": "Pair.new",
+      "before": "(this.first, this.last)",
+      "after": null
+    },
+    {
+      "kind": "removed",
+      "declaration": "Pair.toString",
+      "before": "String ()",
+      "after": null
+    },
+    {
+      "kind": "removed",
+      "declaration": "class Pair",
+      "before": "Pair",
+      "after": null
+    },
+    {
+      "kind": "changed",
+      "declaration": "YamlList.new",
+      "before": "({sourceUrl})",
+      "after": "({Object? sourceUrl})"
+    },
+    {
+      "kind": "changed",
+      "declaration": "YamlList.wrap",
+      "before": "(List dartList, {sourceUrl, CollectionStyle style = CollectionStyle.ANY})",
+      "after": "(List dartList, {Object? sourceUrl, CollectionStyle style = CollectionStyle.ANY})"
+    },
+    {
+      "kind": "changed",
+      "declaration": "YamlMap.new",
+      "before": "({sourceUrl})",
+      "after": "({Object? sourceUrl})"
+    },
+    {
+      "kind": "changed",
+      "declaration": "YamlMap.wrap",
+      "before": "(Map dartMap, {sourceUrl, CollectionStyle style = CollectionStyle.ANY})",
+      "after": "(Map dartMap, {Object? sourceUrl, CollectionStyle style = CollectionStyle.ANY})"
+    },
+    {
+      "kind": "changed",
+      "declaration": "YamlScalar.wrap",
+      "before": "(this.value, {sourceUrl, this.style = ScalarStyle.ANY})",
+      "after": "(this.value, {Object? sourceUrl, this.style = ScalarStyle.ANY})"
+    },
+    {
+      "kind": "added",
+      "declaration": "isHighSurrogate",
+      "before": null,
+      "after": "bool (int codeUnit)"
+    },
+    {
+      "kind": "added",
+      "declaration": "isLowSurrogate",
+      "before": null,
+      "after": "bool (int codeUnit)"
+    }
+  ]
+}

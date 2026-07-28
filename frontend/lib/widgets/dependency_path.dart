@@ -75,7 +75,7 @@ class PackageDetailView extends StatelessWidget {
   const PackageDetailView({
     required this.package,
     required this.nodes,
-    this.onLoadImpact,
+    this.onLoadDetails,
     super.key,
   });
 
@@ -84,7 +84,7 @@ class PackageDetailView extends StatelessWidget {
 
   /// Fetches what the upgrade actually changes. Optional so the view can be
   /// rendered without a backend.
-  final Future<UpgradeImpact?> Function()? onLoadImpact;
+  final Future<UpgradeDetails> Function()? onLoadDetails;
 
   @override
   Widget build(BuildContext context) {
@@ -122,21 +122,18 @@ class PackageDetailView extends StatelessWidget {
             ),
           ],
           if (node != null && node.advisories.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(
-              'Advisories: ${node.advisories.join(', ')}',
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: theme.colorScheme.error),
-            ),
+            const SizedBox(height: 12),
+            for (final advisory in node.advisories)
+              _Advisory(advisory: advisory),
           ],
           if (node != null) ...[
             const SizedBox(height: 20),
             _Upgrade(assessment: assessUpgrade(node)),
-            if (onLoadImpact != null &&
+            if (onLoadDetails != null &&
                 assessUpgrade(node).risk != UpgradeRisk.none &&
                 assessUpgrade(node).risk != UpgradeRisk.unknown) ...[
               const SizedBox(height: 12),
-              _Impact(load: onLoadImpact!),
+              _Details(load: onLoadDetails!),
             ],
           ],
           const SizedBox(height: 20),
@@ -165,6 +162,71 @@ class PackageDetailView extends StatelessWidget {
               const SizedBox(height: 12),
             ],
           ],
+        ],
+      ),
+    );
+  }
+}
+
+/// One security advisory affecting the installed version.
+///
+/// Leads with the fix rather than the identifier: an advisory id is how you
+/// look the problem up, but the version that resolves it is the thing you act
+/// on.
+class _Advisory extends StatelessWidget {
+  const _Advisory({required this.advisory});
+
+  final DepAdvisory advisory;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final error = theme.colorScheme.error;
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: error.withValues(alpha: 0.06),
+        border: Border.all(color: error.withValues(alpha: 0.4)),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.gpp_maybe_outlined, size: 16, color: error),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  [advisory.id, ...advisory.aliases].join('  ·  '),
+                  style: theme.textTheme.titleSmall?.copyWith(color: error),
+                ),
+              ),
+            ],
+          ),
+          if (advisory.summary != null) ...[
+            const SizedBox(height: 6),
+            Text(advisory.summary!, style: theme.textTheme.bodyMedium),
+          ],
+          const SizedBox(height: 6),
+          Text(
+            advisory.fixedIn != null
+                ? 'Fixed in ${advisory.fixedIn}.'
+                : 'This advisory names no fixed version. Check it before '
+                    'assuming an upgrade clears it.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              fontWeight: advisory.fixedIn != null ? FontWeight.w600 : null,
+            ),
+          ),
+          const SizedBox(height: 4),
+          SelectableText(
+            advisory.url,
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: theme.colorScheme.primary),
+          ),
         ],
       ),
     );
@@ -250,26 +312,27 @@ class _Upgrade extends StatelessWidget {
 
 /// The concrete differences between the installed and newest versions.
 ///
-/// Every line here is a fact from published metadata. Nothing paraphrases the
-/// changelog, because a tool that summarises prose is a tool that can be
-/// confidently wrong about what breaks.
-class _Impact extends StatefulWidget {
-  const _Impact({required this.load});
+/// Every line here is a fact: the metadata findings come from what the versions
+/// declare, and the API changes come from the packages' own sources. Nothing
+/// paraphrases the changelog, because a tool that summarises prose is a tool
+/// that can be confidently wrong about what breaks.
+class _Details extends StatefulWidget {
+  const _Details({required this.load});
 
-  final Future<UpgradeImpact?> Function() load;
+  final Future<UpgradeDetails> Function() load;
 
   @override
-  State<_Impact> createState() => _ImpactState();
+  State<_Details> createState() => _DetailsState();
 }
 
-class _ImpactState extends State<_Impact> {
-  late final Future<UpgradeImpact?> _future = widget.load();
+class _DetailsState extends State<_Details> {
+  late final Future<UpgradeDetails> _future = widget.load();
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return FutureBuilder<UpgradeImpact?>(
+    return FutureBuilder<UpgradeDetails>(
       future: _future,
       builder: (context, snap) {
         if (snap.connectionState == ConnectionState.waiting) {
@@ -295,10 +358,9 @@ class _ImpactState extends State<_Impact> {
           );
         }
 
-        final impact = snap.data;
-        if (impact == null || !impact.hasFindings) {
-          return const SizedBox.shrink();
-        }
+        final impact = snap.data?.impact;
+        final apiDiff = snap.data?.apiDiff;
+        if (impact == null) return const SizedBox.shrink();
 
         return Container(
           width: double.infinity,
@@ -351,10 +413,155 @@ class _ImpactState extends State<_Impact> {
                       '${change.package}: ${change.before} → ${change.after}.',
                   },
                 ),
+              _ApiChanges(diff: apiDiff),
             ],
           ),
         );
       },
+    );
+  }
+}
+
+/// What happened to the package's public API between the two versions.
+///
+/// This is the one thing semver cannot tell you. A major bump says the author
+/// considered something breaking; this says which declarations are gone and
+/// which changed shape, read out of the two versions' own sources.
+///
+/// It stops short of the last step: it does not know whether this project calls
+/// any of them. Saying "these changed" is defensible; saying "your build will
+/// fail" would not be.
+class _ApiChanges extends StatelessWidget {
+  const _ApiChanges({required this.diff});
+
+  final ApiDiff? diff;
+
+  /// Long lists stop being read. Enough to see the shape of the change, and a
+  /// count for the rest.
+  static const _maxShown = 8;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final diff = this.diff;
+
+    // Absent means nobody has compared these two versions yet — which is not
+    // the same as nothing having changed, and must not be shown as if it were.
+    if (diff == null) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 10),
+        child: Text(
+          'The two versions\' public APIs have not been compared yet.',
+          style: theme.textTheme.bodySmall,
+        ),
+      );
+    }
+
+    if (!diff.hasBreakingChanges) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 10),
+        child: _Finding(
+          icon: Icons.check,
+          text: diff.added.isEmpty
+              ? 'Nothing changed in the public API.'
+              : 'Nothing was removed or changed in the public API — '
+                  '${diff.added.length} addition'
+                  '${diff.added.length == 1 ? '' : 's'} only.',
+        ),
+      );
+    }
+
+    final shown = [...diff.removed, ...diff.changed];
+    final hidden = shown.length - _maxShown;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            [
+              if (diff.removed.isNotEmpty)
+                '${diff.removed.length} declaration'
+                    '${diff.removed.length == 1 ? '' : 's'} removed',
+              if (diff.changed.isNotEmpty)
+                '${diff.changed.length} changed signature'
+                    '${diff.changed.length == 1 ? '' : 's'}',
+            ].join(', '),
+            style: theme.textTheme.titleSmall,
+          ),
+          const SizedBox(height: 8),
+          for (final change in shown.take(_maxShown))
+            _Declaration(change: change),
+          if (hidden > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                'and $hidden more.',
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+          const SizedBox(height: 8),
+          Text(
+            'Read from the published sources of both versions. Whether this '
+            'project calls any of them is not checked.',
+            style: theme.textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One declaration that was removed or changed, with its signatures.
+class _Declaration extends StatelessWidget {
+  const _Declaration({required this.change});
+
+  final ApiChange change;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isRemoval = change.kind == ApiChangeKind.removed;
+    final color = isRemoval ? theme.colorScheme.error : null;
+    final code = theme.textTheme.bodySmall?.copyWith(
+      fontFamily: 'monospace',
+      fontFamilyFallback: const ['Courier New', 'monospace'],
+    );
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            isRemoval ? Icons.remove : Icons.swap_horiz,
+            size: 15,
+            color: color ?? theme.textTheme.bodySmall?.color,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  change.declaration,
+                  style: code?.copyWith(
+                    color: color,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (isRemoval)
+                  Text('gone in this version', style: theme.textTheme.bodySmall)
+                else ...[
+                  Text(change.before ?? '', style: code),
+                  Text('→ ${change.after ?? ''}', style: code),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -75,8 +75,8 @@ class _ReportScreenState extends State<ReportScreen> {
         child: PackageDetailView(
           package: node.name,
           nodes: report.nodes,
-          onLoadImpact: () =>
-              widget.api.upgradeImpact(_project.id, node.name),
+          onLoadDetails: () =>
+              widget.api.upgradeDetails(_project.id, node.name),
         ),
       ),
     );
@@ -352,38 +352,117 @@ class _Advisories extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             for (final node in affected) ...[
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Text.rich(
-                      TextSpan(
-                        children: [
-                          TextSpan(
-                            text: node.name,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          TextSpan(text: ' ${node.installed}'),
-                          TextSpan(
-                            text: '  —  ${node.advisories.join(', ')}',
-                            style: theme.textTheme.bodySmall,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  DepStatusChip(status: node.status),
-                ],
-              ),
-              const SizedBox(height: 6),
+              _AffectedPackage(node: node, nodes: nodes),
+              const SizedBox(height: 14),
             ],
           ],
         ),
       ),
     );
+  }
+}
+
+/// One vulnerable package: what is wrong, what fixes it, and — when the project
+/// does not declare it — what would have to be bumped to get the fix.
+class _AffectedPackage extends StatelessWidget {
+  const _AffectedPackage({required this.node, required this.nodes});
+
+  final DepNode node;
+
+  /// The whole report, needed to trace a transitive package back to a
+  /// dependency the project actually declares.
+  final List<DepNode> nodes;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Text.rich(
+                TextSpan(
+                  children: [
+                    TextSpan(
+                      text: node.name,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    TextSpan(text: ' ${node.installed}'),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            DepStatusChip(status: node.status),
+          ],
+        ),
+        for (final advisory in node.advisories) ...[
+          const SizedBox(height: 4),
+          Padding(
+            padding: const EdgeInsets.only(left: 2),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  [advisory.id, ...advisory.aliases].join('  ·  '),
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(fontWeight: FontWeight.w600),
+                ),
+                if (advisory.summary != null)
+                  Text(advisory.summary!, style: theme.textTheme.bodySmall),
+                Text(
+                  // A missing fix version means the advisory did not say, not
+                  // that the package is unfixable — worth the extra words.
+                  advisory.fixedIn != null
+                      ? 'Fixed in ${advisory.fixedIn}.'
+                      : 'No fixed version is published in this advisory.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: advisory.fixedIn != null
+                        ? Colors.green.shade800
+                        : theme.textTheme.bodySmall?.color,
+                    fontWeight:
+                        advisory.fixedIn != null ? FontWeight.w600 : null,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        ..._blame(context),
+      ],
+    );
+  }
+
+  /// For a package the project does not declare, names what does pull it in.
+  ///
+  /// Bumping the vulnerable package itself is not an option here — nothing in
+  /// `pubspec.yaml` mentions it. The fix has to come through whatever depends
+  /// on it, so that is the useful thing to print.
+  List<Widget> _blame(BuildContext context) {
+    if (node.kind != DepKind.transitive) return const [];
+
+    final culprits = {
+      for (final path in dependencyPathsTo(node.name, nodes))
+        if (path.length > 1) path.first,
+    };
+    if (culprits.isEmpty) return const [];
+
+    final theme = Theme.of(context);
+    return [
+      const SizedBox(height: 4),
+      Text(
+        culprits.length == 1
+            ? 'You do not depend on ${node.name} directly — it arrives through '
+                '${culprits.single}, which is what has to move.'
+            : 'You do not depend on ${node.name} directly — it arrives through '
+                '${culprits.join(' and ')}.',
+        style: theme.textTheme.bodySmall,
+      ),
+    ];
   }
 }
 

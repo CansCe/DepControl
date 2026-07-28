@@ -1,3 +1,5 @@
+import 'dep_advisory.dart';
+
 /// How a dependency is pulled into the project.
 enum DepKind { direct, dev, transitive }
 
@@ -52,8 +54,8 @@ class DepNode {
   /// constraint. Surfaced so a report never presents a guess as a measurement.
   final DepSource source;
 
-  /// Security advisory ids affecting [installed], if any.
-  final List<String> advisories;
+  /// Security advisories affecting [installed], if any.
+  final List<DepAdvisory> advisories;
 
   /// Direct children (names) in the dependency graph.
   final List<String> dependencies;
@@ -71,10 +73,27 @@ class DepNode {
       source: DepSource.values.byName(
         (json['source'] as String?) ?? 'unresolved',
       ),
-      advisories: (json['advisories'] as List?)?.cast<String>() ?? const [],
+      advisories: _advisoriesFrom(json['advisories']),
       dependencies:
           (json['dependencies'] as List?)?.cast<String>() ?? const [],
     );
+  }
+
+  /// Reads the advisory list, tolerating reports stored before advisories
+  /// carried anything but an id.
+  ///
+  /// Those rows are plain strings in the `dep_reports` jsonb. Dropping them
+  /// would quietly turn a stored report's vulnerable packages into clean ones,
+  /// which is the worst direction for this particular field to fail in.
+  static List<DepAdvisory> _advisoriesFrom(Object? raw) {
+    if (raw is! List) return const [];
+    return [
+      for (final entry in raw)
+        if (entry is String)
+          DepAdvisory(id: entry)
+        else if (entry is Map)
+          DepAdvisory.fromJson(entry.cast<String, dynamic>()),
+    ];
   }
 
   Map<String, dynamic> toJson() => {
@@ -85,7 +104,7 @@ class DepNode {
         'latest': latest,
         'status': status.name,
         'source': source.name,
-        'advisories': advisories,
+        'advisories': advisories.map((a) => a.toJson()).toList(),
         'dependencies': dependencies,
       };
 }

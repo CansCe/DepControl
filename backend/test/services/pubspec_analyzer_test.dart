@@ -33,6 +33,7 @@ packages:
 PubApiClient _stubPub(
   Map<String, String> latest, {
   Map<String, List<Map<String, dynamic>>> advisories = const {},
+  Map<String, List<String>> published = const {},
 }) {
   final client = MockClient((request) async {
     final path = request.url.path;
@@ -51,6 +52,10 @@ PubApiClient _stubPub(
     if (version == null) return http.Response('{}', 404);
     return _ok({
       'latest': {'version': version},
+      'versions': [
+        for (final v in published[name] ?? const <String>[])
+          {'version': v, 'pubspec': <String, dynamic>{}},
+      ],
     });
   });
   return PubApiClient(client: client);
@@ -161,7 +166,16 @@ void main() {
       test('flags a version the advisory actually affects', () async {
         final node = await analyzeWith('0.13.0');
         expect(node.status, DepStatus.vulnerable);
-        expect(node.advisories, ['GHSA-4rgh-jx4f-qfcq']);
+        expect(node.advisories.single.id, 'GHSA-4rgh-jx4f-qfcq');
+      });
+
+      test('carries the detail needed to act on it', () async {
+        final advisory = (await analyzeWith('0.13.0')).advisories.single;
+
+        expect(advisory.aliases, ['CVE-2020-35669']);
+        expect(advisory.summary, contains('header injection'));
+        // The whole point: which version to move to.
+        expect(advisory.fixedIn, '0.13.3');
       });
 
       test('does not flag a version fixed years ago', () async {
@@ -174,6 +188,94 @@ void main() {
         final node = await analyzeWith('0.13.3');
         expect(node.advisories, isEmpty);
         expect(node.status, DepStatus.outdated);
+      });
+
+      // pub.dev also publishes advisories that enumerate affected versions
+      // without describing a range, so there is no `fixed` event to read. The
+      // release history answers it instead.
+      test('falls back to the release history for the fixing version',
+          () async {
+        final analyzer = _stubAnalyzer(
+          {'http': '1.3.0', 'test': '1.25.0'},
+          advisories: {
+            'http': [
+              {
+                'id': 'GHSA-listed-only',
+                'affected': [
+                  {
+                    'package': {'name': 'http'},
+                    'versions': ['0.13.0', '0.13.1', '0.13.2'],
+                  },
+                ],
+              },
+            ],
+          },
+          published: {
+            'http': ['0.13.0', '0.13.1', '0.13.2', '0.13.3', '1.0.0'],
+          },
+        );
+
+        final report = await analyzer.analyze(
+          'p',
+          const FetchedPubspecs(
+            pubspecYaml: _pubspecYaml,
+            pubspecLock: 'packages:\n'
+                '  http:\n'
+                '    dependency: "direct main"\n'
+                '    version: "0.13.0"\n',
+          ),
+        );
+
+        final node = report.nodes.firstWhere((n) => n.name == 'http');
+        // The lowest release above 0.13.0 that the advisory does not list.
+        expect(node.advisories.single.fixedIn, '0.13.3');
+      });
+
+      // An open range means no fix has been published. Reporting the next
+      // release as the fix would send someone to a version that is still
+      // vulnerable.
+      test('reports no fixing version when the advisory names none', () async {
+        final analyzer = _stubAnalyzer(
+          {'http': '1.3.0', 'test': '1.25.0'},
+          advisories: {
+            'http': [
+              {
+                'id': 'GHSA-unfixed',
+                'affected': [
+                  {
+                    'package': {'name': 'http'},
+                    'ranges': [
+                      {
+                        'type': 'ECOSYSTEM',
+                        'events': [
+                          {'introduced': '0'},
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+          published: {
+            'http': ['0.13.0', '1.0.0']
+          },
+        );
+
+        final report = await analyzer.analyze(
+          'p',
+          const FetchedPubspecs(
+            pubspecYaml: _pubspecYaml,
+            pubspecLock: 'packages:\n'
+                '  http:\n'
+                '    dependency: "direct main"\n'
+                '    version: "0.13.0"\n',
+          ),
+        );
+
+        final node = report.nodes.firstWhere((n) => n.name == 'http');
+        expect(node.status, DepStatus.vulnerable);
+        expect(node.advisories.single.fixedIn, isNull);
       });
 
       test('claims no advisories when the version is unknown', () async {
@@ -220,5 +322,8 @@ packages:
 PubspecAnalyzer _stubAnalyzer(
   Map<String, String> latest, {
   Map<String, List<Map<String, dynamic>>> advisories = const {},
+  Map<String, List<String>> published = const {},
 }) =>
-    PubspecAnalyzer(_stubPub(latest, advisories: advisories));
+    PubspecAnalyzer(
+      _stubPub(latest, advisories: advisories, published: published),
+    );

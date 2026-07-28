@@ -65,7 +65,15 @@ List<DepNode> largeReport() {
           _ => DepStatus.unknown,
         },
         source: DepSource.constraint,
-        advisories: i % 4 == 2 ? ['GHSA-demo-$i'] : const [],
+        advisories: i % 4 == 2
+            ? [
+                DepAdvisory(
+                  id: 'GHSA-demo-$i',
+                  summary: 'Demo advisory $i.',
+                  fixedIn: '1.${(i % 9) + 1}.0',
+                ),
+              ]
+            : const [],
         dependencies: [
           for (var k = 1; k <= 3; k++)
             if (i + k * 2 < names.length) names[i + k * 2],
@@ -232,6 +240,98 @@ void main() {
       expect(find.textContaining('Why is coverage here?'), findsOneWidget);
       expect(find.textContaining('Pulled in through'), findsOneWidget);
       expect(tester.takeException(), isNull);
+    });
+
+    group('the advisories card', () {
+      /// A report with one vulnerable direct package and one vulnerable
+      /// transitive package, which is the distinction the card has to make.
+      final vulnerable = DepReport(
+        projectId: 'p1',
+        generatedAt: DateTime.utc(2026, 1, 1),
+        nodes: const [
+          DepNode(
+            name: 'app_dep',
+            kind: DepKind.direct,
+            installed: '1.0.0',
+            status: DepStatus.upToDate,
+            dependencies: ['buried'],
+          ),
+          DepNode(
+            name: 'http',
+            kind: DepKind.direct,
+            installed: '0.13.0',
+            status: DepStatus.vulnerable,
+            advisories: [
+              DepAdvisory(
+                id: 'GHSA-direct',
+                summary: 'Header injection.',
+                fixedIn: '0.13.3',
+              ),
+            ],
+          ),
+          DepNode(
+            name: 'buried',
+            kind: DepKind.transitive,
+            installed: '2.0.0',
+            status: DepStatus.vulnerable,
+            advisories: [
+              DepAdvisory(id: 'GHSA-transitive', fixedIn: '2.1.0'),
+            ],
+          ),
+        ],
+      );
+
+      testWidgets('names the version that fixes each advisory',
+          (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ReportScreen(
+              project: project,
+              api: apiReturning(vulnerable),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Fixed in 0.13.3.'), findsOneWidget);
+        expect(find.textContaining('Header injection'), findsOneWidget);
+      });
+
+      // Telling someone to upgrade a package they do not declare is useless
+      // advice — the fix has to come through whatever pulls it in.
+      testWidgets('names the direct dependency behind a transitive advisory',
+          (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ReportScreen(
+              project: project,
+              api: apiReturning(vulnerable),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          find.textContaining('arrives through app_dep'),
+          findsOneWidget,
+        );
+      });
+
+      testWidgets('says nothing about provenance for a direct dependency',
+          (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ReportScreen(
+              project: project,
+              api: apiReturning(vulnerable),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.textContaining('arrives through'), findsOneWidget);
+        expect(find.textContaining('do not depend on http'), findsNothing);
+      });
     });
 
     testWidgets('shows the dependency summary', (tester) async {

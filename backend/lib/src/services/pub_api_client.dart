@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -35,6 +36,24 @@ class Advisory {
     }
     if (ranges.isEmpty) return false;
     return ranges.any((r) => r.contains(version));
+  }
+
+  /// The version this advisory says fixes [version], from the OSV ranges.
+  ///
+  /// Only the range actually covering [version] can answer: an advisory may
+  /// carry several `[introduced, fixed)` windows across different release
+  /// lines, and the fix for the 2.x line says nothing to someone on 1.x.
+  ///
+  /// Null when the advisory listed affected versions individually, or left a
+  /// range open — in OSV that means no fix has been published yet.
+  Version? fixedVersionFor(Version version) {
+    Version? best;
+    for (final range in ranges) {
+      final fixed = range.fixed;
+      if (fixed == null || !range.contains(version)) continue;
+      if (best == null || fixed < best) best = fixed;
+    }
+    return best;
   }
 
   static Advisory? fromJson(Map<String, dynamic> json) {
@@ -172,6 +191,16 @@ class PubApiClient {
   final http.Client _client;
   final String baseUrl;
 
+  static const _timeout = Duration(seconds: 20);
+
+  /// Package names as pub.dev defines them: a Dart identifier.
+  ///
+  /// Names reach this client from fetched pubspecs, which are untrusted. An
+  /// unchecked name is interpolated into the request path, and something like
+  /// `../../admin` normalises the API prefix away — the host stays pub.dev, but
+  /// the request stops being the one this client meant to make.
+  static final _packageName = RegExp(r'^[a-zA-Z][a-zA-Z0-9_]{0,63}$');
+
   Future<PubInfo> info(String package) async {
     final latest = await _latest(package);
     final advisories = await _advisories(package);
@@ -179,19 +208,15 @@ class PubApiClient {
   }
 
   Future<String?> _latest(String package) async {
-    final res =
-        await _client.get(Uri.parse('$baseUrl/api/packages/$package'));
-    if (res.statusCode != 200) return null;
-    final json = jsonDecode(res.body) as Map<String, dynamic>;
+    final json = await _getJson('/api/packages/$package', package);
+    if (json == null) return null;
     final latest = json['latest'] as Map<String, dynamic>?;
     return latest?['version'] as String?;
   }
 
   Future<List<Advisory>> _advisories(String package) async {
-    final res = await _client
-        .get(Uri.parse('$baseUrl/api/packages/$package/advisories'));
-    if (res.statusCode != 200) return const [];
-    final json = jsonDecode(res.body) as Map<String, dynamic>;
+    final json = await _getJson('/api/packages/$package/advisories', package);
+    if (json == null) return const [];
     final list = (json['advisories'] as List?) ?? const [];
     return list
         .whereType<Map<String, dynamic>>()
@@ -206,11 +231,9 @@ class PubApiClient {
   /// `/api/packages/<package>` already embeds each version's pubspec, so the
   /// whole resolution input for a package costs a single request.
   Future<List<PackageVersion>> versions(String package) async {
-    final res =
-        await _client.get(Uri.parse('$baseUrl/api/packages/$package'));
-    if (res.statusCode != 200) return const [];
+    final json = await _getJson('/api/packages/$package', package);
+    if (json == null) return const [];
 
-    final json = jsonDecode(res.body) as Map<String, dynamic>;
     final list = (json['versions'] as List?) ?? const [];
     final out = <PackageVersion>[];
 
@@ -249,14 +272,49 @@ class PubApiClient {
   ///
   /// Endpoint: `/api/packages/<package>/versions/<version>` -> `pubspec`.
   Future<List<String>> dependencyNames(String package, String version) async {
-    final res = await _client.get(
-      Uri.parse('$baseUrl/api/packages/$package/versions/$version'),
+    // The version comes from a lockfile the project controls, so it gets the
+    // same treatment as the package name.
+    try {
+      Version.parse(version);
+    } on FormatException {
+      return const [];
+    }
+
+    final json = await _getJson(
+      '/api/packages/$package/versions/$version',
+      package,
     );
-    if (res.statusCode != 200) return const [];
-    final json = jsonDecode(res.body) as Map<String, dynamic>;
+    if (json == null) return const [];
     final pubspec = json['pubspec'] as Map<String, dynamic>?;
     final deps = pubspec?['dependencies'] as Map<String, dynamic>?;
     return deps?.keys.toList() ?? const [];
+  }
+
+  /// GETs [path] on [baseUrl] and decodes it, or null when pub.dev has nothing
+  /// to say.
+  ///
+  /// [package] is validated rather than escaped: a name that is not a package
+  /// name is not a request worth making, and refusing it here means no caller
+  /// has to remember to check.
+  Future<Map<String, dynamic>?> _getJson(String path, String package) async {
+    if (!_packageName.hasMatch(package)) return null;
+
+    final http.Response res;
+    try {
+      res = await _client.get(Uri.parse('$baseUrl$path')).timeout(_timeout);
+    } on TimeoutException {
+      // One slow package should not fail a whole report; the node simply
+      // reports what could not be established.
+      return null;
+    }
+    if (res.statusCode != 200) return null;
+
+    try {
+      final decoded = jsonDecode(res.body);
+      return decoded is Map<String, dynamic> ? decoded : null;
+    } on FormatException {
+      return null;
+    }
   }
 
   void close() => _client.close();

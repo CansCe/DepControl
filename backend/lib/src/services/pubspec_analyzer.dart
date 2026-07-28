@@ -74,11 +74,8 @@ class PubspecAnalyzer {
       // cannot judge, so none are claimed.
       final current = _tryParseVersion(installed);
       final advisories = current == null
-          ? const <String>[]
-          : [
-              for (final advisory in info.advisories)
-                if (advisory.affects(current)) advisory.id,
-            ];
+          ? const <DepAdvisory>[]
+          : await _advisoriesFor(name, info.advisories, current);
 
       final status = _status(installed, info.latest, advisories);
 
@@ -156,10 +153,70 @@ class PubspecAnalyzer {
     return dep?.toString();
   }
 
+  /// The advisories affecting [current], each carrying the version that fixes
+  /// it.
+  ///
+  /// The fix usually comes straight from the advisory's own ranges. When it
+  /// does not — pub.dev also publishes advisories that enumerate affected
+  /// versions instead of describing ranges — the package's release history
+  /// answers it: the lowest stable release above [current] the advisory does
+  /// not cover. That costs one extra request, and only for a package that is
+  /// actually vulnerable.
+  Future<List<DepAdvisory>> _advisoriesFor(
+    String package,
+    List<Advisory> published,
+    Version current,
+  ) async {
+    final applicable =
+        published.where((a) => a.affects(current)).toList(growable: false);
+    if (applicable.isEmpty) return const [];
+
+    List<Version>? releasesAbove;
+    final result = <DepAdvisory>[];
+
+    for (final advisory in applicable) {
+      var fixed = advisory.fixedVersionFor(current);
+      if (fixed == null) {
+        releasesAbove ??= await _stableReleasesAbove(package, current);
+        for (final candidate in releasesAbove) {
+          if (!advisory.affects(candidate)) {
+            fixed = candidate;
+            break;
+          }
+        }
+      }
+
+      result.add(
+        DepAdvisory(
+          id: advisory.id,
+          aliases: advisory.aliases,
+          summary: advisory.summary,
+          fixedIn: fixed?.toString(),
+        ),
+      );
+    }
+
+    return result;
+  }
+
+  /// Stable releases newer than [current], lowest first — the order in which
+  /// someone would rather take them.
+  Future<List<Version>> _stableReleasesAbove(
+    String package,
+    Version current,
+  ) async {
+    final versions = await _pub.versions(package);
+    return versions
+        .map((v) => v.version)
+        .where((v) => v > current && !v.isPreRelease)
+        .toList()
+      ..sort();
+  }
+
   DepStatus _status(
     String installed,
     String? latest,
-    List<String> advisories,
+    List<DepAdvisory> advisories,
   ) {
     if (advisories.isNotEmpty) return DepStatus.vulnerable;
     if (latest == null) return DepStatus.unknown;

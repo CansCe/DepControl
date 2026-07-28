@@ -76,17 +76,20 @@ class ApiClient {
 
   /// What changes if [package] moves to its newest published version.
   ///
-  /// Null when there is nothing to compare — already newest, or no resolved
-  /// version to start from.
-  Future<UpgradeImpact?> upgradeImpact(String projectId, String package) async {
+  /// Both halves can be absent, for different reasons: a null `impact` means
+  /// there is nothing to compare — already newest, or no resolved version to
+  /// start from — while a null `apiDiff` means nothing has compared the two
+  /// versions' public APIs yet. Asking is what puts that comparison in the
+  /// queue, so a second look at the same package will usually have it.
+  Future<UpgradeDetails> upgradeDetails(
+    String projectId,
+    String package,
+  ) async {
     final json = await _send(() async => _client.get(
           Uri.parse('$baseUrl/projects/$projectId/upgrade/$package'),
           headers: await _headers(),
         ));
-    final impact = json['impact'];
-    return impact == null
-        ? null
-        : UpgradeImpact.fromJson(impact as Map<String, dynamic>);
+    return UpgradeDetails.fromJson(json);
   }
 
   Future<ResolutionResult> simulate(
