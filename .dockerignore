@@ -1,0 +1,29 @@
+# Build context for backend/Dockerfile is the repo root (the backend is a pub
+# workspace member and cannot resolve without `packages/shared`).
+#
+# Secrets first: `backend/.env` holds the real Postgres password, and
+# `dart_frog build` copies it into its output directory. Neither may ever reach
+# an image layer — Cloud Run gets these from Secret Manager instead.
+**/.env
+**/.env.*
+!**/.env.example
+
+# Generated / resolved state. The image resolves its own.
+**/.dart_tool/
+**/.dart_frog/
+backend/build/
+frontend/build/
+**/pubspec_overrides.yaml
+
+# Not needed to compile the API.
+.git/
+.github/
+.idea/
+.agents/
+.claude/
+.serena/
+brand/
+frontend/
+tools/
+**/*.iml
+README.md

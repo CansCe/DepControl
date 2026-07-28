@@ -1,0 +1,90 @@
+# Builds the Dart Frog API and deploys it to Cloud Run.
+name: deploy-backend
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/**'
+      - 'packages/shared/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - '.dockerignore'
+      - '.github/workflows/deploy-backend.yml'
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION }}
+  SERVICE: depcontrol-api
+  REPOSITORY: depcontrol
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.8
+      # Resolved from the workspace root: `backend` and `shared` are members and
+      # have no lockfile of their own. `frontend` is a member too, which is why
+      # this needs the Flutter SDK rather than plain Dart.
+      - run: flutter pub get
+      - run: dart analyze backend packages/shared
+      - run: dart test
+        working-directory: backend
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for Workload Identity Federation: the job mints a short-lived
+      # OIDC token instead of holding a long-lived service account JSON key.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push
+        # Context is the repo root: the backend cannot resolve without
+        # `packages/shared`. Tagged with the commit SHA so a deploy is
+        # traceable and a rollback is a redeploy of an earlier tag.
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${SERVICE}"
+          docker build -f backend/Dockerfile -t "$IMAGE:${GITHUB_SHA}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:${GITHUB_SHA}"
+          docker push "$IMAGE:latest"
+
+      - name: Deploy to Cloud Run
+        # DATABASE_URL and SUPABASE_URL come from Secret Manager, never from
+        # repo secrets or the image — see docs/DEPLOY.md.
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${SERVICE}"
+          gcloud run deploy "$SERVICE" \
+            --image "$IMAGE:${GITHUB_SHA}" \
+            --region "$REGION" \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080 \
+            --cpu 1 \
+            --memory 512Mi \
+            --min-instances 0 \
+            --max-instances 4 \
+            --timeout 300 \
+            --set-env-vars "ENV=production" \
+            --set-secrets "DATABASE_URL=depcontrol-database-url:latest,SUPABASE_URL=depcontrol-supabase-url:latest"
+
+      - name: Show service URL
+        run: gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.url)'

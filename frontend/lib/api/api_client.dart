@@ -4,6 +4,20 @@ import 'package:http/http.dart' as http;
 import 'package:shared/shared.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+/// Where the API lives, baked in at build time:
+///
+/// ```
+/// flutter build web --dart-define=API_BASE_URL=https://depcontrol-api-xxxx.run.app
+/// ```
+///
+/// A deployed frontend is served from a different origin than the API, so the
+/// address cannot be a runtime lookup against the page's own origin. It falls
+/// back to the local dev server, so `flutter run` still needs no flags.
+const String kDefaultApiBaseUrl = String.fromEnvironment(
+  'API_BASE_URL',
+  defaultValue: 'http://localhost:8080',
+);
+
 /// Talks to the Dart Frog backend.
 ///
 /// Every endpoint except `GET /` requires a Supabase access token: projects are
@@ -12,7 +26,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 /// refresh rather than a value captured at construction.
 class ApiClient {
   ApiClient({
-    this.baseUrl = 'http://localhost:8080',
+    this.baseUrl = kDefaultApiBaseUrl,
     http.Client? client,
     Future<String?> Function()? accessToken,
   })  : _client = client ?? http.Client(),
