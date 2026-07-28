@@ -145,6 +145,20 @@ class PackageDetailView extends StatelessWidget {
               style: theme.textTheme.bodySmall,
             ),
           ],
+          if (node?.license case final license?) ...[
+            const SizedBox(height: 4),
+            Text(
+              // The caveat, when there is one, says the license was read from
+              // a different release than the one installed — worth carrying
+              // here, since this sheet is where someone checks one package.
+              [
+                'Licensed ${license.displayName}',
+                if (license.spdxId != null) license.category.label.toLowerCase(),
+                if (license.caveat != null) license.caveat!,
+              ].join('  ·  '),
+              style: theme.textTheme.bodySmall,
+            ),
+          ],
           if (node != null && node.advisories.isNotEmpty) ...[
             const SizedBox(height: 12),
             for (final advisory in node.advisories)

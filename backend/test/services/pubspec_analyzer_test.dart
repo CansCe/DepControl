@@ -28,12 +28,19 @@ packages:
     version: "1.25.0"
 ''';
 
-/// Stubs the three pub.dev endpoints the analyzer touches, so the tests never
-/// hit the network. `latest` is keyed by package name.
+/// Stubs the pub.dev endpoints the analyzer touches, so the tests never hit the
+/// network. `latest` is keyed by package name.
+///
+/// [versionTags] is keyed `package@version` and [latestTags] by package name,
+/// mirroring pub.dev's two score endpoints: analysis is published per version
+/// and dropped for old ones, so a package can have tags for its latest release
+/// and none for the version a project actually has installed.
 PubApiClient _stubPub(
   Map<String, String> latest, {
   Map<String, List<Map<String, dynamic>>> advisories = const {},
   Map<String, List<String>> published = const {},
+  Map<String, List<String>> versionTags = const {},
+  Map<String, List<String>> latestTags = const {},
 }) {
   final client = MockClient((request) async {
     final path = request.url.path;
@@ -41,6 +48,16 @@ PubApiClient _stubPub(
     if (path.endsWith('/advisories')) {
       final name = path.split('/')[path.split('/').length - 2];
       return _ok({'advisories': advisories[name] ?? <dynamic>[]});
+    }
+    // Checked before the `/versions/` branch: the per-version score endpoint
+    // matches both.
+    if (path.endsWith('/score')) {
+      final segments = path.split('/');
+      final name = segments[segments.indexOf('packages') + 1];
+      final tags = path.contains('/versions/')
+          ? versionTags['$name@${segments[segments.length - 2]}']
+          : latestTags[name];
+      return _ok({'tags': tags ?? <String>[]});
     }
     if (path.contains('/versions/')) {
       return _ok({
@@ -384,6 +401,220 @@ void main() {
       });
     });
 
+    group('licenses', () {
+      Future<DepNode> analyzeWith({
+        Map<String, List<String>> versionTags = const {},
+        Map<String, List<String>> latestTags = const {},
+      }) async {
+        final analyzer = _stubAnalyzer(
+          {'http': '1.3.0', 'test': '1.25.0'},
+          versionTags: versionTags,
+          latestTags: latestTags,
+        );
+        final report = await analyzer.analyze(
+          'p',
+          const FetchedPubspecs(
+            pubspecYaml: _pubspecYaml,
+            pubspecLock: _pubspecLock,
+          ),
+        );
+        return report.nodes.firstWhere((n) => n.name == 'http');
+      }
+
+      test('reads the installed version\'s own analysis', () async {
+        final node = await analyzeWith(
+          versionTags: {
+            'http@1.2.0': [
+              'license:bsd-3-clause',
+              'license:fsf-libre',
+              'license:osi-approved',
+              'sdk:dart',
+            ],
+          },
+        );
+
+        final license = node.license!;
+        expect(license.spdxId, 'BSD-3-Clause');
+        expect(license.category, LicenseCategory.permissive);
+        expect(license.source, LicenseSource.installedVersion);
+        expect(license.readFromVersion, '1.2.0');
+        expect(license.osiApproved, isTrue);
+        expect(license.fsfLibre, isTrue);
+        // Read from the version in use, so there is nothing to qualify.
+        expect(license.caveat, isNull);
+      });
+
+      // pub.dev keeps one analysis per version and drops the old ones, so a
+      // project pinned to an old release has none. Falling back to the latest
+      // release is right nearly always — and a relicensing is exactly what this
+      // feature exists to catch, so the fallback is stated rather than hidden.
+      test('falls back to the latest release, and says so', () async {
+        final node = await analyzeWith(latestTags: {
+          'http': ['license:mit', 'license:osi-approved'],
+        });
+
+        final license = node.license!;
+        expect(license.spdxId, 'MIT');
+        expect(license.source, LicenseSource.latestRelease);
+        expect(license.readFromVersion, '1.3.0');
+        expect(license.caveat, contains('1.3.0'));
+        expect(license.isForInstalledVersion, isFalse);
+      });
+
+      // Regression: a version whose analysis pub.dev has dropped does not
+      // answer with nothing. It answers with the tags that need no analysis —
+      // `publisher:dart.dev`, `is:obsolete` — and no `license:` tag. Treating a
+      // non-empty response as an answer meant the fallback never ran, and every
+      // pinned dependency in a real project came back with no license at all.
+      test('falls back when the version answers with tags but no license',
+          () async {
+        final node = await analyzeWith(
+          versionTags: {
+            'http@1.2.0': ['publisher:dart.dev', 'is:obsolete'],
+          },
+          latestTags: {
+            'http': ['license:bsd-3-clause', 'license:osi-approved'],
+          },
+        );
+
+        expect(node.license!.spdxId, 'BSD-3-Clause');
+        expect(node.license!.source, LicenseSource.latestRelease);
+      });
+
+      test('prefers the installed version over the latest release', () async {
+        final node = await analyzeWith(
+          versionTags: {
+            'http@1.2.0': ['license:gpl-3.0-only'],
+          },
+          latestTags: {
+            'http': ['license:mit'],
+          },
+        );
+
+        expect(node.license!.spdxId, 'GPL-3.0-only');
+        expect(node.license!.category, LicenseCategory.strongCopyleft);
+      });
+
+      // pub.dev looked and could not identify one. That is a finding, and it
+      // must not read the same as never having looked.
+      test('records an unidentified license as a scanned result', () async {
+        final node = await analyzeWith(
+          versionTags: {
+            'http@1.2.0': ['license:unknown'],
+          },
+        );
+
+        expect(node.license, isNotNull);
+        expect(node.license!.spdxId, isNull);
+        expect(node.license!.category, LicenseCategory.unknown);
+      });
+
+      test('reports nothing published as undetermined, not as unlicensed',
+          () async {
+        final node = await analyzeWith();
+
+        expect(node.license!.source, LicenseSource.undetermined);
+        expect(node.license!.caveat, contains('publishes no license analysis'));
+      });
+    });
+
+    // pub.dev serves packages under some of these names, and they are not the
+    // same software: `flutter` there is a discontinued placeholder with a few
+    // dozen downloads a month. Asking it about an SDK dependency returns that
+    // package's license, version and advisories under the SDK's name.
+    group('dependencies that do not come from pub.dev', () {
+      const sdkPubspec = '''
+name: demo
+environment:
+  sdk: ^3.6.0
+dependencies:
+  flutter:
+    sdk: flutter
+  shared:
+    path: ../shared
+  http: ^1.2.0
+''';
+
+      Future<DepReport> analyze({String? lock}) => _stubAnalyzer(
+            {
+              'http': '1.3.0',
+              // What pub.dev would answer if it were asked.
+              'flutter': '0.0.20',
+              'shared': '9.9.9',
+            },
+            versionTags: {
+              'flutter@0.0.0': ['license:bsd-3-clause'],
+            },
+            latestTags: {
+              'flutter': ['license:bsd-3-clause'],
+              'shared': ['license:mit'],
+              'http': ['license:bsd-3-clause'],
+            },
+          ).analyze(
+            'p',
+            FetchedPubspecs(pubspecYaml: sdkPubspec, pubspecLock: lock),
+          );
+
+      test('are named as coming from somewhere else, not left unlicensed',
+          () async {
+        final report = await analyze();
+
+        final flutter = report.nodes.firstWhere((n) => n.name == 'flutter');
+        expect(flutter.license!.source, LicenseSource.notFromPubDev);
+        expect(flutter.license!.origin, 'the SDK');
+        expect(flutter.license!.caveat, contains('the SDK'));
+        expect(flutter.license!.isPublished, isFalse);
+
+        final shared = report.nodes.firstWhere((n) => n.name == 'shared');
+        expect(shared.license!.origin, 'a path dependency');
+      });
+
+      // The bug this prevents: reporting a placeholder package's license,
+      // latest version and advisories under the SDK's name.
+      test('take nothing from the pub.dev package of the same name', () async {
+        final report = await analyze();
+
+        final flutter = report.nodes.firstWhere((n) => n.name == 'flutter');
+        expect(flutter.license!.spdxId, isNull);
+        expect(flutter.latest, isNull);
+        expect(flutter.advisories, isEmpty);
+        expect(flutter.status, DepStatus.unknown);
+      });
+
+      test('leaves the hosted dependencies alone', () async {
+        final report = await analyze();
+
+        final http = report.nodes.firstWhere((n) => n.name == 'http');
+        expect(http.license!.spdxId, 'BSD-3-Clause');
+        expect(http.latest, '1.3.0');
+      });
+
+      // Once resolution has happened the lockfile is the only place that still
+      // records where a package came from.
+      test('reads the origin from the lockfile when there is one', () async {
+        final report = await analyze(
+          lock: 'packages:\n'
+              '  flutter:\n'
+              '    dependency: "direct main"\n'
+              '    description: flutter\n'
+              '    source: sdk\n'
+              '    version: "0.0.0"\n'
+              '  http:\n'
+              '    dependency: "direct main"\n'
+              '    source: hosted\n'
+              '    version: "1.2.0"\n',
+        );
+
+        final flutter = report.nodes.firstWhere((n) => n.name == 'flutter');
+        expect(flutter.installed, '0.0.0');
+        expect(flutter.license!.source, LicenseSource.notFromPubDev);
+        expect(flutter.latest, isNull);
+
+        final http = report.nodes.firstWhere((n) => n.name == 'http');
+        expect(http.license!.spdxId, 'BSD-3-Clause');
+      });
+    });
+
     group('a repository holding several packages', () {
       /// A manifest declaring `analyzer` at [analyzerVersion].
       RepositoryManifest manifest(String directory, String analyzerVersion) =>
@@ -542,7 +773,15 @@ PubspecAnalyzer _stubAnalyzer(
   Map<String, String> latest, {
   Map<String, List<Map<String, dynamic>>> advisories = const {},
   Map<String, List<String>> published = const {},
+  Map<String, List<String>> versionTags = const {},
+  Map<String, List<String>> latestTags = const {},
 }) =>
     PubspecAnalyzer(
-      _stubPub(latest, advisories: advisories, published: published),
+      _stubPub(
+        latest,
+        advisories: advisories,
+        published: published,
+        versionTags: versionTags,
+        latestTags: latestTags,
+      ),
     );

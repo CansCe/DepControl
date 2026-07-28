@@ -2,9 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:shared/shared.dart';
 
 import '../api/api_client.dart';
+import '../theme.dart';
+import '../widgets/chrome.dart';
 import '../widgets/dep_status_chip.dart';
 import '../widgets/dep_table.dart';
 import '../widgets/dependency_path.dart';
+import '../widgets/dependency_spectrum.dart';
+import '../widgets/license_panel.dart';
 import '../widgets/remediation_panel.dart';
 import '../widgets/severity_chip.dart';
 
@@ -93,6 +97,7 @@ class _ReportScreenState extends State<ReportScreen> {
   Widget build(BuildContext context) {
     return Builder(
       builder: (context) => Scaffold(
+        extendBodyBehindAppBar: true,
         appBar: AppBar(
           title: Text(_project.name),
           actions: [
@@ -114,9 +119,11 @@ class _ReportScreenState extends State<ReportScreen> {
             else
               TextButton.icon(
                 onPressed: _reanalyze,
-                icon: const Icon(Icons.sync),
+                style: TextButton.styleFrom(foregroundColor: Colors.white),
+                icon: const Icon(Icons.sync, size: 18),
                 label: const Text('Re-analyze'),
               ),
+            const SizedBox(width: 8),
           ],
         ),
         body: FutureBuilder<DepReport?>(
@@ -148,10 +155,9 @@ class _ReportScreenState extends State<ReportScreen> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _Summary(project: _project, report: report),
-                const Divider(height: 1),
                 Expanded(
                   child: SingleChildScrollView(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
@@ -168,20 +174,45 @@ class _ReportScreenState extends State<ReportScreen> {
                           ),
                           const SizedBox(height: 16),
                         ],
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Text(
-                            _project.isArchived
-                                ? 'Select a package to see why it is here.'
-                                : 'Select a package to see why it is here and '
-                                    'what upgrading it involves.',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
+                        // Shown for an archived project too: a license is a
+                        // fact about the versions in the snapshot, the same way
+                        // an advisory is, and judging it costs the server no
+                        // outbound work.
+                        LicensePanel(
+                          key: ValueKey('licenses-${_project.id}'),
+                          load: () => widget.api.licenseReport(_project.id),
+                          onLoadManifest: () =>
+                              widget.api.licenseManifest(_project.id),
+                          onSavePolicy: widget.api.saveLicensePolicy,
+                          onResetPolicy: widget.api.resetLicensePolicy,
                         ),
-                        DepTable(
-                          nodes: report.nodes,
-                          showCurrency: !_project.isArchived,
-                          onSelect: (node) => _explain(node, report),
+                        const SizedBox(height: 16),
+                        Card(
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                const Eyebrow('The tree'),
+                                const SizedBox(height: 6),
+                                Text(
+                                  _project.isArchived
+                                      ? 'Select a package to see why it is '
+                                          'here.'
+                                      : 'Select a package to see why it is '
+                                          'here and what upgrading it '
+                                          'involves.',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                                const SizedBox(height: 6),
+                                DepTable(
+                                  nodes: report.nodes,
+                                  showCurrency: !_project.isArchived,
+                                  onSelect: (node) => _explain(node, report),
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
                       ],
                     ),
@@ -210,26 +241,18 @@ class _Summary extends StatelessWidget {
     final inferred =
         report.nodes.where((n) => n.source == DepSource.constraint).length;
 
-    // Split the available upgrades by whether the author declared them
-    // breaking, since that is what decides whether a human has to read
-    // anything before taking them.
-    final assessments = report.nodes.map(assessUpgrade).toList();
-    final breaking =
-        assessments.where((a) => a.risk == UpgradeRisk.breaking).length;
-    final routine = assessments
-        .where((a) =>
-            a.risk == UpgradeRisk.minor || a.risk == UpgradeRisk.patch)
-        .length;
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+    return InkBand(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             '${project.gitUrl} @ ${project.ref}',
-            style: theme.textTheme.bodySmall,
+            style: mono(
+              theme.textTheme.bodySmall,
+              color: Colors.white.withValues(alpha: 0.62),
+            ),
           ),
+          const SizedBox(height: 2),
           Text(
             project.isArchived
                 ? 'Archived ${_ago(project.archivedAt!)} — a snapshot of what '
@@ -238,55 +261,46 @@ class _Summary extends StatelessWidget {
                     ? 'Last analyzed ${_ago(project.lastCheckedAt!)}'
                     : 'Analyzed when added',
             style: theme.textTheme.bodySmall?.copyWith(
-              color: project.isArchived ? Colors.blueGrey.shade700 : null,
+              color: project.isArchived
+                  ? const Color(0xFFFFD48A)
+                  : Colors.white.withValues(alpha: 0.62),
               fontWeight: project.isArchived ? FontWeight.w600 : null,
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 16),
           Wrap(
-            spacing: 20,
+            spacing: 26,
             runSpacing: 8,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               _Stat(label: 'dependencies', value: report.total),
-              // "Outdated" and the upgrade counts are comparisons against
-              // pub.dev as it is now, which is what archiving stepped away
-              // from. Advisories are facts about the snapshot, so they stay.
+              // "Outdated" is a comparison against pub.dev as it is now, which
+              // is what archiving stepped away from. Advisories are facts about
+              // the snapshot, so they stay.
               if (!project.isArchived)
                 _Stat(
                   label: 'outdated',
                   value: report.outdated,
-                  color: report.outdated > 0 ? Colors.orange : null,
+                  color: report.outdated > 0 ? Palette.minorOnInk : null,
                 ),
               _Stat(
                 label: 'vulnerable',
                 value: report.vulnerable,
-                color: report.vulnerable > 0 ? Colors.red : null,
+                color: report.vulnerable > 0 ? Palette.alarmOnInk : null,
               ),
               if (unknown > 0 && !project.isArchived)
                 _Stat(label: 'unknown', value: unknown),
             ],
           ),
-          if (!project.isArchived && (breaking > 0 || routine > 0)) ...[
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 20,
-              runSpacing: 8,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                if (breaking > 0)
-                  _Stat(
-                    label: 'breaking upgrades',
-                    value: breaking,
-                    color: Colors.red,
-                  ),
-                if (routine > 0)
-                  _Stat(label: 'routine upgrades', value: routine),
-              ],
-            ),
-          ],
+          const SizedBox(height: 18),
+          // The tree itself, one mark per package. The counts above say how
+          // many; this says out of how many, and what the rest are.
+          DependencySpectrum(
+            nodes: report.nodes,
+            showCurrency: !project.isArchived,
+          ),
           if (report.manifests.length > 1) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: 14),
             _Note(
               icon: Icons.folder_copy_outlined,
               // The count is of distinct name+version pairs, so a package
@@ -297,7 +311,7 @@ class _Summary extends StatelessWidget {
             ),
           ],
           if (report.coverageNote != null) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
             _Note(
               icon: Icons.warning_amber_outlined,
               text: report.coverageNote!,
@@ -305,7 +319,7 @@ class _Summary extends StatelessWidget {
             ),
           ],
           if (inferred > 0) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
             _Note(
               icon: Icons.info_outline,
               text: 'This repository has no pubspec.lock, so versions were '
@@ -319,8 +333,12 @@ class _Summary extends StatelessWidget {
   }
 }
 
-/// A line of context under the summary: what the report covers, or what it
+/// A line of context inside the header band: what the report covers, or what it
 /// could not.
+///
+/// Set against the ink rather than on paper, because these are qualifications
+/// on the numbers directly above them and they lose their referent the moment
+/// they are moved out of the band.
 class _Note extends StatelessWidget {
   const _Note({
     required this.icon,
@@ -335,20 +353,19 @@ class _Note extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final color =
-        isWarning ? Colors.orange.shade800 : theme.textTheme.bodySmall?.color;
+    final color = isWarning
+        ? const Color(0xFFFFC26B)
+        : Colors.white.withValues(alpha: 0.62);
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Icon(icon, size: 15, color: color),
-        const SizedBox(width: 6),
+        const SizedBox(width: 7),
         Expanded(
           child: Text(
             text,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: isWarning ? color : null,
-            ),
+            style: theme.textTheme.bodySmall?.copyWith(color: color),
           ),
         ),
       ],
@@ -375,6 +392,7 @@ class _Stat extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+
     return Row(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.baseline,
@@ -382,13 +400,18 @@ class _Stat extends StatelessWidget {
       children: [
         Text(
           '$value',
-          style: theme.textTheme.titleLarge?.copyWith(
-            color: color,
-            fontWeight: FontWeight.w600,
+          style: display(
+            theme.textTheme.headlineSmall,
+            color: color ?? Colors.white,
           ),
         ),
-        const SizedBox(width: 6),
-        Text(label, style: theme.textTheme.bodyMedium),
+        const SizedBox(width: 7),
+        Text(
+          label,
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: Colors.white.withValues(alpha: 0.7),
+          ),
+        ),
       ],
     );
   }
@@ -414,55 +437,37 @@ class _Advisories extends StatelessWidget {
     final accent = severityColor(worst, theme);
     final counts = report.advisoryCounts;
 
-    return Card(
-      color: accent.withValues(alpha: 0.06),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: accent.withValues(alpha: 0.4)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+    return SpineCard(
+      accent: accent,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SectionHeading(
+            icon: Icons.gpp_maybe_outlined,
+            title: 'Security advisories',
+            accent: accent,
+            // The breakdown, so the headline is the shape of the problem
+            // rather than a single count that treats every finding alike.
+            trailing: Wrap(
+              spacing: 8,
+              runSpacing: 6,
               children: [
-                Icon(Icons.gpp_maybe_outlined, color: accent),
-                const SizedBox(width: 8),
-                Text(
-                  'Security advisories',
-                  style: theme.textTheme.titleMedium,
-                ),
-                const SizedBox(width: 12),
-                // The breakdown, so the headline is the shape of the problem
-                // rather than a single count that treats every finding alike.
-                Expanded(
-                  child: Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: [
-                      for (final entry in counts.entries)
-                        _SeverityCount(
-                          severity: entry.key,
-                          count: entry.value,
-                        ),
-                    ],
-                  ),
-                ),
+                for (final entry in counts.entries)
+                  _SeverityCount(severity: entry.key, count: entry.value),
               ],
             ),
-            const SizedBox(height: 12),
-            for (final node in affected) ...[
-              _AffectedPackage(node: node, nodes: report.nodes),
-              const SizedBox(height: 14),
-            ],
-            if (onLoadRemediation != null) ...[
-              const Divider(height: 8),
-              const SizedBox(height: 8),
-              RemediationPanel(load: onLoadRemediation!),
-            ],
+          ),
+          const SizedBox(height: 14),
+          for (final node in affected) ...[
+            _AffectedPackage(node: node, nodes: report.nodes),
+            const SizedBox(height: 14),
           ],
-        ),
+          if (onLoadRemediation != null) ...[
+            const Divider(height: 8),
+            const SizedBox(height: 10),
+            RemediationPanel(load: onLoadRemediation!),
+          ],
+        ],
       ),
     );
   }

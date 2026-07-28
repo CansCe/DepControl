@@ -225,7 +225,12 @@ class PubApiClient {
   /// unchecked name is interpolated into the request path, and something like
   /// `../../admin` normalises the API prefix away — the host stays pub.dev, but
   /// the request stops being the one this client meant to make.
-  static final _packageName = RegExp(r'^[a-zA-Z][a-zA-Z0-9_]{0,63}$');
+  ///
+  /// A leading underscore is legal and is not a corner case: `_fe_analyzer_shared`
+  /// is pulled in by every project that depends on `analyzer`. Rejecting it made
+  /// this client answer null for the package silently, so its latest version, its
+  /// advisories and its license all came back as unknown rather than as an error.
+  static final _packageName = RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]{0,63}$');
 
   Future<PubInfo> info(String package) async {
     final latest = await _latest(package);
@@ -249,6 +254,38 @@ class PubApiClient {
         .map(Advisory.fromJson)
         .whereType<Advisory>()
         .toList();
+  }
+
+  /// pub.dev's analysis tags for one published version of [package], which is
+  /// where its detected license is published.
+  ///
+  /// Beware what "no analysis" looks like here. pub.dev keeps one analysis per
+  /// version and drops the old ones, but a dropped version still answers with a
+  /// tag list — just a shorter one, holding the facts that need no analysis
+  /// (`publisher:dart.dev`, `is:obsolete`) and no `license:` tag at all. So an
+  /// empty list is not the signal a caller wants; the absence of the tag it
+  /// came for is. [LicenseCatalog] reads that distinction.
+  ///
+  /// Endpoint: `/api/packages/<package>/versions/<version>/score` -> `tags`.
+  Future<List<String>> versionTags(String package, String version) async {
+    try {
+      Version.parse(version);
+    } on FormatException {
+      return const [];
+    }
+    return _tags('/api/packages/$package/versions/$version/score', package);
+  }
+
+  /// pub.dev's analysis tags for the latest release of [package].
+  ///
+  /// Endpoint: `/api/packages/<package>/score` -> `tags`.
+  Future<List<String>> latestTags(String package) =>
+      _tags('/api/packages/$package/score', package);
+
+  Future<List<String>> _tags(String path, String package) async {
+    final json = await _getJson(path, package);
+    final tags = json?['tags'] as List?;
+    return tags == null ? const [] : tags.map((t) => '$t').toList();
   }
 
   /// Every published version of [package], each with the constraints it

@@ -1,0 +1,101 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>DepControl — icon export</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0 auto; padding: 40px 24px; max-width: 860px;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.lede { margin: 0 0 28px; opacity: .75; }
+  .grid { display: flex; flex-wrap: wrap; gap: 22px; }
+  figure {
+    margin: 0; padding: 14px; border: 1px solid rgba(128,128,128,.35);
+    border-radius: 10px; text-align: center; min-width: 132px;
+  }
+  figure canvas {
+    display: block; margin: 0 auto 10px;
+    image-rendering: pixelated;               /* show the 16px as it really is */
+    background: repeating-conic-gradient(rgba(128,128,128,.18) 0 25%, transparent 0 50%) 0 0 / 12px 12px;
+  }
+  figcaption { font-size: 12px; opacity: .7; margin-bottom: 8px; }
+  a.dl {
+    display: inline-block; font-size: 12px; text-decoration: none;
+    padding: 5px 12px; border-radius: 6px; background: #0553B1; color: #fff;
+  }
+  .note { margin-top: 30px; font-size: 13px; opacity: .75; }
+  code { background: rgba(128,128,128,.16); padding: 1px 5px; border-radius: 4px; }
+</style>
+
+<h1>DepControl icon export</h1>
+<p class="lede">
+  Open this file in a browser and save each size. It runs offline — the artwork
+  is inlined below, nothing is fetched.
+</p>
+
+<div class="grid" id="grid"></div>
+
+<p class="note">
+  <strong>GitHub OAuth app</strong> takes the 512 (it wants at least 200×200 and
+  will not accept an SVG). <strong>Flutter web</strong> wants 192 and 512 in
+  <code>frontend/web/icons/</code>; the favicon is already wired up as an SVG,
+  which every current browser reads, so the 32 is only for older ones.
+</p>
+
+<script>
+// The icon, inline. Kept identical to brand/depcontrol-icon.svg — if you edit
+// that file, paste the change here too.
+const SVG = `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#0553B1"/>
+  <g stroke="#FFFFFF" stroke-width="4.5" stroke-linecap="round">
+    <line x1="32" y1="20" x2="18" y2="44"/>
+    <line x1="32" y1="20" x2="46" y2="44"/>
+  </g>
+  <circle cx="32" cy="20" r="6" fill="#FFFFFF"/>
+  <circle cx="18" cy="44" r="5.5" fill="#FFFFFF"/>
+  <circle cx="46" cy="44" r="6.5" fill="#0553B1" stroke="#FFFFFF" stroke-width="2"/>
+  <circle cx="46" cy="44" r="4" fill="#F59E0B"/>
+</svg>`.trim();
+
+const SIZES = [
+  { px: 16,  label: 'favicon (legacy)' },
+  { px: 32,  label: 'favicon (legacy)' },
+  { px: 180, label: 'apple-touch-icon' },
+  { px: 192, label: 'Flutter web' },
+  { px: 512, label: 'Flutter web · GitHub OAuth' },
+  { px: 1024, label: 'store / print master' },
+];
+
+// A data URI keeps the canvas untainted, so toBlob works from file://.
+const source = new Image();
+source.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(SVG);
+
+source.onload = () => {
+  const grid = document.getElementById('grid');
+
+  for (const { px, label } of SIZES) {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = px;
+    // Cap the on-screen size so 1024 does not dominate the page, but never
+    // scale a small icon up — the point of showing 16 is to see it at 16.
+    const shown = Math.min(px, 128);
+    canvas.style.width = canvas.style.height = shown + 'px';
+    canvas.getContext('2d').drawImage(source, 0, 0, px, px);
+
+    const figure = document.createElement('figure');
+    const caption = document.createElement('figcaption');
+    caption.textContent = `${px}×${px} — ${label}`;
+
+    const link = document.createElement('a');
+    link.className = 'dl';
+    link.textContent = 'Save PNG';
+    link.download = `depcontrol-${px}.png`;
+    canvas.toBlob(blob => { link.href = URL.createObjectURL(blob); });
+
+    figure.append(canvas, caption, link);
+    grid.append(figure);
+  }
+};
+</script>

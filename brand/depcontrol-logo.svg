@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 250 64" width="250" height="64"
+     role="img" aria-label="DepControl">
+  <title>DepControl</title>
+
+  <!-- Horizontal lockup: mark + wordmark, for the app bar, README and docs.
+       The mark is the icon geometry scaled to 48px and nudged down 8, so its
+       optical centre sits on the wordmark's x-height rather than its bounding
+       box centre — the two read as one line rather than as a stacked pair. -->
+  <g transform="translate(0 8) scale(0.75)">
+    <g stroke="#0553B1" stroke-width="4.5" stroke-linecap="round">
+      <line x1="32" y1="20" x2="18" y2="44"/>
+      <line x1="32" y1="20" x2="46" y2="44"/>
+    </g>
+    <circle cx="32" cy="20" r="6" fill="#0553B1"/>
+    <circle cx="18" cy="44" r="5.5" fill="#0553B1"/>
+    <circle cx="46" cy="44" r="6.5" fill="#F59E0B"/>
+  </g>
+
+  <!-- Two weights instead of two words: the name is one word, and the weight
+       shift carries the compound without a space or a capital doing the work.
+
+       NOTE: this is live text, so it renders with whatever the viewer has. For
+       anything that leaves this repo, convert it to outlines first. -->
+  <text x="60" y="41"
+        font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="27" letter-spacing="-0.6">
+    <tspan fill="#0553B1" font-weight="700">Dep</tspan><tspan fill="#1F2937" font-weight="400">Control</tspan>
+  </text>
+</svg>

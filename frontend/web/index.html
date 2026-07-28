@@ -5,6 +5,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DepControl</title>
     <base href="/">
+
+    <!-- SVG first, so browsers that support it get a mark that is sharp at any
+         size; the PNGs are the fallback for those that do not. -->
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+
+    <!-- Installable web app: the manifest is what supplies the icon when
+         someone adds DepControl to a home screen or installs it from Chrome. -->
+    <link rel="manifest" href="manifest.json">
+
+    <!-- Matches the ink band the app opens with, so the browser chrome and the
+         splash agree with the UI instead of flashing white first. -->
+    <meta name="theme-color" content="#151B2E">
+
+    <!-- Archivo sets titles, Plex Sans sets prose, Plex Mono sets everything a
+         machine assigned — versions, GHSA ids, CVSS vectors, SPDX ids. Loaded
+         here rather than through a Dart package so the app takes no dependency
+         for it: Flutter Web resolves families by name against the browser's
+         own font list, and falls back silently where these never arrive. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+    <meta name="description" content="Inspect, report and control a Dart or Flutter project's dependencies.">
   </head>
   <body>
     <script src="flutter_bootstrap.js" async></script>

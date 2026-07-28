@@ -80,6 +80,44 @@ class DepReport {
       });
   }
 
+  /// Packages nothing you ship depends on — reachable only through dev
+  /// dependencies.
+  ///
+  /// Computed by walking the graph out from the *regular* direct dependencies:
+  /// whatever that walk does not reach is not linked into the built artefact.
+  /// The distinction matters to license compliance, where a GPL code generator
+  /// and a GPL runtime library are entirely different problems. It says nothing
+  /// about security, where a compromised build tool is a real one.
+  ///
+  /// Names rather than `name@version` keys, because the graph's edges are
+  /// names. Where a repository resolves one package at two versions the walk
+  /// follows the union of their edges, which over-reaches — and over-reaching
+  /// here means calling something shipped that might not be, so a package is
+  /// checked rather than quietly exempted.
+  Set<String> get devOnlyPackages {
+    final edges = <String, List<String>>{};
+    for (final node in nodes) {
+      (edges[node.name] ??= <String>[]).addAll(node.dependencies);
+    }
+
+    final shipped = <String>{
+      for (final node in nodes)
+        if (node.kind == DepKind.direct) node.name,
+    };
+
+    final queue = shipped.toList();
+    while (queue.isNotEmpty) {
+      for (final child in edges[queue.removeLast()] ?? const <String>[]) {
+        if (shipped.add(child)) queue.add(child);
+      }
+    }
+
+    return {
+      for (final node in nodes)
+        if (!shipped.contains(node.name)) node.name,
+    };
+  }
+
   factory DepReport.fromJson(Map<String, dynamic> json) {
     return DepReport(
       projectId: json['projectId'] as String,

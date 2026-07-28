@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared/shared.dart';
 
+import '../theme.dart';
 import 'dep_kind_badge.dart';
 import 'dep_status_chip.dart';
 
@@ -165,6 +166,8 @@ class _DepTableState extends State<DepTable> {
   // --- wide -----------------------------------------------------------------
 
   Widget _buildTable(BuildContext context) {
+    final theme = Theme.of(context);
+
     return SingleChildScrollView(
       scrollDirection: Axis.vertical,
       child: SizedBox(
@@ -189,11 +192,28 @@ class _DepTableState extends State<DepTable> {
                 // would try to open a sheet per dependency.
                 cells: [
                   for (final cell in <Widget>[
-                    Text(n.name),
-                    Text(n.kind.name),
-                    Text(n.installed),
+                    Text(
+                      n.name,
+                      style: theme.textTheme.bodyMedium
+                          ?.copyWith(fontWeight: FontWeight.w500),
+                    ),
+                    Text(
+                      n.kind.name,
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: Palette.slate),
+                    ),
+                    // Versions are machine-assigned, so they are set like it —
+                    // and a monospaced column lets the eye compare `1.2.0`
+                    // against `1.10.0` on the digit rather than on the width.
+                    Text(n.installed, style: mono(theme.textTheme.bodyMedium)),
                     if (widget.showCurrency) ...[
-                      Text(n.latest ?? '—'),
+                      Text(
+                        n.latest ?? '—',
+                        style: mono(
+                          theme.textTheme.bodyMedium,
+                          color: n.latest == null ? Palette.slate : null,
+                        ),
+                      ),
                       DepStatusChip(status: n.status),
                     ],
                   ])
@@ -290,29 +310,26 @@ class _VersionLine extends StatelessWidget {
     final movesTo = latest != null && latest != node.installed;
 
     if (!movesTo) {
-      return Text(
-        node.installed,
-        style: small?.copyWith(color: theme.textTheme.bodyMedium?.color),
-      );
+      return Text(node.installed, style: mono(small));
     }
+
+    // The target takes the colour of the field that would move, so the row says
+    // how big the step is before the reader opens anything.
+    final risk = assessUpgrade(node).risk;
+    final target = switch (risk) {
+      UpgradeRisk.breaking => Palette.major,
+      UpgradeRisk.minor || UpgradeRisk.patch => Palette.minor,
+      _ => Palette.slate,
+    };
 
     return Text.rich(
       TextSpan(
         children: [
-          TextSpan(
-            text: node.installed,
-            style: small?.copyWith(color: Colors.grey.withValues(alpha: 0.9)),
-          ),
-          TextSpan(
-            text: '  →  ',
-            style: small?.copyWith(color: Colors.grey.withValues(alpha: 0.9)),
-          ),
+          TextSpan(text: node.installed, style: mono(small, color: Palette.slate)),
+          TextSpan(text: '  →  ', style: mono(small, color: Palette.slate)),
           TextSpan(
             text: latest,
-            style: small?.copyWith(
-              color: Colors.green.shade700,
-              fontWeight: FontWeight.w500,
-            ),
+            style: mono(small, color: target, weight: FontWeight.w600),
           ),
         ],
       ),

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:shared/shared.dart';
 
+import '../theme.dart';
+
 /// Small badge for how a dependency is pulled in.
 ///
 /// Sits beside the package name in the compact layout, where a whole column
@@ -15,19 +17,19 @@ class DepKindBadge extends StatelessWidget {
     final theme = Theme.of(context);
 
     // Deliberately muted: the kind is context, not the headline. Direct
-    // dependencies get slightly more weight because they are the ones a
-    // developer can actually change.
+    // dependencies get the brand colour because they are the ones a developer
+    // can actually change; the rest recede.
     final (label, color) = switch (kind) {
-      DepKind.direct => ('direct', theme.colorScheme.primary),
-      DepKind.dev => ('dev', Colors.purple),
-      DepKind.transitive => ('transitive', Colors.blueGrey),
+      DepKind.direct => ('direct', Palette.pub),
+      DepKind.dev => ('dev', const Color(0xFF7B4FBF)),
+      DepKind.transitive => ('transitive', Palette.slate),
     };
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.10),
-        border: Border.all(color: color.withValues(alpha: 0.35)),
+        border: Border.all(color: color.withValues(alpha: 0.30)),
         borderRadius: BorderRadius.circular(4),
       ),
       child: Text(
@@ -36,6 +38,7 @@ class DepKindBadge extends StatelessWidget {
           color: color,
           fontSize: 10,
           height: 1.4,
+          fontWeight: FontWeight.w600,
         ),
       ),
     );

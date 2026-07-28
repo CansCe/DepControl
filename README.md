@@ -83,8 +83,9 @@ remediation all refuse with `409` — a snapshot that keeps re-fetching a
 repository and re-querying pub.dev is not archived in any sense that matters. It
 still serves its stored report, showing what the project depended on: no
 `Latest` or `Status` columns, no upgrade assessment, no remediation. Advisories
-stay, because they are facts about the versions in the snapshot rather than a
-comparison with today. Restoring the project makes all of it work again.
+and licenses stay, because they are facts about the versions in the snapshot
+rather than a comparison with today. Restoring the project makes all of it work
+again.
 
 ## Public API diffs
 
@@ -204,6 +205,85 @@ advisory can drag a dozen packages with it.
 
 Remediations are shown as a pubspec diff. Opening pull requests would need
 GitHub write credentials, which this app deliberately does not hold.
+
+## License compliance
+
+Every dependency's license, judged against a policy, with a manifest to hand to
+whoever signs off on shipping.
+
+Licenses come from **pub.dev's own detection** — it analyses each published
+version's `LICENSE` file and publishes the result as tags (`license:mit`,
+`license:osi-approved`, `license:fsf-libre`, or `license:unknown`). That is the
+same answer shown on the package page, so a report here matches what a reviewer
+sees if they look the package up by hand.
+
+- **Read per version, and it says when it could not be.** pub.dev keeps one
+  analysis per version and drops the old ones, so a project pinned to an old
+  release has none. The scan then reads the latest release instead and labels
+  the finding as such — relicensing between the pinned version and today is
+  exactly what this exists to catch, so the substitution is printed rather than
+  smoothed over.
+- **Classified by obligation, not by name.** A policy is decided on whether a
+  dependency can oblige you to publish your own source, so licenses are grouped
+  into permissive, weak copyleft, strong copyleft, network copyleft (AGPL — the
+  one that catches a hosted service that never ships a binary), and not-open-
+  source. The table is `backend/lib/src/services/license_catalog.dart`.
+- **Never guessed.** A license the catalog does not recognise keeps its SPDX id
+  and gets no family, which under the standard policy means a human looks at it.
+  Filing an unrecognised license under "probably fine" is the one error that
+  gets a package shipped.
+- **"Unidentified" is a finding, not a clearance.** Code with no identifiable
+  grant is not licensed to you by default, so it is never reported as clean.
+- **Packages that are not on pub.dev are not looked up there.** An SDK, path or
+  git dependency has no published analysis, and pub.dev *does* serve packages
+  under some of those names — `flutter` and `sky_engine` there are discontinued
+  placeholders with a few dozen downloads a month. Reading a license off one of
+  those and printing it beside the SDK's name would be a fabricated answer that
+  happens to look plausible. They are listed as unchecked, with where they come
+  from, alongside packages from reports that predate this feature. Neither is a
+  finding: "we could not check this" is not "somebody must review this", and
+  filing them together buries the ones that are.
+
+### Policy
+
+`GET`/`PUT`/`DELETE` `/policy/licenses` holds one policy per user. Until someone
+writes one, the standard policy applies: permissive allowed, weak copyleft
+needs review, strong/network copyleft and non-open-source forbidden, and
+anything unidentified needs review. The report says which of the two you are
+reading — "your policy forbids this" and "nobody here has written a policy and
+the default forbids this" send you to different places.
+
+Rules are written per obligation family, with per-license exceptions
+(`{"licenses": {"SSPL-1.0": "allowed"}}`) for the ones every policy accumulates.
+The UI edits the families; the exceptions go through the API.
+
+**Dev dependencies are not checked by default.** A GPL code generator is not
+linked into what you ship. Which packages those are is worked out from the
+graph, not from `dev_dependencies` alone: a package that only a dev dependency
+pulls in is marked transitive and still does not ship. Set
+`checkDevDependencies` if you redistribute your toolchain.
+
+### Manifest
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "$API/projects/$ID/licenses?format=csv" -OJ
+```
+
+One row per dependency — including the permissive majority, because a manifest
+is an inventory first and an exception list second, and a reviewer needs to see
+that the whole tree was examined. Unchecked packages stay in the same table,
+each with the reason, so filtering cannot hide them. Drop `?format=csv` for
+JSON; the response carries
+the policy it was evaluated under, so the document is still readable six months
+later.
+
+The endpoint reads the stored report and runs the policy over it. It makes no
+outbound calls, so it is not rate limited and it works for an archived project —
+a license is a fact about the versions in the snapshot, the same way an advisory
+is. Re-analyze first if you want today's dependencies.
+
+The table it needs is in `backend/sql/license_policies.sql`.
 
 ### What the server assumes about its inputs
 

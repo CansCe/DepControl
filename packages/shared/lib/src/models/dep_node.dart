@@ -1,4 +1,5 @@
 import 'dep_advisory.dart';
+import 'package_license.dart';
 
 /// How a dependency is pulled into the project.
 enum DepKind { direct, dev, transitive }
@@ -33,6 +34,7 @@ class DepNode {
     this.status = DepStatus.unknown,
     this.source = DepSource.unresolved,
     this.advisories = const [],
+    this.license,
     this.dependencies = const [],
     this.manifests = const [],
   });
@@ -50,6 +52,7 @@ class DepNode {
         status: status,
         source: source,
         advisories: advisories,
+        license: license,
         dependencies: dependencies,
         manifests: manifests,
       );
@@ -74,6 +77,14 @@ class DepNode {
 
   /// Security advisories affecting [installed], if any.
   final List<DepAdvisory> advisories;
+
+  /// The license this version is published under, as pub.dev identified it.
+  ///
+  /// Null means nobody looked — a report generated before license scanning
+  /// existed. That is deliberately not the same value as a scan that came back
+  /// unidentified ([PackageLicense.undetermined]), because a compliance report
+  /// must not present "not checked" as "checked and found nothing".
+  final PackageLicense? license;
 
   /// Direct children (names) in the dependency graph.
   final List<String> dependencies;
@@ -101,6 +112,11 @@ class DepNode {
         (json['source'] as String?) ?? 'unresolved',
       ),
       advisories: _advisoriesFrom(json['advisories']),
+      license: switch (json['license']) {
+        final Map license =>
+          PackageLicense.fromJson(license.cast<String, dynamic>()),
+        _ => null,
+      },
       dependencies:
           (json['dependencies'] as List?)?.cast<String>() ?? const [],
       manifests: (json['manifests'] as List?)?.cast<String>() ?? const [],
@@ -133,6 +149,9 @@ class DepNode {
         'status': status.name,
         'source': source.name,
         'advisories': advisories.map((a) => a.toJson()).toList(),
+        // Omitted rather than written as null, so a stored report keeps saying
+        // "never scanned" instead of acquiring an empty license field.
+        if (license != null) 'license': license!.toJson(),
         'dependencies': dependencies,
         if (manifests.isNotEmpty) 'manifests': manifests,
       };

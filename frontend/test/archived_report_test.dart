@@ -122,12 +122,16 @@ void main() {
       expect(find.textContaining('Work out how to fix'), findsNothing);
     });
 
-    testWidgets('asks the server for nothing but the stored report',
+    // The two reads that serve stored data, and nothing else: no repository
+    // fetch, no pub.dev. The license report belongs in the same category as the
+    // dependency report — it runs the policy over rows already in the database
+    // — which is why archiving does not take it away.
+    testWidgets('reads stored data and reaches outward for nothing',
         (tester) async {
       final c = clientFor();
       await pump(tester, project(archived: true), c.api);
 
-      expect(c.calls, ['GET /projects/p1']);
+      expect(c.calls, ['GET /projects/p1', 'GET /projects/p1/licenses']);
     });
   });
 

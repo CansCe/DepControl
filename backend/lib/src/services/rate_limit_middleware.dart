@@ -11,10 +11,10 @@ import 'rate_limiter.dart';
 ///
 /// Reading a stored report is a database round trip and costs nothing worth
 /// counting. Adding or re-analyzing a project fetches a repository and then
-/// queries pub.dev once or twice per dependency — one signed-in user can turn a
-/// handful of requests into hundreds of outbound ones. That asymmetry, not the
-/// request count, is what this protects: both the server and the reputation of
-/// its IP address with pub.dev.
+/// queries pub.dev two or three times per dependency — one signed-in user can
+/// turn a handful of requests into hundreds of outbound ones. That asymmetry,
+/// not the request count, is what this protects: both the server and the
+/// reputation of its IP address with pub.dev.
 ///
 /// Must be applied *inside* `requireAuth`, so that the caller is known and the
 /// limit is per user rather than per process. Counting anonymous traffic would
@@ -79,5 +79,12 @@ bool _doesOutboundWork(Request request) {
   }
 
   if (request.method != HttpMethod.get) return true;
+
+  // The license report is the third read that serves stored data: it runs the
+  // caller's policy over the report already in the database and calls nothing.
+  // Named here rather than left to the default because the default is a guess
+  // and this is not — the endpoint's whole point is that it needs no network.
+  if (segments.length == 3 && segments.last == 'licenses') return false;
+
   return segments.length > 2;
 }

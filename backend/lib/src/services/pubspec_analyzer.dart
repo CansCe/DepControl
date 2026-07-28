@@ -6,6 +6,7 @@ import 'package:yaml/yaml.dart';
 import 'constraint_resolver.dart';
 import 'cvss.dart';
 import 'git_fetcher.dart';
+import 'license_catalog.dart';
 import 'pub_api_client.dart';
 
 /// Turns fetched pubspec files into a [DepReport] enriched with pub.dev data.
@@ -91,6 +92,9 @@ class PubspecAnalyzer {
       status: a.status,
       source: a.source,
       advisories: a.advisories,
+      // Same package at the same version, so both readings describe the same
+      // published archive; either will do.
+      license: a.license ?? b.license,
       dependencies: edges,
     );
   }
@@ -108,7 +112,19 @@ class PubspecAnalyzer {
     // not commit its lockfile still gets real versions instead of "unknown".
     final locked = files.hasLock
         ? _parseLock(files.pubspecLock!)
-        : <String, String>{};
+        : <String, LockedPackage>{};
+
+    // Where each package comes from, which decides whether pub.dev has anything
+    // to say about it at all. The lockfile goes last because it is the
+    // authoritative statement of what a dependency actually resolved to.
+    final origins = <String, String?>{
+      for (final entry in pubspec.dependencies.entries)
+        entry.key: _originOf(entry.value),
+      for (final entry in pubspec.devDependencies.entries)
+        entry.key: _originOf(entry.value),
+      for (final entry in locked.entries)
+        if (entry.value.statesSource) entry.key: entry.value.origin,
+    };
 
     final resolved = files.hasLock
         ? const <String, ResolvedPackage>{}
@@ -130,7 +146,7 @@ class PubspecAnalyzer {
     // parallel — bounded to stay a polite API client.
     final nodes = await _mapConcurrently(names.toList(), (name) async {
       final resolvedPackage = resolved[name];
-      final installed = locked[name] ??
+      final installed = locked[name]?.version ??
           resolvedPackage?.version.toString() ??
           '(unresolved)';
 
@@ -147,6 +163,27 @@ class PubspecAnalyzer {
               ? DepKind.dev
               : DepKind.transitive;
 
+      // A package that does not come from pub.dev is not asked about there.
+      // pub.dev serves packages under some of these names — `flutter` and
+      // `sky_engine` are both discontinued placeholders with a few dozen
+      // downloads a month — and answering with one of those would report a
+      // latest version, an advisory set and a license belonging to entirely
+      // different software.
+      if (origins[name] case final origin?) {
+        return DepNode(
+          name: name,
+          kind: kind,
+          installed: installed,
+          constraint: constraint,
+          source: source,
+          license: PackageLicense.notFromPubDev(origin),
+          dependencies: resolvedPackage?.dependencies
+                  .where(names.contains)
+                  .toList() ??
+              const [],
+        );
+      }
+
       final info = await _pub.info(name);
 
       // An advisory applies to specific versions. Only those affecting the
@@ -158,6 +195,7 @@ class PubspecAnalyzer {
           : await _advisoriesFor(name, info.advisories, current);
 
       final status = _status(installed, info.latest, advisories);
+      final license = await _licenseFor(name, installed, info.latest);
 
       // Graph edges: this package's regular deps, kept only if they're also in
       // the project's set (so edges never dangle). The resolver already knows
@@ -180,6 +218,7 @@ class PubspecAnalyzer {
         status: status,
         source: source,
         advisories: advisories,
+        license: license,
         dependencies: children,
       );
     });
@@ -289,6 +328,41 @@ class PubspecAnalyzer {
     return result;
   }
 
+  /// The license of the installed version, from pub.dev's analysis of it.
+  ///
+  /// Falls back to the latest release's analysis, which is what pub.dev still
+  /// has for a package whose installed version is old enough that its analysis
+  /// has been dropped. The result records which of the two it read, and
+  /// [PackageLicense.caveat] turns that into a sentence — a relicensing between
+  /// the installed version and today is exactly the thing a compliance report
+  /// exists to notice, so it must not be papered over.
+  ///
+  /// Returns [PackageLicense.undetermined] rather than null when pub.dev has
+  /// nothing: null on a node means nobody ever looked, and somebody just did.
+  Future<PackageLicense> _licenseFor(
+    String package,
+    String installed,
+    String? latest,
+  ) async {
+    final exact = LicenseCatalog.read(
+      await _pub.versionTags(package, installed),
+      source: LicenseSource.installedVersion,
+      readFromVersion: installed,
+    );
+    if (exact != null) return exact;
+
+    // A version whose analysis pub.dev has dropped still answers with tags —
+    // publisher, `is:obsolete` — just no `license:` one. So the fallback turns
+    // on the absence of a license tag rather than on an empty response, which
+    // is a distinction only [LicenseCatalog] can draw.
+    final fromLatest = LicenseCatalog.read(
+      await _pub.latestTags(package),
+      source: LicenseSource.latestRelease,
+      readFromVersion: latest,
+    );
+    return fromLatest ?? PackageLicense.undetermined;
+  }
+
   /// Stable releases newer than [current], lowest first — the order in which
   /// someone would rather take them.
   Future<List<Version>> _stableReleasesAbove(
@@ -330,15 +404,59 @@ class PubspecAnalyzer {
     }
   }
 
-  /// Minimal pubspec.lock reader: package -> resolved version.
-  Map<String, String> _parseLock(String lockContent) {
+  /// Minimal pubspec.lock reader: package -> resolved version and where it came
+  /// from.
+  Map<String, LockedPackage> _parseLock(String lockContent) {
     final doc = loadYaml(lockContent) as YamlMap;
     final packages = doc['packages'] as YamlMap?;
     if (packages == null) return {};
     return {
       for (final entry in packages.entries)
-        entry.key as String:
-            (entry.value as YamlMap)['version'] as String? ?? '(unknown)',
+        entry.key as String: LockedPackage(
+          version: (entry.value as YamlMap)['version'] as String? ?? '(unknown)',
+          source: (entry.value as YamlMap)['source']?.toString(),
+        ),
     };
   }
+
+  /// Where a declared dependency comes from, or null when it comes from
+  /// pub.dev — the only case anything downstream needs to query.
+  static String? _originOf(Dependency dependency) => switch (dependency) {
+        HostedDependency() => null,
+        SdkDependency() => 'the SDK',
+        PathDependency() => 'a path dependency',
+        GitDependency() => 'a git dependency',
+      };
+
+}
+
+/// One entry from a `pubspec.lock`.
+class LockedPackage {
+  const LockedPackage({required this.version, this.source});
+
+  final String version;
+
+  /// The lockfile's `source:` — `hosted`, `sdk`, `path`, `git`. Once resolution
+  /// has happened this is the only place that still records where a package
+  /// came from.
+  ///
+  /// Null when the entry does not say. That is not the same as saying something
+  /// unrecognised: an entry with no `source:` is telling us nothing, so the
+  /// pubspec's own declaration stands and a transitive entry is taken as
+  /// published, which is what a lockfile entry without a source almost always
+  /// is. An entry that names a source this build does not know *is* saying
+  /// something, and it is not saying "pub.dev".
+  final String? source;
+
+  /// Where the package came from, or null for pub.dev.
+  String? get origin => switch (source) {
+        null || 'hosted' => null,
+        'sdk' => 'the SDK',
+        'path' => 'a path dependency',
+        'git' => 'a git dependency',
+        _ => 'outside pub.dev',
+      };
+
+  /// Whether this entry says anything about where the package came from.
+  bool get statesSource => source != null;
 }

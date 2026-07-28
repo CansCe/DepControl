@@ -131,6 +131,77 @@ class ApiClient {
     return RemediationPlan.fromJson(json);
   }
 
+  /// Every dependency's license in this project's stored report, judged
+  /// against the caller's policy.
+  ///
+  /// `policyIsCustom` says whether anyone has actually written those rules. A
+  /// reader looking at a forbidden dependency needs to know whether they are
+  /// reading their own company's decision or this app's default, because those
+  /// send them to different places.
+  Future<({LicenseReport report, bool policyIsCustom})> licenseReport(
+    String projectId,
+  ) async {
+    final json = await _send(() async => _client.get(
+          Uri.parse('$baseUrl/projects/$projectId/licenses'),
+          headers: await _headers(),
+        ));
+    return (
+      report: LicenseReport.fromJson(json['report'] as Map<String, dynamic>),
+      policyIsCustom: json['policyIsCustom'] as bool? ?? false,
+    );
+  }
+
+  /// The same report as a CSV manifest — the artefact whoever signs off on
+  /// shipping actually opens.
+  Future<String> licenseManifest(String projectId) => _sendText(
+        () async => _client.get(
+          Uri.parse('$baseUrl/projects/$projectId/licenses?format=csv'),
+          headers: await _headers(),
+        ),
+      );
+
+  /// The caller's license rules, and the standard ones to compare against.
+  Future<({LicensePolicy policy, bool isCustom, LicensePolicy standard})>
+      licensePolicy() async {
+    final json = await _send(() async => _client.get(
+          Uri.parse('$baseUrl/policy/licenses'),
+          headers: await _headers(),
+        ));
+    return _policyFrom(json);
+  }
+
+  /// Replaces the caller's license rules. Whole-document: a partial update
+  /// would leave no way to remove a rule.
+  Future<({LicensePolicy policy, bool isCustom, LicensePolicy standard})>
+      saveLicensePolicy(LicensePolicy policy) async {
+    final json = await _send(() async => _client.put(
+          Uri.parse('$baseUrl/policy/licenses'),
+          headers: await _headers(json: true),
+          body: jsonEncode(policy.toJson()),
+        ));
+    return _policyFrom(json);
+  }
+
+  /// Drops the caller's rules, so the standard policy applies again.
+  Future<({LicensePolicy policy, bool isCustom, LicensePolicy standard})>
+      resetLicensePolicy() async {
+    final json = await _send(() async => _client.delete(
+          Uri.parse('$baseUrl/policy/licenses'),
+          headers: await _headers(),
+        ));
+    return _policyFrom(json);
+  }
+
+  static ({LicensePolicy policy, bool isCustom, LicensePolicy standard})
+      _policyFrom(Map<String, dynamic> json) => (
+            policy:
+                LicensePolicy.fromJson(json['policy'] as Map<String, dynamic>),
+            isCustom: json['isCustom'] as bool? ?? false,
+            standard: LicensePolicy.fromJson(
+              json['standard'] as Map<String, dynamic>,
+            ),
+          );
+
   Future<ResolutionResult> simulate(
     String projectId,
     ResolutionRequest request,
@@ -149,6 +220,38 @@ class ApiClient {
       if (json) 'Content-Type': 'application/json',
       if (token != null) 'Authorization': 'Bearer $token',
     };
+  }
+
+  /// Runs a request whose successful response is not JSON — the CSV manifest.
+  ///
+  /// Errors still are, so the failure path decodes and reports them the same
+  /// way [_send] does; only the success path differs.
+  Future<String> _sendText(Future<http.Response> Function() request) async {
+    final http.Response res;
+    try {
+      res = await request();
+    } catch (e) {
+      throw ApiException('Cannot reach the API at $baseUrl — is it running?');
+    }
+    if (res.statusCode < 400) return res.body;
+
+    Map<String, dynamic>? json;
+    try {
+      final decoded = jsonDecode(res.body);
+      if (decoded is Map<String, dynamic>) json = decoded;
+    } catch (_) {
+      // Reported using the status code alone.
+    }
+
+    if (res.statusCode == 401) {
+      throw ApiAuthException(
+        json?['reason']?.toString() ??
+            'Your session has expired. Please sign in again.',
+      );
+    }
+    throw ApiException(
+      json?['error']?.toString() ?? 'Request failed (${res.statusCode})',
+    );
   }
 
   /// Runs a request that succeeds with no body, such as a delete.

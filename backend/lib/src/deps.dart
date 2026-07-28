@@ -2,7 +2,9 @@ import 'dart:io';
 
 import 'auth/jwt_verifier.dart';
 import 'repository/api_diff_store.dart';
+import 'repository/license_policy_store.dart';
 import 'repository/postgres_api_diff_store.dart';
+import 'repository/postgres_license_policy_store.dart';
 import 'repository/postgres_pool.dart';
 import 'repository/postgres_project_repository.dart';
 import 'repository/project_repository.dart';
@@ -26,6 +28,7 @@ class Deps {
     return Deps._(
       repository: stores.repository,
       apiDiffs: stores.apiDiffs,
+      licensePolicies: stores.licensePolicies,
       gitFetcher: GitFetcher(),
       pubApi: pubApi,
       analyzer: PubspecAnalyzer(pubApi),
@@ -45,6 +48,7 @@ class Deps {
     required GitFetcher gitFetcher,
     required PubspecAnalyzer analyzer,
     ApiDiffStore? apiDiffs,
+    LicensePolicyStore? licensePolicies,
     PubApiClient? pubApi,
     Resolver? resolver,
     UpgradeInspector? inspector,
@@ -55,6 +59,7 @@ class Deps {
     return Deps._(
       repository: repository,
       apiDiffs: apiDiffs ?? InMemoryApiDiffStore(),
+      licensePolicies: licensePolicies ?? InMemoryLicensePolicyStore(),
       gitFetcher: gitFetcher,
       pubApi: api,
       analyzer: analyzer,
@@ -68,6 +73,7 @@ class Deps {
   Deps._({
     required this.repository,
     required this.apiDiffs,
+    required this.licensePolicies,
     required this.gitFetcher,
     required this.pubApi,
     required this.analyzer,
@@ -82,6 +88,10 @@ class Deps {
   /// Public-API comparisons computed out of process by `tools/api_differ`. The
   /// server only ever reads from here, and records what it could not find.
   final ApiDiffStore apiDiffs;
+
+  /// Each user's rules about which licenses their code may depend on. Scoped to
+  /// the owner, because a license policy is a statement about one organisation.
+  final LicensePolicyStore licensePolicies;
 
   final GitFetcher gitFetcher;
   final PubApiClient pubApi;
@@ -141,8 +151,11 @@ class Deps {
   ///
   /// Both stores come from one connection pool, so the process holds a single
   /// connection budget however many stores are added later.
-  static ({ProjectRepository repository, ApiDiffStore apiDiffs})
-      _buildStores() {
+  static ({
+    ProjectRepository repository,
+    ApiDiffStore apiDiffs,
+    LicensePolicyStore licensePolicies,
+  }) _buildStores() {
     final db = log.tagged('db');
     final url = Platform.environment['DATABASE_URL'];
     if (url != null && url.isNotEmpty) {
@@ -152,6 +165,7 @@ class Deps {
         return (
           repository: PostgresProjectRepository(pool),
           apiDiffs: PostgresApiDiffStore(pool),
+          licensePolicies: PostgresLicensePolicyStore(pool),
         );
       } catch (e) {
         // A malformed DATABASE_URL used to blow up lazily on the first request,
@@ -195,11 +209,15 @@ class Deps {
     return limiter;
   }
 
-  static ({ProjectRepository repository, ApiDiffStore apiDiffs})
-      _inMemoryStores() => (
-            repository: InMemoryProjectRepository(),
-            apiDiffs: InMemoryApiDiffStore(),
-          );
+  static ({
+    ProjectRepository repository,
+    ApiDiffStore apiDiffs,
+    LicensePolicyStore licensePolicies,
+  }) _inMemoryStores() => (
+        repository: InMemoryProjectRepository(),
+        apiDiffs: InMemoryApiDiffStore(),
+        licensePolicies: InMemoryLicensePolicyStore(),
+      );
 
   static String? _jwksFromSupabaseUrl(String? base) {
     if (base == null || base.isEmpty) return null;

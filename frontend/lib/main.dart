@@ -5,6 +5,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'api/api_client.dart';
 import 'auth/auth_gate.dart';
 import 'screens/report_screen.dart';
+import 'theme.dart';
+import 'widgets/chrome.dart';
 
 /// Shorthand for the Supabase client once [main] has initialized it.
 SupabaseClient get supabase => Supabase.instance.client;
@@ -27,10 +29,7 @@ class DepControlApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'DepControl',
-      theme: ThemeData(
-        colorSchemeSeed: const Color(0xFF0553B1), // Dart blue
-        useMaterial3: true,
-      ),
+      theme: buildTheme(),
       // Projects are owned by the signed-in user, so the registry is only
       // reachable with a session.
       home: const AuthGate(child: RegistryScreen()),
@@ -95,11 +94,14 @@ class _RegistryScreenState extends State<RegistryScreen> {
   Widget build(BuildContext context) {
     final email = supabase.auth.currentUser?.email;
 
+    final theme = Theme.of(context);
+
     return Scaffold(
+      // The band is drawn by the body, so the bar floats over it and its
+      // actions land inside the dark area rather than on a strip above it.
+      extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: Text(
-          _showArchived ? 'DepControl — Archived' : 'DepControl — Registry',
-        ),
+        title: const Text('DepControl'),
         actions: [
           IconButton(
             tooltip: _showArchived ? 'Show active projects' : 'Show archived',
@@ -117,7 +119,13 @@ class _RegistryScreenState extends State<RegistryScreen> {
             Center(
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 8),
-                child: Text(email, style: Theme.of(context).textTheme.bodySmall),
+                child: Text(
+                  email,
+                  style: mono(
+                    theme.textTheme.bodySmall,
+                    color: Colors.white.withValues(alpha: 0.7),
+                  ),
+                ),
               ),
             ),
           IconButton(
@@ -125,33 +133,60 @@ class _RegistryScreenState extends State<RegistryScreen> {
             icon: const Icon(Icons.logout),
             onPressed: () => supabase.auth.signOut(),
           ),
+          const SizedBox(width: 8),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (!_showArchived)
-              _AddForm(
-                controller: _urlController,
-                adding: _adding,
-                onSubmit: _add,
-              ),
-            if (_error != null) ...[
-              const SizedBox(height: 8),
-              Text(_error!, style: TextStyle(color: Colors.red.shade700)),
-            ],
-            const SizedBox(height: 24),
-            Expanded(
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkBand(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Eyebrow(
+                  _showArchived ? 'Archived' : 'Registry',
+                  color: Palette.pub,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  _showArchived
+                      ? 'Projects you have put out of the way.'
+                      : 'Every project you track, and what it depends on.',
+                  style: display(
+                    theme.textTheme.headlineSmall,
+                    color: Colors.white,
+                  ),
+                ),
+                if (!_showArchived) ...[
+                  const SizedBox(height: 18),
+                  _AddForm(
+                    controller: _urlController,
+                    adding: _adding,
+                    onSubmit: _add,
+                  ),
+                ],
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    _error!,
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: const Color(0xFFFF9CA8)),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
               child: ProjectList(
                 future: _projects,
                 api: _api,
                 archived: _showArchived,
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -170,15 +205,21 @@ class _AddForm extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Row(
       children: [
         Expanded(
           child: TextField(
             controller: controller,
-            decoration: const InputDecoration(
+            // A git URL is a machine-matched string, so it is set like one —
+            // and the hint doubles as the shape it expects.
+            style: mono(theme.textTheme.bodyMedium),
+            decoration: InputDecoration(
               labelText: 'Git URL',
               hintText: 'https://github.com/owner/repo',
-              border: OutlineInputBorder(),
+              hintStyle: mono(theme.textTheme.bodyMedium, color: Palette.slate),
+              prefixIcon: const Icon(Icons.link, size: 20),
             ),
             onSubmitted: (_) => onSubmit(),
           ),
@@ -190,7 +231,10 @@ class _AddForm extends StatelessWidget {
               ? const SizedBox(
                   width: 18,
                   height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
                 )
               : const Text('Add project'),
         ),
@@ -401,7 +445,7 @@ class _ProjectRowsState extends State<_ProjectRows> {
 
     return ListView.separated(
       itemCount: _projects.length,
-      separatorBuilder: (_, __) => const Divider(height: 1),
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
       itemBuilder: (context, i) {
         final project = _projects[i];
 
@@ -440,15 +484,37 @@ class _ProjectRowsState extends State<_ProjectRows> {
           // tinted the icon, text and menu the colour of whichever action was
           // being revealed.
           child: Material(
-            color: theme.colorScheme.surface,
+            color: Palette.paper,
+            clipBehavior: Clip.antiAlias,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: Palette.ink.withValues(alpha: 0.10)),
+            ),
             child: ListTile(
-              leading: Icon(
-                widget.archived
-                    ? Icons.inventory_2_outlined
-                    : Icons.folder_outlined,
+              contentPadding: const EdgeInsets.fromLTRB(14, 8, 10, 8),
+              leading: Container(
+                padding: const EdgeInsets.all(9),
+                decoration: BoxDecoration(
+                  color: (widget.archived ? Palette.slate : Palette.pub)
+                      .withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(
+                  widget.archived
+                      ? Icons.inventory_2_outlined
+                      : Icons.folder_outlined,
+                  size: 20,
+                  color: widget.archived ? Palette.slate : Palette.pub,
+                ),
               ),
-              title: Text(project.name),
-              subtitle: Text('${project.gitUrl} @ ${project.ref}'),
+              title: Text(
+                project.name,
+                style: theme.textTheme.titleSmall,
+              ),
+              subtitle: Text(
+                '${project.gitUrl} @ ${project.ref}',
+                style: mono(theme.textTheme.bodySmall, color: Palette.slate),
+              ),
               // A swipe is invisible with a mouse, and this runs on the web.
               trailing: _RowActions(
                 archived: widget.archived,

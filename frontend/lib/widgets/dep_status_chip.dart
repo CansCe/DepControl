@@ -1,6 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:shared/shared.dart';
 
+import '../theme.dart';
+
+/// The colour a dependency's status is drawn in.
+///
+/// Drawn from the semver triad, because that is what a status is a statement
+/// about: up to date means no field would move, outdated means one of them
+/// would. Vulnerable steps outside the triad into the advisory red, since it is
+/// not a version-arithmetic finding at all.
+Color depStatusColor(DepStatus status) => switch (status) {
+      DepStatus.upToDate => Palette.patch,
+      DepStatus.outdated => Palette.minor,
+      DepStatus.vulnerable => const Color(0xFFC62828),
+      DepStatus.unknown => Palette.slate,
+    };
+
 /// Small colored badge for a dependency's freshness / security status.
 class DepStatusChip extends StatelessWidget {
   const DepStatusChip({super.key, required this.status});
@@ -9,24 +24,28 @@ class DepStatusChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final (label, color) = switch (status) {
-      DepStatus.upToDate => ('up to date', Colors.green),
-      DepStatus.outdated => ('outdated', Colors.orange),
-      DepStatus.vulnerable => ('vulnerable', Colors.red),
-      DepStatus.unknown => ('unknown', Colors.grey),
+    final label = switch (status) {
+      DepStatus.upToDate => 'up to date',
+      DepStatus.outdated => 'outdated',
+      DepStatus.vulnerable => 'vulnerable',
+      DepStatus.unknown => 'unknown',
     };
+    final color = depStatusColor(status);
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withValues(alpha: 0.5)),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withValues(alpha: 0.45)),
       ),
       child: Text(
         label,
         style: TextStyle(
-          color: color.shade900,
-          fontSize: 12,
+          fontFamily: kBodyFont,
+          color: color,
+          fontSize: 11.5,
+          height: 1.2,
           fontWeight: FontWeight.w600,
         ),
       ),

@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 250 64" width="250" height="64"
+     role="img" aria-label="DepControl">
+  <title>DepControl</title>
+
+  <!-- Dark-background lockup. The mark goes white rather than staying Dart
+       blue: #0553B1 on a dark field falls below a readable contrast ratio, and
+       a logo that has to be squinted at is not doing its job. The amber node
+       is unchanged — it is the one element that works on both. -->
+  <g transform="translate(0 8) scale(0.75)">
+    <g stroke="#FFFFFF" stroke-width="4.5" stroke-linecap="round">
+      <line x1="32" y1="20" x2="18" y2="44"/>
+      <line x1="32" y1="20" x2="46" y2="44"/>
+    </g>
+    <circle cx="32" cy="20" r="6" fill="#FFFFFF"/>
+    <circle cx="18" cy="44" r="5.5" fill="#FFFFFF"/>
+    <circle cx="46" cy="44" r="6.5" fill="#F59E0B"/>
+  </g>
+
+  <text x="60" y="41"
+        font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="27" letter-spacing="-0.6">
+    <tspan fill="#FFFFFF" font-weight="700">Dep</tspan><tspan fill="#CBD5E1" font-weight="400">Control</tspan>
+  </text>
+</svg>
