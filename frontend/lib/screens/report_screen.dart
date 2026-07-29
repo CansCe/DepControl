@@ -103,8 +103,19 @@ class _ReportScreenState extends State<ReportScreen> {
   Widget build(BuildContext context) {
     return Builder(
       builder: (context) => Scaffold(
-        extendBodyBehindAppBar: true,
+        // The body does *not* run behind the app bar, now that the summary
+        // scrolls away with everything else. It used to: the summary was
+        // pinned, its ink band filled that region, and a transparent app bar
+        // sat over it. Once the page scrolls as one, the same arrangement
+        // slides the table underneath the bar — where rows are both obscured
+        // and, because the viewport still counts that region as visible, not
+        // reliably tappable.
+        //
+        // The bar takes the band's colour instead, so the top of the screen
+        // reads as one ink surface exactly as before, and the summary
+        // continues it seamlessly until it scrolls out.
         appBar: AppBar(
+          backgroundColor: Palette.ink,
           title: Text(_project.name),
           actions: [
             // An archived project is a snapshot; the server refuses to
@@ -174,6 +185,9 @@ class _ReportScreenState extends State<ReportScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  // Its own padding, because [InkBand] defaults to leaving room
+                  // for an app bar drawn over it and nothing is drawn over it
+                  // here any more.
                   _Summary(project: _project, report: report),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
@@ -284,6 +298,10 @@ class _Summary extends StatelessWidget {
     final unimported = report.unimportedDeclarations;
 
     return InkBand(
+      // The default leaves a toolbar's height of room at the top for an app bar
+      // drawn over the band. This one sits below the bar rather than under it,
+      // so that room would be an empty gap.
+      padding: const EdgeInsets.fromLTRB(24, 18, 24, 22),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
