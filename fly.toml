@@ -1,20 +1,34 @@
-# fly.toml app configuration file generated for project-cloud-weysgg on 2026-07-29T05:22:32Z
+# DepControl API -> Fly.io
 #
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+# See https://fly.io/docs/reference/configuration/ for the full schema.
 #
+# This file must stay at the repo root: fly uses the directory holding fly.toml
+# as the Docker build context, and backend/Dockerfile needs the root so it can
+# see `packages/shared`. `.dockerignore` keeps `frontend/`, `.git/` and the
+# `.env` files out of the upload.
+#
+# `fly launch` regenerates this file and will drop the comments and the
+# dockerfile path — check the diff before merging anything it opens.
 
-app = 'project-cloud-weysgg'
+app = 'depcontrol-api'
 primary_region = 'sin'
 
 [build]
   dockerfile = 'backend/Dockerfile'
 
 [env]
+  # Fly does not inject PORT. The generated dart_frog server defaults to 8080
+  # anyway; this is set explicitly so the value sits next to internal_port
+  # rather than being implied by the framework.
   PORT = '8080'
 
 [http_service]
   internal_port = 8080
   force_https = true
+
+  # Scale to zero between requests. A compiled Dart binary on a FROM-scratch
+  # image starts in well under a second, so the cold start is the machine boot,
+  # not the app.
   auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 0
@@ -24,4 +38,3 @@ primary_region = 'sin'
   memory = '512mb'
   cpu_kind = 'shared'
   cpus = 1
-  memory_mb = 512
