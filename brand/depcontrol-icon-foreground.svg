@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108"
+     role="img" aria-label="DepControl">
+  <title>DepControl</title>
+
+  <!-- Android adaptive icon, foreground layer. The tile is not drawn here: the
+       launcher composites this over a solid `adaptive_icon_background` and then
+       applies its own mask, so a tile baked in would be a second, misaligned
+       rounded rectangle inside the first.
+
+       Sized to fill, not to fit. flutter_launcher_icons emits this drawable
+       wrapped in `<inset android:inset="16%">`, which shrinks it to 68% of the
+       108-unit canvas — that inset is where the mask's safe margin comes from.
+       Padding the artwork here as well would pay for the margin twice and land
+       a visibly shrunken mark inside the tile.
+
+       So: scale 1.65 puts the mark at 67.7 of these units, which the inset
+       brings back to 46 of the launcher's, or 64% of the 72 it actually shows —
+       the same proportion the mark has on the flat tile in
+       depcontrol-icon.svg, so the two read as one icon. Its furthest painted
+       edge then sits 27.7 from the centre, inside the 33 the mask guarantees.
+
+       Change the scale and both numbers move; the inset is the generator's, not
+       ours, so check it is still 16% in mipmap-anydpi-v26/ic_launcher.xml after
+       a package upgrade. -->
+  <g transform="translate(-0.45 -0.04) scale(1.65)">
+    <g stroke="#FFFFFF" stroke-width="4.5" stroke-linecap="round">
+      <line x1="32" y1="20" x2="18" y2="44"/>
+      <line x1="32" y1="20" x2="46" y2="44"/>
+    </g>
+
+    <circle cx="32" cy="20" r="6" fill="#FFFFFF"/>
+    <circle cx="18" cy="44" r="5.5" fill="#FFFFFF"/>
+
+    <!-- Filled with the background blue rather than left transparent: the
+         launcher's background layer is that same blue, so it reads as a hole,
+         and it stays right if the background is ever swapped for artwork. -->
+    <circle cx="46" cy="44" r="6.5" fill="#0553B1" stroke="#FFFFFF" stroke-width="2"/>
+    <circle cx="46" cy="44" r="4" fill="#F59E0B"/>
+  </g>
+</svg>

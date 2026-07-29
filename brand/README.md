@@ -10,7 +10,10 @@ shrunk, which a detailed graph does not.
 | File | Use |
 |------|-----|
 | `depcontrol-icon.svg` | Source of truth for the icon. Filled tile — holds its silhouette at 16px. |
-| `depcontrol-icon-512.png` | **Upload this to the GitHub OAuth app.** |
+| `depcontrol-icon-512.png` | **Upload this to the GitHub OAuth app.** Also the Android icon on API 24–25, which predates adaptive icons. |
+| `depcontrol-icon-foreground.svg` | Android adaptive icon, foreground layer. Mark only, no tile — the launcher draws the tile. |
+| `depcontrol-icon-monochrome.svg` | Android 13+ themed icon. Flat silhouette; the launcher tints it to the wallpaper. |
+| `depcontrol-icon-foreground-1024.png`, `depcontrol-icon-monochrome-1024.png` | Exports of the two above. `flutter_launcher_icons` reads these — it does not read SVG. |
 | `depcontrol-mark.svg` | Mark alone on light backgrounds: docs, README, app bar. |
 | `depcontrol-logo.svg` | Horizontal lockup for light backgrounds. |
 | `depcontrol-logo-dark.svg` | Lockup for dark backgrounds. The mark goes white — `#0553B1` on dark is below a readable contrast ratio. |
@@ -35,9 +38,25 @@ Android maskable icon can be cropped to a circle of 80% diameter, and the mark
 at full size sits just outside that — so the maskable pair is drawn at 78% with
 the tile bled to the edges, leaving the corners expendable.
 
-If you add a mobile or desktop target later, point
-[`flutter_launcher_icons`](https://pub.dev/packages/flutter_launcher_icons) at
-`brand/depcontrol-icon-512.png` and it will generate the platform sets.
+Android is wired up too, through
+[`flutter_launcher_icons`](https://pub.dev/packages/flutter_launcher_icons) —
+configured at the bottom of `frontend/pubspec.yaml`, run by hand, output checked
+in. A normal `flutter build apk` does not run it:
+
+```
+frontend/android/app/src/main/res/mipmap-{m,h,x,xx,xxx}hdpi/ic_launcher.png
+frontend/android/app/src/main/res/drawable-{m,h,x,xx,xxx}hdpi/ic_launcher_foreground.png
+frontend/android/app/src/main/res/drawable-{m,h,x,xx,xxx}hdpi/ic_launcher_monochrome.png
+frontend/android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+frontend/android/app/src/main/res/values/colors.xml     # ic_launcher_background
+```
+
+The adaptive layers are drawn to fill their canvas rather than to fit inside the
+mask's safe zone, because the generator adds a 16% inset of its own — the
+reasoning, and the numbers that follow from it, are in the comment at the top of
+`depcontrol-icon-foreground.svg`. There is no iOS or desktop target in this repo;
+`ios: false` says so explicitly so that adding one is a decision rather than an
+oversight.
 
 ## Palette
 
@@ -70,3 +89,21 @@ printed asset, someone else's site.
 
 The icon is also inlined in `export-png.html` so that file works offline. Edit
 `depcontrol-icon.svg` and paste the same change there.
+
+The two adaptive layers repeat the mark's geometry rather than importing it, so
+a change to the mark has to be made in all three SVGs. Then re-export the pair
+and regenerate the Android set — headless Chrome does the rasterising, since the
+PNGs need an alpha channel that `export-png.html`'s canvas path does not give
+you for free:
+
+```bash
+chrome --headless --default-background-color=00000000 --window-size=1024,1024 --screenshot=out.png icon.svg
+```
+
+The SVGs declare `width="108"`, so bump that to `1024` in a scratch copy before
+shooting — Chrome renders a standalone SVG at its intrinsic size and the window
+only crops. Then from `frontend/`:
+
+```bash
+dart run flutter_launcher_icons
+```

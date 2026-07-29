@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108"
+     role="img" aria-label="DepControl">
+  <title>DepControl</title>
+
+  <!-- Android 13+ themed icon. The launcher throws the colour away and keeps
+       only the alpha, tinting the result to match the wallpaper — so this layer
+       is drawn as one flat silhouette.
+
+       Same geometry and same 1.65 scale as depcontrol-icon-foreground.svg, and
+       for the same reason (see the note there about the generator's 16% inset).
+       Keeping the two identical in size and position matters more here than
+       anywhere else: a launcher switches between them when themed icons are
+       turned on, and a mark that jumps is the tell.
+
+       The flagged node loses its amber here, which is the one thing this
+       silhouette cannot say. It is drawn as a solid disc at the outer radius of
+       the ringed version (6.5 plus half of its 2-wide stroke) so it keeps the
+       extra visual weight that made it the node being pointed at. -->
+  <g transform="translate(-0.45 -0.04) scale(1.65)" fill="#FFFFFF">
+    <g stroke="#FFFFFF" stroke-width="4.5" stroke-linecap="round">
+      <line x1="32" y1="20" x2="18" y2="44"/>
+      <line x1="32" y1="20" x2="46" y2="44"/>
+    </g>
+
+    <circle cx="32" cy="20" r="6"/>
+    <circle cx="18" cy="44" r="5.5"/>
+    <circle cx="46" cy="44" r="7.5"/>
+  </g>
+</svg>

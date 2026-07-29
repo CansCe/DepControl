@@ -208,6 +208,10 @@ it in [build.gradle.kts](../frontend/android/app/build.gradle.kts).
 **An application ID you are happy with.** Currently `app.depcontrol`. It is
 permanent once uploaded.
 
+The launcher icon is *not* on this list: it is generated from `brand/` and
+checked in, so the build picks it up with no extra step. Regenerate it only
+after changing the artwork — see [brand/README.md](../brand/README.md).
+
 ### Where the two builds actually differ
 
 - **Key derivation for the device PIN.** The browser has native PBKDF2 and

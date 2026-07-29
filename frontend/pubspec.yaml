@@ -24,8 +24,33 @@ dependencies:
 
 dev_dependencies:
   flutter_lints: ^6.0.0
+  # Generates the Android launcher icons from brand/. Build-time only — nothing
+  # in the app imports it, and its output is the checked-in mipmap files.
+  flutter_launcher_icons: ^0.14.4
   flutter_test:
     sdk: flutter
 
 flutter:
   uses-material-design: true
+
+# Regenerate with `dart run flutter_launcher_icons` from this directory after
+# changing anything under brand/. The generated files are checked in, so a plain
+# `flutter build apk` does not need this package to have been run.
+flutter_launcher_icons:
+  android: true
+  # No iOS target in this repo. Left explicit rather than omitted so that adding
+  # one later is a decision someone makes here, not a silent gap.
+  ios: false
+  # API 24 and 25 have no adaptive icons and fall back to this flat tile, which
+  # is the same artwork the web build and the GitHub OAuth badge already use.
+  image_path: "../brand/depcontrol-icon-512.png"
+  # Matches `flutter.minSdkVersion` (24 as of Flutter 3.44) — it is only the
+  # threshold the generator uses to decide adaptive icons are worth emitting.
+  min_sdk_android: 24
+  # A flat colour rather than a background image: the tile is one solid blue, so
+  # a PNG of it would be five densities of the same pixel.
+  adaptive_icon_background: "#0553B1"
+  adaptive_icon_foreground: "../brand/depcontrol-icon-foreground-1024.png"
+  # Android 13+ themed icons. Without this the launcher keeps showing the full
+  # colour icon while every themed app around it goes monochrome.
+  adaptive_icon_monochrome: "../brand/depcontrol-icon-monochrome-1024.png"
