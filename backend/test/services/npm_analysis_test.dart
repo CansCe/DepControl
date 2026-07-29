@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import 'package:backend/src/ecosystem/ecosystems.dart';
-import 'package:backend/src/ecosystem/osv_client.dart';
 import 'package:backend/src/services/dependency_analyzer.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';

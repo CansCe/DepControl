@@ -63,7 +63,7 @@ are shared code that never learns which ecosystem it is serving.
 | Manifest | `pubspec.yaml` | `package.json` |
 | Lockfile | `pubspec.lock` | `package-lock.json`, `npm-shrinkwrap.json` |
 | Registry | pub.dev | registry.npmjs.org |
-| Advisories | pub.dev `/advisories` | OSV.dev |
+| Advisories | OSV.dev | OSV.dev |
 | Licenses | pub.dev's detection | the publisher's `license` field |
 | Imports | `import 'package:…'` | `import`/`require`, `/// <reference types>` |
 | Resolve & simulate | yes | not yet |
@@ -288,15 +288,27 @@ cd frontend && flutter run -d chrome
 
 ### Vulnerability scanning
 
-Advisories are **OSV documents** — GHSA identifiers, CVE aliases, affected
-ranges and CVSS vectors. Dart's come from pub.dev's `/advisories` endpoint,
-which is a view onto the GitHub Advisory Database; npm's come from OSV.dev
-directly, since npm publishes nothing comparable per package. Both are the same
-format, which is why everything downstream of the fetch is one code path.
+Advisories come from **OSV.dev**, for both ecosystems — GHSA identifiers, CVE
+aliases, affected ranges and CVSS vectors. One source, one code path, and every
+test in either ecosystem exercises the same version matching, scoring and
+banding.
 
-**An empty advisory list is not a clean bill of health.** Neither source
-distinguishes "nothing published" from "the database could not be reached", and
-a report presently reads both as no advisories. That is a real weakness of this
+Dart's used to come from pub.dev's `/advisories` endpoint. Two reasons they no
+longer do. npm publishes nothing comparable per package, so OSV had to be
+spoken to regardless; and pub.dev's endpoint **serves withdrawn advisories**.
+Asking it about `dio` returns `GHSA-jwpw-q68h-r678`, retracted in October 2023,
+with nothing in the response marking it as different from the live advisory
+beside it — so `dio` was reported vulnerable to a finding its own database had
+taken back. OSV excludes withdrawn entries from a query, and `Advisory.affects`
+refuses them besides.
+
+The two sources were compared package by package before the switch. They agree
+on every live advisory, field for field, and disagree only where pub.dev is
+serving something withdrawn.
+
+**An empty advisory list is not a clean bill of health.** OSV does not
+distinguish "nothing published" from "the database could not be reached", and a
+report presently reads both as no advisories. That is a real weakness of this
 design and it is stated here rather than papered over.
 
 What the report does with it:

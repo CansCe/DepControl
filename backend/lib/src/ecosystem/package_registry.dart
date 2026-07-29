@@ -24,6 +24,7 @@ class Advisory {
     this.ranges = const [],
     this.cvssVector,
     this.databaseSeverity,
+    this.withdrawn,
   });
 
   final String id;
@@ -45,8 +46,32 @@ class Advisory {
   /// says medium. Used only when there is no vector to score.
   final String? databaseSeverity;
 
+  /// When this advisory was retracted, or null while it stands.
+  ///
+  /// OSV publishes `withdrawn` for an advisory its database has taken back —
+  /// wrongly filed, a duplicate, or a disputed report that did not hold up.
+  /// A withdrawn advisory is not a weaker finding; it is the database saying
+  /// the finding was never right.
+  ///
+  /// This is not theoretical. pub.dev's `/advisories` endpoint serves withdrawn
+  /// entries alongside live ones: `dio` comes back with
+  /// `GHSA-jwpw-q68h-r678`, retracted in October 2023, and nothing in the
+  /// response distinguishes it from the real advisory beside it. OSV's own
+  /// query endpoint filters them out, so this field is belt and braces — but
+  /// the belt is what was missing, and reporting a package as vulnerable to a
+  /// retracted advisory is the kind of wrong answer that teaches people to
+  /// ignore the report.
+  final DateTime? withdrawn;
+
+  /// Whether this advisory has been retracted by its database.
+  bool get isWithdrawn => withdrawn != null;
+
   /// Whether [version] is actually affected by this advisory.
   bool affects(Version version) {
+    // A retracted advisory affects nothing. Checked before the ranges rather
+    // than filtered by the caller, so no caller can forget.
+    if (isWithdrawn) return false;
+
     if (affectedVersions.isNotEmpty) {
       return affectedVersions.contains(version.toString());
     }
@@ -101,6 +126,10 @@ class Advisory {
       databaseSeverity: (json['database_specific'] as Map<String, dynamic>?)?[
               'severity']
           ?.toString(),
+      withdrawn: switch (json['withdrawn']) {
+        final String s => DateTime.tryParse(s),
+        _ => null,
+      },
     );
   }
 

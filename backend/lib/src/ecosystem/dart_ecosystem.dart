@@ -7,6 +7,7 @@ import '../services/import_scanner.dart';
 import '../services/license_catalog.dart';
 import '../services/pub_api_client.dart';
 import 'ecosystem.dart';
+import 'osv_client.dart';
 
 /// Dart and Flutter packages: `pubspec.yaml`, `pubspec.lock`, pub.dev.
 ///
@@ -14,7 +15,8 @@ import 'ecosystem.dart';
 /// of this application before a second ecosystem existed, so where the
 /// interface looks shaped around pub, that is the reason and not an accident.
 class DartEcosystem implements Ecosystem {
-  DartEcosystem(PubApiClient pub) : registry = DartRegistry(pub);
+  DartEcosystem(PubApiClient pub, {OsvClient? osv})
+      : registry = DartRegistry(pub, osv: osv ?? OsvClient());
 
   @override
   String get id => 'dart';
@@ -126,15 +128,46 @@ class DartEcosystem implements Ecosystem {
 /// part that was previously spread between the client and the analyzer —
 /// deciding which of pub.dev's two license analyses to believe, and saying so.
 class DartRegistry implements PackageRegistry {
-  const DartRegistry(this._pub);
+  const DartRegistry(this._pub, {required OsvClient osv}) : _osv = osv;
 
   final PubApiClient _pub;
+
+  /// Advisories, which no longer come from pub.dev — see [info].
+  final OsvClient _osv;
+
+  /// OSV's name for this ecosystem. Case-sensitive, and not [Ecosystem.id].
+  static const osvEcosystem = 'Pub';
 
   @override
   bool isValidPackageName(String name) => PubApiClient.isPackageName(name);
 
+  /// The latest version from pub.dev, and the advisories from OSV.
+  ///
+  /// pub.dev serves advisories too, and this used to take them from there. Two
+  /// reasons it no longer does.
+  ///
+  /// The first is that npm has no equivalent endpoint, so OSV had to be spoken
+  /// to anyway; having one advisory path rather than two means the version
+  /// matching, the CVSS scoring and the banding are exercised by every test in
+  /// either ecosystem instead of half of them each.
+  ///
+  /// The second is that pub.dev's endpoint is **wrong** in a way that matters.
+  /// It serves withdrawn advisories alongside live ones: asking it about `dio`
+  /// returns `GHSA-jwpw-q68h-r678`, retracted in October 2023, with nothing in
+  /// the response marking it as different from the real advisory beside it.
+  /// OSV excludes withdrawn entries from a query, and [Advisory.affects] now
+  /// refuses them besides. Checked package by package before the switch: the
+  /// two sources agree on every live advisory, field for field, and disagree
+  /// only where pub.dev is serving something its own upstream has taken back.
   @override
-  Future<RegistryInfo> info(String package) => _pub.info(package);
+  Future<RegistryInfo> info(String package) async {
+    if (!isValidPackageName(package)) return const RegistryInfo(latest: null);
+
+    return RegistryInfo(
+      latest: await _pub.latestVersion(package),
+      advisories: await _osv.advisoriesFor(package, ecosystem: osvEcosystem),
+    );
+  }
 
   @override
   Future<List<PackageVersion>> versions(String package) =>

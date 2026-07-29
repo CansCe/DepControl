@@ -38,7 +38,6 @@ packages:
 /// and none for the version a project actually has installed.
 PubApiClient _stubPub(
   Map<String, String> latest, {
-  Map<String, List<Map<String, dynamic>>> advisories = const {},
   Map<String, List<String>> published = const {},
   Map<String, List<String>> versionTags = const {},
   Map<String, List<String>> latestTags = const {},
@@ -46,10 +45,6 @@ PubApiClient _stubPub(
   final client = MockClient((request) async {
     final path = request.url.path;
 
-    if (path.endsWith('/advisories')) {
-      final name = path.split('/')[path.split('/').length - 2];
-      return _ok({'advisories': advisories[name] ?? <dynamic>[]});
-    }
     // Checked before the `/versions/` branch: the per-version score endpoint
     // matches both.
     if (path.endsWith('/score')) {
@@ -77,6 +72,20 @@ PubApiClient _stubPub(
     });
   });
   return PubApiClient(client: client);
+}
+
+/// Stubs OSV, which is where advisories come from for both ecosystems.
+///
+/// Dart advisories used to be read from pub.dev's `/advisories` and are not any
+/// more: that endpoint serves withdrawn advisories alongside live ones.
+OsvClient _stubOsv(Map<String, List<Map<String, dynamic>>> advisories) {
+  final client = MockClient((request) async {
+    if (request.url.path != '/v1/query') return http.Response('{}', 404);
+    final body = jsonDecode(request.body) as Map<String, dynamic>;
+    final name = (body['package'] as Map)['name'];
+    return _ok({'vulns': advisories[name] ?? <dynamic>[]});
+  });
+  return OsvClient(client: client, baseUrl: 'https://osv.test');
 }
 
 http.Response _ok(Map<String, dynamic> body) => http.Response(
@@ -192,6 +201,51 @@ void main() {
         final node = await analyzeWith('0.13.0');
         expect(node.status, DepStatus.vulnerable);
         expect(node.advisories.single.id, 'GHSA-4rgh-jx4f-qfcq');
+      });
+
+      // A withdrawn advisory is not a weaker finding. It is the database
+      // saying the finding was never right, and reporting a package as
+      // vulnerable to a retracted advisory is the kind of wrong answer that
+      // teaches people to ignore the report.
+      //
+      // Not hypothetical: pub.dev's /advisories endpoint serves withdrawn
+      // entries alongside live ones — `dio` comes back with
+      // GHSA-jwpw-q68h-r678, retracted in October 2023 — which is one of the
+      // two reasons advisories now come from OSV instead.
+      test('a withdrawn advisory affects nothing', () async {
+        final analyzer = _stubAnalyzer(
+          {'http': '1.3.0', 'test': '1.25.0'},
+          advisories: {
+            'http': [
+              {
+                'id': 'GHSA-retracted',
+                'withdrawn': '2023-10-05T17:32:48Z',
+                'database_specific': {'severity': 'CRITICAL'},
+                'affected': [
+                  {
+                    'package': {'name': 'http'},
+                    'versions': ['0.13.0'],
+                  },
+                ],
+              },
+            ],
+          },
+        );
+
+        final report = await analyzer.analyze(
+          'p',
+          const ManifestFiles(
+            manifest: _pubspecYaml,
+            lock: 'packages:\n'
+                '  http:\n'
+                '    dependency: "direct main"\n'
+                '    version: "0.13.0"\n',
+          ),
+        );
+
+        final node = report.nodes.firstWhere((n) => n.name == 'http');
+        expect(node.advisories, isEmpty);
+        expect(node.status, isNot(DepStatus.vulnerable));
       });
 
       test('carries the detail needed to act on it', () async {
@@ -903,10 +957,10 @@ DependencyAnalyzer _stubAnalyzer(
       Ecosystems.dartOnly(
         pub: _stubPub(
           latest,
-          advisories: advisories,
           published: published,
           versionTags: versionTags,
           latestTags: latestTags,
         ),
+        osv: _stubOsv(advisories),
       ),
     );

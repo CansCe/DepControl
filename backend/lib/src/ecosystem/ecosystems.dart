@@ -2,11 +2,13 @@ import '../services/pub_api_client.dart';
 import 'dart_ecosystem.dart';
 import 'ecosystem.dart';
 import 'npm/npm_ecosystem.dart';
+import 'osv_client.dart';
 import 'npm/npm_registry.dart';
 
 export 'dart_ecosystem.dart';
 export 'ecosystem.dart';
 export 'npm/npm_ecosystem.dart';
+export 'osv_client.dart';
 export 'npm/npm_registry.dart';
 
 /// Every ecosystem this server can scan.
@@ -22,16 +24,21 @@ class Ecosystems {
   ///
   /// Dart leads, so it stays the ecosystem the single-manifest endpoints
   /// default to. Order is otherwise only a tie-break in repository discovery.
-  factory Ecosystems.standard({PubApiClient? pub, NpmRegistry? npm}) =>
+  factory Ecosystems.standard({
+    PubApiClient? pub,
+    NpmRegistry? npm,
+    OsvClient? osv,
+  }) =>
       Ecosystems([
-        DartEcosystem(pub ?? PubApiClient()),
+        DartEcosystem(pub ?? PubApiClient(), osv: osv),
         NpmEcosystem(registry: npm),
       ]);
 
   /// Dart alone, for the tests and callers that are asserting about pub.dev
   /// and would otherwise have npm's discovery running alongside.
-  factory Ecosystems.dartOnly({PubApiClient? pub}) => Ecosystems([
-        DartEcosystem(pub ?? PubApiClient()),
+  factory Ecosystems.dartOnly({PubApiClient? pub, OsvClient? osv}) =>
+      Ecosystems([
+        DartEcosystem(pub ?? PubApiClient(), osv: osv),
       ]);
 
   final List<Ecosystem> all;

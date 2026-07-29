@@ -47,28 +47,18 @@ class PubApiClient {
   /// copy of the pattern is how the leading-underscore bug gets reintroduced.
   static bool isPackageName(String name) => _packageName.hasMatch(name);
 
-  Future<RegistryInfo> info(String package) async {
-    final latest = await _latest(package);
-    final advisories = await _advisories(package);
-    return RegistryInfo(latest: latest, advisories: advisories);
-  }
-
-  Future<String?> _latest(String package) async {
+  /// The newest version pub.dev has published for [package].
+  ///
+  /// This client no longer fetches advisories. It used to, from
+  /// `/api/packages/<package>/advisories`, but that endpoint serves *withdrawn*
+  /// advisories alongside live ones with nothing in the response to tell them
+  /// apart — see [DartRegistry.info]. Advisories for both ecosystems now come
+  /// from OSV, which is where pub.dev's came from in the first place.
+  Future<String?> latestVersion(String package) async {
     final json = await _getJson('/api/packages/$package', package);
     if (json == null) return null;
     final latest = json['latest'] as Map<String, dynamic>?;
     return latest?['version'] as String?;
-  }
-
-  Future<List<Advisory>> _advisories(String package) async {
-    final json = await _getJson('/api/packages/$package/advisories', package);
-    if (json == null) return const [];
-    final list = (json['advisories'] as List?) ?? const [];
-    return list
-        .whereType<Map<String, dynamic>>()
-        .map(Advisory.fromJson)
-        .whereType<Advisory>()
-        .toList();
   }
 
   /// pub.dev's analysis tags for one published version of [package], which is
