@@ -24,8 +24,6 @@ dependencies:
   uuid: ^4.4.0
   # Phase 3 persistence: direct connection to Supabase Postgres.
   postgres: ^3.5.0
-  flutter:
-    sdk: flutter
 
 dev_dependencies:
   dart_frog_cli: ^1.1.0
