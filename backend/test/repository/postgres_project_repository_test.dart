@@ -88,6 +88,61 @@ void main() {
         expect(fetchedReport.nodes.single.status, DepStatus.outdated);
         expect(fetchedReport.total, 1);
         expect(fetchedReport.outdated, 1);
+        expect(fetchedReport.manifests, isEmpty);
+        expect(fetchedReport.coverageNote, isNull);
+      });
+
+      // A note saying the scan reached less than the whole repository is the
+      // report's own admission of what it missed, so losing it in the store
+      // turns a partial count into one that looks complete.
+      test('round-trips what the report covered', () async {
+        await repo.add(fixture());
+
+        const note = 'read 20 of 34 pubspecs';
+        await repo.saveReport(
+          DepReport(
+            projectId: id,
+            generatedAt: DateTime.utc(2026, 1, 2),
+            nodes: const [
+              DepNode(name: 'http', kind: DepKind.direct, installed: '1.2.0'),
+            ],
+            manifests: const ['', 'packages/shared', 'tools/api_differ'],
+            coverageNote: note,
+          ),
+        );
+
+        final fetched = await repo.reportFor(id);
+        expect(
+          fetched!.manifests,
+          ['', 'packages/shared', 'tools/api_differ'],
+        );
+        expect(fetched.coverageNote, note);
+      });
+
+      // Re-analyzing after the gap is closed has to clear the note, or the
+      // project keeps apologising for a scan it no longer has.
+      test('re-saving clears a coverage note that no longer applies', () async {
+        await repo.add(fixture());
+
+        DepReport report({List<String> manifests = const [], String? note}) =>
+            DepReport(
+              projectId: id,
+              generatedAt: DateTime.utc(2026, 1, 2),
+              nodes: const [
+                DepNode(name: 'http', kind: DepKind.direct, installed: '1.2.0'),
+              ],
+              manifests: manifests,
+              coverageNote: note,
+            );
+
+        await repo.saveReport(
+          report(manifests: const ['', 'packages/shared'], note: 'truncated'),
+        );
+        await repo.saveReport(report());
+
+        final fetched = await repo.reportFor(id);
+        expect(fetched!.coverageNote, isNull);
+        expect(fetched.manifests, isEmpty);
       });
 
       test('byId does not return a project owned by someone else', () async {
