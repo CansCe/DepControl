@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import '../env.dart';
+
 /// Severity levels, ordered from most to least verbose.
 enum LogLevel {
   debug(0, 'DEBUG', '\x1B[90m'), // grey
@@ -40,7 +42,7 @@ class Logger {
 
   /// Builds a logger from the process environment. See the class docs.
   factory Logger.fromEnv({Map<String, String>? environment}) {
-    final env = environment ?? Platform.environment;
+    final env = readEnvironment(environment);
     final isDev = (env['ENV'] ?? env['DART_ENV'] ?? 'development') != 'production';
 
     final level = _parseLevel(env['LOG_LEVEL']) ??

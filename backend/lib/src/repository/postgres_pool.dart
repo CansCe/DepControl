@@ -1,5 +1,7 @@
 import 'package:postgres/postgres.dart';
 
+import '../env.dart';
+
 /// Builds a connection [Pool] from a `postgres://user:pass@host:port/db` URL,
 /// as provided by Supabase (Project Settings → Database → Connection string).
 ///
@@ -13,7 +15,9 @@ import 'package:postgres/postgres.dart';
 /// TLS is required by Supabase, so `sslmode` defaults to `require`; pass
 /// `?sslmode=disable` in the URL for a plaintext local Postgres.
 Pool<void> postgresPoolFromUrl(String rawUrl) {
-  final url = _unwrap(rawUrl);
+  // Belt and braces: callers should read config through `readEnvironment`, but
+  // this is also reachable from tools and tests holding a raw string.
+  final url = unwrapEnvValue(rawUrl);
 
   // The .env.example ships a `[YOUR-DB-PASSWORD]` placeholder. Catch it
   // explicitly: `Uri.parse` would otherwise fail deep in the stack with an
@@ -71,25 +75,3 @@ Pool<void> postgresPoolFromUrl(String rawUrl) {
   );
 }
 
-/// Strips the packaging a connection string picks up on its way through a shell
-/// or a secret store — surrounding quotes, stray whitespace, a UTF-8 BOM.
-///
-/// None of these are things a user can see: `fly secrets list` shows a digest,
-/// not a value, and the failure they produce is `Uri.parse` reporting "Scheme
-/// not starting with alphabetic character" — which points at the scheme, the
-/// one part of the URL that was never wrong. A BOM is the nastiest of them,
-/// since PowerShell writes one by default and it is invisible in every editor.
-///
-/// Quotes are only removed as a matched pair. An unbalanced quote is left in
-/// place to fail loudly: it means the value was truncated somewhere, and
-/// quietly connecting with half a password would be worse than not starting.
-String _unwrap(String value) {
-  var s = value.replaceAll('﻿', '').trim();
-  if (s.length >= 2) {
-    final first = s[0];
-    if ((first == '"' || first == "'") && s[s.length - 1] == first) {
-      s = s.substring(1, s.length - 1).trim();
-    }
-  }
-  return s;
-}

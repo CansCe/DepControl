@@ -1,6 +1,5 @@
-import 'dart:io';
-
 import 'auth/jwt_verifier.dart';
+import 'env.dart';
 import 'repository/api_diff_store.dart';
 import 'repository/license_policy_store.dart';
 import 'repository/postgres_api_diff_store.dart';
@@ -120,7 +119,7 @@ class Deps {
   ///      `SUPABASE_URL` — derives `<url>/auth/v1/.well-known/jwks.json`.
   ///   2. `SUPABASE_JWT_SECRET` — legacy HS256 shared secret.
   static JwtVerifier _buildVerifier() {
-    final env = Platform.environment;
+    final env = readEnvironment();
 
     final jwksUrl =
         env['SUPABASE_JWKS_URL'] ?? _jwksFromSupabaseUrl(env['SUPABASE_URL']);
@@ -157,7 +156,7 @@ class Deps {
     LicensePolicyStore licensePolicies,
   }) _buildStores() {
     final db = log.tagged('db');
-    final url = Platform.environment['DATABASE_URL'];
+    final url = readEnvironment()['DATABASE_URL'];
     if (url != null && url.isNotEmpty) {
       try {
         final pool = postgresPoolFromUrl(url);
@@ -192,7 +191,7 @@ class Deps {
   /// nobody knows about is a limit that gets blamed on the network.
   static RateLimiter? _buildLimiter() {
     final rate = log.tagged('rate');
-    final limiter = RateLimiter.fromEnvironment(Platform.environment);
+    final limiter = RateLimiter.fromEnvironment(readEnvironment());
 
     if (limiter == null) {
       rate.warn(
