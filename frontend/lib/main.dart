@@ -4,7 +4,11 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'api/api_client.dart';
 import 'auth/auth_gate.dart';
+import 'auth/session_monitor.dart';
 import 'screens/report_screen.dart';
+import 'screens/settings_screen.dart';
+import 'security/pin_gate.dart';
+import 'security/pin_prompt.dart';
 import 'theme.dart';
 import 'widgets/chrome.dart';
 
@@ -31,8 +35,10 @@ class DepControlApp extends StatelessWidget {
       title: 'DepControl',
       theme: buildTheme(),
       // Projects are owned by the signed-in user, so the registry is only
-      // reachable with a session.
-      home: const AuthGate(child: RegistryScreen()),
+      // reachable with a session — and, when one is set, past the device PIN.
+      // The PIN sits inside the auth gate because it guards a session that
+      // already exists; there is nothing to lock without one.
+      home: const AuthGate(child: PinGate(child: RegistryScreen())),
     );
   }
 }
@@ -80,14 +86,30 @@ class _RegistryScreenState extends State<RegistryScreen> {
       setState(() => _showArchived = false);
       _reload();
     } on ApiAuthException catch (e) {
-      // The session died mid-use; drop it so AuthGate shows sign-in again.
-      setState(() => _error = e.message);
-      await supabase.auth.signOut();
+      // The session died mid-use. Reporting it rather than signing out here is
+      // the point: AuthGate asks before it takes the screen away.
+      SessionMonitor.instance.reportExpired(e.message);
     } on ApiException catch (e) {
       setState(() => _error = e.message);
     } finally {
       if (mounted) setState(() => _adding = false);
     }
+  }
+
+  /// Bumped when settings closes, so the PIN prompt is rebuilt from scratch.
+  ///
+  /// It decides whether to show itself once, when its state is created — so
+  /// without a new key it would go on offering a PIN that was just set.
+  int _promptRevision = 0;
+
+  /// Where the account, the session and the device PIN are managed. Signing out
+  /// lives there too, so the app bar spends its width on the registry rather
+  /// than on account plumbing.
+  Future<void> _openSettings() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
+    );
+    if (mounted) setState(() => _promptRevision++);
   }
 
   @override
@@ -129,9 +151,9 @@ class _RegistryScreenState extends State<RegistryScreen> {
               ),
             ),
           IconButton(
-            tooltip: 'Sign out',
-            icon: const Icon(Icons.logout),
-            onPressed: () => supabase.auth.signOut(),
+            tooltip: 'Settings',
+            icon: const Icon(Icons.settings_outlined),
+            onPressed: _openSettings,
           ),
           const SizedBox(width: 8),
         ],
@@ -175,6 +197,13 @@ class _RegistryScreenState extends State<RegistryScreen> {
                 ],
               ],
             ),
+          ),
+          PinPrompt(
+            key: ValueKey(
+              'pin-prompt-${supabase.auth.currentUser?.id}-$_promptRevision',
+            ),
+            userId: supabase.auth.currentUser?.id,
+            onSetUp: _openSettings,
           ),
           Expanded(
             child: Padding(
@@ -272,11 +301,12 @@ class ProjectList extends StatelessWidget {
         if (snap.hasError) {
           final error = snap.error;
           if (error is ApiAuthException) {
-            // Session is gone; clearing it sends AuthGate back to sign-in.
+            // Tell the gate, which asks the user before replacing the screen.
+            // The message stays on show underneath, so the page still says
+            // something once the dialog is answered either way.
             WidgetsBinding.instance.addPostFrameCallback(
-              (_) => supabase.auth.signOut(),
+              (_) => SessionMonitor.instance.reportExpired(error.message),
             );
-            return const Center(child: CircularProgressIndicator());
           }
           return Center(
             child: Text(

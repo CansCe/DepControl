@@ -10,9 +10,16 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  # PBKDF2 for the device PIN — see security/pin_store.dart. HMAC-SHA256 only;
+  # the key derivation itself is a dozen lines and does not need a dependency.
+  crypto: ^3.0.0
   http: ^1.2.0
   # Resolves to the local workspace member `packages/shared`.
   shared: ^0.1.0
+  # Where the PIN's salt and hash live. On web this is localStorage, which is
+  # also where the Supabase session already sits — the PIN is a lock on the
+  # screen, not on the token.
+  shared_preferences: ^2.3.0
   supabase_flutter: ^2.16.0
 
 dev_dependencies:

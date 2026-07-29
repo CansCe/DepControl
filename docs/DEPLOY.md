@@ -158,6 +158,107 @@ site until this is set. In the Supabase dashboard, **Authentication → URL
 Configuration**, add the Firebase Hosting URL
 (`https://depcontrol-prod.web.app`) as Site URL and to Redirect URLs.
 
+## 8. Choose how long a session lasts
+
+Supabase issues the access token; nothing in this repo sets its lifetime. In the
+dashboard, **Authentication → Sessions → Access token (JWT) expiry**, set the
+value in seconds. The default is `3600` (one hour); `604800` (one week) is the
+maximum Supabase accepts.
+
+What it changes is narrower than it sounds. While the app is open,
+`supabase_flutter` renews the token in the background, so a longer expiry does
+not mean fewer interruptions during use — it means a browser that has been
+*closed* stays signed in for a week instead of an hour. To confirm what a build
+is actually running against, open **Settings** in the app: it prints the current
+token's real expiry rather than repeating what this document claims.
+
+**The cost of raising it.** The backend verifies tokens locally against the JWKS
+([jwt_verifier.dart](../backend/lib/src/auth/jwt_verifier.dart)) and never calls
+Supabase to ask whether a session is still wanted. Signing out clears the copy in
+that browser, but a token already issued keeps being accepted until its `exp`
+passes — so this setting is also the window in which a stolen or copied token
+stays usable. At one hour that is a nuisance; at one week it is a decision.
+Two ways to narrow it if that matters:
+
+- Keep the expiry shorter (a day is still 24× the default) — the refresh token
+  keeps people signed in either way.
+- Have `requireAuth` check the token's session against Supabase's
+  `/auth/v1/user` on a cache, trading a round trip for real revocation.
+
+The in-app **device PIN** ([pin_store.dart](../frontend/lib/security/pin_store.dart))
+covers the other half of the same risk — a signed-in browser left open — but only
+the screen. It does not protect the token, which is in the same `localStorage`
+the PIN's hash is in.
+
+## 9. Building the two clients
+
+One codebase, two targets. Nothing is forked: the differences are a build-time
+define and three conditional points in the code, listed at the end of this
+section.
+
+**Both builds need `API_BASE_URL`.** It defaults to `http://localhost:8080`,
+which on a phone means the phone.
+
+```bash
+flutter build web --release --dart-define=API_BASE_URL=https://depcontrol-api-xxxx.run.app
+```
+
+```bash
+flutter build apk --release --dart-define=API_BASE_URL=https://depcontrol-api-xxxx.run.app
+```
+
+Run both from `frontend/`. The APK lands in
+`frontend/build/app/outputs/flutter-apk/app-release.apk`.
+
+### What the APK needs that the web build does not
+
+**The Android SDK.** `flutter doctor` will say if it is missing; the scaffolding
+in `frontend/android/` is complete either way, but nothing can be compiled
+without it.
+
+**The OAuth redirect registered in two places.** GitHub sign-in sends the
+browser to `io.supabase.depcontrol://login-callback/`
+([sign_in_screen.dart](../frontend/lib/auth/sign_in_screen.dart)). That URL is
+claimed by an intent-filter in
+[AndroidManifest.xml](../frontend/android/app/src/main/AndroidManifest.xml), and
+it must *also* be added to Supabase's **Authentication → URL Configuration →
+Redirect URLs**, next to the Firebase Hosting origin from step 7. Miss the
+Supabase half and sign-in leaves for the browser and never comes back, with no
+error on either side — nothing failed, the app simply never hears anything.
+
+**A signing key, before publishing.** The release build is still signed with the
+debug keystore, so the APK installs and runs but Play will refuse it. Generating
+the real one is a decision with no undo — an app's signing key cannot be changed
+after the first upload — so it is deliberately not scripted here:
+
+```bash
+keytool -genkey -v -keystore depcontrol-release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias depcontrol
+```
+
+Keep it out of the repo, put its passwords in `frontend/android/key.properties`
+(already gitignored, along with `*.jks`), and point `signingConfigs.release` at
+it in [build.gradle.kts](../frontend/android/app/build.gradle.kts).
+
+**An application ID you are happy with.** Currently `app.depcontrol`. It is
+permanent once uploaded.
+
+### Where the two builds actually differ
+
+- **Key derivation for the device PIN.** The browser has native PBKDF2 and
+  Android does not, so `pbkdf2.dart` picks an implementation by platform. This
+  is not a detail: measured in Chromium, the Dart loop costs **4.2 seconds** for
+  200,000 rounds against WebCrypto's **74ms**. The web build uses WebCrypto at
+  200,000 rounds; Android and any browser without a secure context use the Dart
+  loop at 20,000 — a count picked so that path stays near a tenth of a second
+  rather than needing to be moved off the calling thread.
+- **What the PIN is worth.** [pin_scope.dart](../frontend/lib/security/pin_scope.dart)
+  chooses the wording. In a browser the session token shares `localStorage` with
+  the PIN hash and the lock can be stepped around from the developer console; in
+  the app that storage is private and the lock means more. Shipping one
+  paragraph to both would be false on one of them.
+- **The OAuth redirect**, as above — `kIsWeb` picks between returning to the
+  page's own origin and the deep link.
+
 ---
 
 ## Before this is production

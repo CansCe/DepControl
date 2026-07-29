@@ -43,15 +43,3 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
-
-# Dart Frog build output (backend member)
-backend/.dart_frog/
-backend/build/
-
-# Flutter build output (frontend member) — /build/ above only matches the root
-frontend/build/
-
-.serena
-# The api_differ tool resolves independently of the workspace
-tools/api_differ/.dart_tool/
-.vscode/

@@ -4,6 +4,7 @@ library;
 export 'src/models/api_diff.dart';
 export 'src/models/dep_advisory.dart';
 export 'src/models/project.dart';
+export 'src/models/dep_graph.dart';
 export 'src/models/dep_node.dart';
 export 'src/models/dep_report.dart';
 export 'src/models/license_policy.dart';

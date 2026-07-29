@@ -10,7 +10,12 @@ import '../widgets/chrome.dart';
 /// On success the auth state stream fires and [AuthGate] swaps in the app, so
 /// this screen never navigates itself.
 class SignInScreen extends StatefulWidget {
-  const SignInScreen({super.key});
+  const SignInScreen({this.notice, super.key});
+
+  /// Why the user is looking at this screen, when there is a reason worth
+  /// repeating — the server's explanation for an expired session, say. Shown
+  /// once, above the form, and cleared as soon as they start over.
+  final String? notice;
 
   @override
   State<SignInScreen> createState() => _SignInScreenState();
@@ -24,7 +29,7 @@ class _SignInScreenState extends State<SignInScreen> {
   bool _busy = false;
   bool _isSignUp = false;
   String? _error;
-  String? _notice;
+  late String? _notice = widget.notice;
 
   @override
   void dispose() {

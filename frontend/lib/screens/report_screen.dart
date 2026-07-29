@@ -2,12 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:shared/shared.dart';
 
 import '../api/api_client.dart';
+import '../auth/session_monitor.dart';
 import '../theme.dart';
 import '../widgets/chrome.dart';
 import '../widgets/dep_status_chip.dart';
 import '../widgets/dep_table.dart';
 import '../widgets/dependency_path.dart';
 import '../widgets/dependency_spectrum.dart';
+import '../widgets/dependency_tree.dart';
 import '../widgets/license_panel.dart';
 import '../widgets/remediation_panel.dart';
 import '../widgets/severity_chip.dart';
@@ -58,6 +60,10 @@ class _ReportScreenState extends State<ReportScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Re-analyzed ${report.total} dependencies.')),
       );
+    } on ApiAuthException catch (e) {
+      // Not reported as a failed re-analysis: the analysis never ran. The gate
+      // explains what happened and asks before taking the screen away.
+      SessionMonitor.instance.reportExpired(e.message);
     } on ApiException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -133,6 +139,11 @@ class _ReportScreenState extends State<ReportScreen> {
               return const Center(child: CircularProgressIndicator());
             }
             if (snap.hasError) {
+              if (snap.error case final ApiAuthException auth) {
+                WidgetsBinding.instance.addPostFrameCallback(
+                  (_) => SessionMonitor.instance.reportExpired(auth.message),
+                );
+              }
               return _Message(
                 icon: Icons.error_outline,
                 text: snap.error is ApiException
@@ -189,11 +200,29 @@ class _ReportScreenState extends State<ReportScreen> {
                         const SizedBox(height: 16),
                         Card(
                           child: Padding(
-                            padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
+                            padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
                                 const Eyebrow('The tree'),
+                                const SizedBox(height: 6),
+                                DependencyTree(
+                                  report: report,
+                                  showCurrency: !_project.isArchived,
+                                  onSelect: (node) => _explain(node, report),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Card(
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                const Eyebrow('Every package'),
                                 const SizedBox(height: 6),
                                 Text(
                                   _project.isArchived
