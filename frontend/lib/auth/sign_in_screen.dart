@@ -1,4 +1,5 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -76,6 +77,25 @@ class _SignInScreenState extends State<SignInScreen> {
     }
   }
 
+  /// How the GitHub authorize page is opened.
+  ///
+  /// The default, [LaunchMode.platformDefault], sends an `https` URL to a
+  /// Custom Tab, which is a browser and stays a browser — the GitHub app never
+  /// gets the chance to handle it. [LaunchMode.externalApplication] fires a
+  /// plain `ACTION_VIEW` intent instead, so Android resolves it the way it
+  /// resolves any link: github.com serves an `assetlinks.json` delegating to
+  /// `com.github.android`, so a verified install of the GitHub app takes it and
+  /// everyone else falls through to the default browser. That fallback is the
+  /// point — [LaunchMode.externalNonBrowserApplication] would *require* the app
+  /// and throw for the users who do not have it.
+  ///
+  /// Android only: iOS keeps the default so sign-in stays in the in-app
+  /// Safari sheet, and web ignores the mode entirely.
+  LaunchMode get _authScreenLaunchMode =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android
+          ? LaunchMode.externalApplication
+          : LaunchMode.platformDefault;
+
   Future<void> _signInWithGitHub() async {
     setState(() {
       _busy = true;
@@ -89,6 +109,7 @@ class _SignInScreenState extends State<SignInScreen> {
         // On web the browser returns to the current origin, which must be in
         // Supabase's redirect allow list. Native builds need the deep link.
         redirectTo: kIsWeb ? null : 'io.supabase.depcontrol://login-callback/',
+        authScreenLaunchMode: _authScreenLaunchMode,
       );
       // The browser navigates away; onAuthStateChange resumes the app on
       // return, so nothing more to do here.
