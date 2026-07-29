@@ -215,6 +215,47 @@ first, since each holds a full node list. The table is in
 `backend/sql/report_history.sql`, which also carries the existing `dep_reports`
 rows over as each project's first revision.
 
+## What changed
+
+`GET /projects/<id>/changes` compares two of a project's stored reports. With
+no arguments, the two newest — "what changed last time anything did".
+`?from=<revision>&to=<revision>` compares any two, in either order, since
+"what would reverting look like" is a legitimate question.
+
+Packages are matched on **ecosystem and name**: the version is the thing being
+compared, so it cannot also be part of the identity, and npm and pub.dev both
+publish `path`, `http` and `crypto`.
+
+What a change carries:
+
+- **How far the version moved**, in the same vocabulary as the upgrade
+  assessment — breaking, minor, patch — with the direction kept separate,
+  because a downgrade across a major boundary is as breaking as the upgrade
+  was. The pre-1.0 rules are each ecosystem's own: both treat a minor change
+  below 1.0.0 as breaking, and npm goes further, treating the patch as breaking
+  at `0.0.x`.
+- **Advisories that newly apply.** Three ways that happens — newly published,
+  the package moved into an affected range, or a new package arrived carrying
+  it — and they are not distinguished, because they are the same news.
+- **Advisories that no longer apply**, called *cleared* rather than *fixed*. An
+  advisory clears because the package moved to a fixed version, because it left
+  the project, or because it was **withdrawn** — and a withdrawal means the
+  finding was never right rather than that anybody repaired anything. Two
+  reports cannot tell those apart, so the name does not claim to.
+- **Relicensing**, but only on a package that did not move. A different licence
+  on a different version is part of that move rather than a separate event.
+- **How the package is reached**, when a direct dependency becomes transitive
+  or the reverse.
+
+A repository can resolve one package at two versions at once — this one does.
+Where that happens there is no single "it moved from here to there", so the
+differing versions are listed as additions and removals rather than an invented
+bump.
+
+The diff is derived, never stored: two reports and this endpoint always produce
+the same answer, so nothing has to be migrated when the comparison learns to
+notice something new.
+
 ## Public API diffs
 
 Semver says whether an author *considers* a release breaking. It cannot say

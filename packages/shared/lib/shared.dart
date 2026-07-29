@@ -11,6 +11,7 @@ export 'src/models/license_policy.dart';
 export 'src/models/license_report.dart';
 export 'src/models/package_license.dart';
 export 'src/models/remediation.dart';
+export 'src/models/report_diff.dart';
 export 'src/models/report_revision.dart';
 export 'src/models/resolution_result.dart';
 export 'src/models/upgrade_details.dart';
