@@ -204,6 +204,24 @@ void main() {
       expect(latest!.nodes.single.installed, '1.0.0');
     });
 
+    test('a scan that finishes late does not become the newest', () async {
+      // Verified against Postgres, which orders this history by
+      // `first_seen_at desc` and so would not promote the late arrival either.
+      // The two stores have to agree about what `reportFor` returns.
+      final repo = InMemoryProjectRepository();
+
+      await repo.saveReport(
+        report([node('http', version: '2.0.0')], at: DateTime.utc(2026, 6, 1)),
+      );
+      await repo.saveReport(
+        report([node('http', version: '1.0.0')], at: DateTime.utc(2026, 3, 1)),
+      );
+
+      expect(await repo.revisionsFor(projectId), hasLength(2));
+      final latest = await repo.reportFor(projectId);
+      expect(latest!.nodes.single.installed, '2.0.0');
+    });
+
     test('a revision is read back in full by id', () async {
       final repo = InMemoryProjectRepository();
 

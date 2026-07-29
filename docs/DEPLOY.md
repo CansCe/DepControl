@@ -101,12 +101,12 @@ at the host.
 
 In **Settings → Secrets and variables → Actions**:
 
-| Kind     | Name                    | Value                                            |
-|----------|-------------------------|--------------------------------------------------|
+| Kind     | Name                      | Value                                                |
+| -------- | ------------------------- | ---------------------------------------------------- |
 | Secret   | `FLY_API_TOKEN`         | `flyctl tokens create deploy --app depcontrol-api` |
-| Secret   | `CLOUDFLARE_API_TOKEN`  | the Pages token from step 4                      |
-| Secret   | `CLOUDFLARE_ACCOUNT_ID` | the account ID from step 4                       |
-| Variable | `API_BASE_URL`          | `https://depcontrol-api.fly.dev`                 |
+| Secret   | `CLOUDFLARE_API_TOKEN`  | the Pages token from step 4                          |
+| Secret   | `CLOUDFLARE_ACCOUNT_ID` | the account ID from step 4                           |
+| Variable | `API_BASE_URL`          | `https://depcontrol-api.fly.dev`                   |
 
 `flyctl tokens create deploy` is scoped to deploying this one app, which is why
 it is used instead of `flyctl auth token` — that one is your whole account.

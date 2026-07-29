@@ -194,7 +194,14 @@ class InMemoryProjectRepository implements ProjectRepository {
       vulnerable: report.vulnerable,
     );
 
-    history.insert(0, _StoredRevision(summary: revision, report: report));
+    // Sorted rather than pushed onto the front. Postgres orders this history by
+    // `first_seen_at desc`, so a report generated earlier than one already
+    // stored does not become the newest there — and a scan can finish late.
+    // Inserting at the front regardless would make the two stores disagree
+    // about which revision `reportFor` returns.
+    history
+      ..add(_StoredRevision(summary: revision, report: report))
+      ..sort((a, b) => b.summary.firstSeenAt.compareTo(a.summary.firstSeenAt));
     if (history.length > maxRevisionsPerProject) {
       history.removeRange(maxRevisionsPerProject, history.length);
     }
