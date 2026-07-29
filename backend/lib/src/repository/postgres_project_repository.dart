@@ -4,11 +4,13 @@ import 'package:postgres/postgres.dart';
 import 'package:shared/shared.dart';
 
 import 'postgres_pool.dart';
+import 'report_digest.dart';
 import 'project_repository.dart';
 
 /// Postgres-backed [ProjectRepository] (Phase 3). Persists tracked projects and
-/// their latest dependency report to Supabase Postgres, so state survives
-/// restarts. The dependency graph is stored as JSONB (`dep_reports.nodes`).
+/// the history of their dependency reports to Supabase Postgres, so state
+/// survives restarts. Each dependency graph is stored as JSONB
+/// (`dep_report_revisions.nodes`).
 ///
 /// Backed by a lazily-opened connection [Pool] so concurrent Dart Frog requests
 /// don't contend on a single connection. The pool opens connections on first
@@ -130,52 +132,218 @@ class PostgresProjectRepository implements ProjectRepository {
     return result.isNotEmpty;
   }
 
+  /// The revision summary columns, in the order [_revisionFromRow] reads them.
+  static const _revisionColumns = 'id, project_id, first_seen_at, last_seen_at, '
+      'content_digest, commit_sha';
+
   @override
-  Future<void> saveReport(DepReport report) async {
-    await _pool.execute(
+  Future<ReportRevision> saveReport(
+    DepReport report, {
+    String? commitSha,
+  }) async {
+    final digest = reportDigest(report);
+
+    // Insert only when this differs from the project's *newest* revision.
+    // Compared against the newest rather than the whole history because a
+    // project that goes A -> B -> A has been in three states over time, and
+    // folding the second A into the first would stretch that row's window
+    // across the period when B held.
+    //
+    // The check is inside the statement rather than a read followed by a write,
+    // so the common case costs one round trip. Two scans of one project
+    // finishing at the same moment can still both insert; the result is a
+    // duplicate revision, which reads as a change that changed nothing. That is
+    // a benign outcome for a path whose writers are a rate-limited endpoint and
+    // one scheduler, and the alternative — a unique digest constraint — buys it
+    // at the cost of getting reverts wrong.
+    final inserted = await _pool.execute(
       Sql.named('''
-        insert into dep_reports (project_id, generated_at, nodes, manifests,
-                                 coverage_note)
-        values (@projectId:uuid, @generatedAt:timestamptz, @nodes:jsonb,
-                @manifests:jsonb, @coverageNote:text)
-        on conflict (project_id) do update set
-          generated_at  = excluded.generated_at,
-          nodes         = excluded.nodes,
-          manifests     = excluded.manifests,
-          coverage_note = excluded.coverage_note
+        insert into dep_report_revisions
+          (project_id, first_seen_at, last_seen_at, content_digest, commit_sha,
+           nodes, manifests, coverage_note)
+        select @projectId:uuid, @firstSeen:timestamptz, @lastSeen:timestamptz,
+               @digest:text, @commitSha:text, @nodes:jsonb, @manifests:jsonb,
+               @coverageNote:text
+        where not exists (
+          select 1 from (
+            select content_digest from dep_report_revisions
+            where project_id = @projectId:uuid
+            order by first_seen_at desc
+            limit 1
+          ) newest
+          where newest.content_digest = @digest:text
+        )
+        returning $_revisionColumns
       '''),
       parameters: {
         'projectId': report.projectId,
-        'generatedAt': report.generatedAt,
+        // The same instant under two names: a revision seen once was first
+        // seen and last seen at the moment the scan generated it.
+        'firstSeen': report.generatedAt,
+        'lastSeen': report.generatedAt,
+        'digest': digest,
+        'commitSha': commitSha,
         'nodes': report.nodes.map((n) => n.toJson()).toList(),
         'manifests': report.manifests,
         'coverageNote': report.coverageNote,
       },
+    );
+
+    if (inserted.isNotEmpty) {
+      await _pruneRevisions(report.projectId);
+      return _revisionFromRow(inserted.first.toColumnMap(), report: report);
+    }
+
+    // Nothing was inserted, so the newest revision already says this. Mark it
+    // seen again. `greatest` because scans can finish out of order and a report
+    // generated before the one on record says nothing newer; `coalesce` because
+    // a commit id already recorded belongs to the first sighting, which is
+    // where this state began.
+    final seen = await _pool.execute(
+      Sql.named('''
+        update dep_report_revisions set
+          last_seen_at = greatest(last_seen_at, @lastSeen:timestamptz),
+          commit_sha   = coalesce(commit_sha, @commitSha:text)
+        where id = (
+          select id from dep_report_revisions
+          where project_id = @projectId:uuid
+          order by first_seen_at desc
+          limit 1
+        )
+        returning $_revisionColumns
+      '''),
+      parameters: {
+        'projectId': report.projectId,
+        'lastSeen': report.generatedAt,
+        'commitSha': commitSha,
+      },
+    );
+
+    return _revisionFromRow(seen.first.toColumnMap(), report: report);
+  }
+
+  /// Drops everything past [maxRevisionsPerProject] for one project, oldest
+  /// first.
+  ///
+  /// Each revision holds a full node list, and a project scanned daily for a
+  /// year accumulates as many revisions as it has changes. Nothing else prunes
+  /// them, so this runs on the write that could have added one.
+  Future<void> _pruneRevisions(String projectId) async {
+    await _pool.execute(
+      Sql.named('''
+        delete from dep_report_revisions
+        where project_id = @projectId:uuid
+          and id not in (
+            select id from dep_report_revisions
+            where project_id = @projectId:uuid
+            order by first_seen_at desc
+            limit @keep:int8
+          )
+      '''),
+      parameters: {'projectId': projectId, 'keep': maxRevisionsPerProject},
     );
   }
 
   @override
   Future<DepReport?> reportFor(String projectId) async {
     final result = await _pool.execute(
-      Sql.named('select project_id, generated_at, nodes, manifests, '
-          'coverage_note from dep_reports where project_id = @id:uuid'),
+      Sql.named('''
+        select project_id, first_seen_at, nodes, manifests, coverage_note
+        from dep_report_revisions
+        where project_id = @id:uuid
+        order by first_seen_at desc
+        limit 1
+      '''),
       parameters: {'id': projectId},
     );
     if (result.isEmpty) return null;
-    final row = result.first.toColumnMap();
-
-    // Rows written before backend/sql/report_coverage.sql have no manifests and
-    // no note, which reads back the same as a single-package scan.
-    return DepReport(
-      projectId: row['project_id'].toString(),
-      generatedAt: row['generated_at'] as DateTime,
-      nodes: _jsonbList(row['nodes'])
-          .map((e) => DepNode.fromJson((e as Map).cast<String, dynamic>()))
-          .toList(),
-      manifests: _jsonbList(row['manifests']).cast<String>(),
-      coverageNote: row['coverage_note'] as String?,
-    );
+    return _reportFromRow(result.first.toColumnMap());
   }
+
+  @override
+  Future<List<ReportRevision>> revisionsFor(
+    String projectId, {
+    int limit = 50,
+  }) async {
+    // The counts are computed in Postgres rather than by reading every
+    // revision's nodes back into Dart. A history of 100 revisions of a
+    // 400-package project is 40,000 nodes to decode so that a list can print
+    // three numbers per row.
+    final result = await _pool.execute(
+      Sql.named('''
+        select $_revisionColumns,
+               jsonb_array_length(nodes) as total,
+               (select count(*) from jsonb_array_elements(nodes) as e
+                 where e.value ->> 'status' = 'outdated') as outdated,
+               (select count(*) from jsonb_array_elements(nodes) as e
+                 where e.value ->> 'status' = 'vulnerable') as vulnerable
+        from dep_report_revisions
+        where project_id = @id:uuid
+        order by first_seen_at desc
+        limit @limit:int8
+      '''),
+      parameters: {'id': projectId, 'limit': limit},
+    );
+
+    return [
+      for (final row in result) _revisionFromRow(row.toColumnMap()),
+    ];
+  }
+
+  @override
+  Future<DepReport?> reportAt(String projectId, String revisionId) async {
+    final result = await _pool.execute(
+      Sql.named('''
+        select project_id, first_seen_at, nodes, manifests, coverage_note
+        from dep_report_revisions
+        where id = @revisionId:uuid and project_id = @projectId:uuid
+      '''),
+      parameters: {'revisionId': revisionId, 'projectId': projectId},
+    );
+    if (result.isEmpty) return null;
+    return _reportFromRow(result.first.toColumnMap());
+  }
+
+  /// Rows written before backend/sql/report_coverage.sql have no manifests and
+  /// no note, which reads back the same as a single-package scan.
+  static DepReport _reportFromRow(Map<String, dynamic> row) => DepReport(
+        projectId: row['project_id'].toString(),
+        generatedAt: row['first_seen_at'] as DateTime,
+        nodes: _jsonbList(row['nodes'])
+            .map((e) => DepNode.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        manifests: _jsonbList(row['manifests']).cast<String>(),
+        coverageNote: row['coverage_note'] as String?,
+      );
+
+  /// A revision summary.
+  ///
+  /// [report] supplies the counts on the write path, where the caller already
+  /// holds the report and computing them in SQL would mean a second query for
+  /// numbers that are in hand.
+  static ReportRevision _revisionFromRow(
+    Map<String, dynamic> row, {
+    DepReport? report,
+  }) =>
+      ReportRevision(
+        id: row['id'].toString(),
+        projectId: row['project_id'].toString(),
+        firstSeenAt: row['first_seen_at'] as DateTime,
+        lastSeenAt: row['last_seen_at'] as DateTime,
+        digest: row['content_digest'] as String,
+        commitSha: row['commit_sha'] as String?,
+        total: report?.total ?? _count(row['total']),
+        outdated: report?.outdated ?? _count(row['outdated']),
+        vulnerable: report?.vulnerable ?? _count(row['vulnerable']),
+      );
+
+  /// `count(*)` comes back as an int64 and `jsonb_array_length` as an int32;
+  /// both are absent on the write path, where the report supplies them.
+  static int _count(Object? value) => switch (value) {
+        final int n => n,
+        final num n => n.toInt(),
+        _ => 0,
+      };
 
   /// A jsonb column as a Dart list. The driver hands back a parsed structure,
   /// but a null column (a row predating the column) and a driver that surfaces

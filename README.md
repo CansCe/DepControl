@@ -114,6 +114,46 @@ and licenses stay, because they are facts about the versions in the snapshot
 rather than a comparison with today. Restoring the project makes all of it work
 again.
 
+## Report history
+
+Every analysis is kept, so a project's dependencies can be compared with what
+they were. `GET /projects/<id>/history` lists the states they have been in,
+newest first; `?revision=<id>` returns one of them in full.
+
+**A revision per change, not per scan.** A project re-scanned nightly and never
+touched would otherwise produce three hundred identical entries a year with the
+four that matter somewhere inside them. A scan that finds no difference marks
+the newest revision seen again, so each row carries both when that state was
+first seen and when it was last confirmed — "unchanged for six months" and
+"nobody has looked in six months" are different facts about a project, and the
+difference is usually the point.
+
+What counts as a difference is decided by a digest over the packages, their
+resolved versions and kinds, the advisories against them, their licenses, and
+the manifests the scan read (`backend/lib/src/repository/report_digest.dart`).
+Two things are deliberately excluded:
+
+- **`latest` and `status`.** Those move whenever anybody else publishes a
+  release. A project whose own dependencies have not moved has not changed, and
+  recording that would file the rest of the ecosystem's activity under this
+  project's history.
+- **When the scan ran.** Otherwise every scan is a change and the history is a
+  log of scans.
+
+A newly published advisory against an unchanged version *is* a change, and so is
+a relicensing — those are the two things a re-scan of an untouched project
+exists to find.
+
+Comparison is against the newest revision only, so a project that goes A → B → A
+has three revisions rather than two. Folding the second A into the first would
+stretch one row's window across the period when B held, which is a claim about
+the project that nobody checked.
+
+Revisions are capped per project (`maxRevisionsPerProject`), oldest dropped
+first, since each holds a full node list. The table is in
+`backend/sql/report_history.sql`, which also carries the existing `dep_reports`
+rows over as each project's first revision.
+
 ## Public API diffs
 
 Semver says whether an author *considers* a release breaking. It cannot say

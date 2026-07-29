@@ -145,6 +145,160 @@ void main() {
         expect(fetched.manifests, isEmpty);
       });
 
+      // The history's rules are pinned down against the in-memory store in
+      // report_history_test.dart, which runs everywhere. What is checked here
+      // is that the SQL implements the same ones — the digest comparison, the
+      // ordering, the counts computed in Postgres rather than in Dart.
+      group('report history', () {
+        DepReport reportOf(
+          String version, {
+          required DateTime at,
+          DepStatus status = DepStatus.outdated,
+        }) =>
+            DepReport(
+              projectId: id,
+              generatedAt: at,
+              nodes: [
+                DepNode(
+                  name: 'http',
+                  kind: DepKind.direct,
+                  installed: version,
+                  status: status,
+                ),
+              ],
+            );
+
+        test('the same dependencies scanned twice is one revision', () async {
+          await repo.add(fixture());
+
+          await repo.saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 1, 2)));
+          final seen =
+              await repo.saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 2, 2)));
+
+          final history = await repo.revisionsFor(id);
+          expect(history, hasLength(1));
+          expect(history.single.firstSeenAt, DateTime.utc(2026, 1, 2));
+          expect(history.single.lastSeenAt, DateTime.utc(2026, 2, 2));
+          expect(seen.id, history.single.id);
+        });
+
+        test('a version bump is a new revision, newest first', () async {
+          await repo.add(fixture());
+
+          await repo.saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 1, 2)));
+          await repo.saveReport(reportOf('1.3.0', at: DateTime.utc(2026, 2, 2)));
+
+          final history = await repo.revisionsFor(id);
+          expect(history, hasLength(2));
+          expect(history.first.firstSeenAt, DateTime.utc(2026, 2, 2));
+
+          final latest = await repo.reportFor(id);
+          expect(latest!.nodes.single.installed, '1.3.0');
+        });
+
+        test('a revert reads back as the state reverted to', () async {
+          await repo.add(fixture());
+
+          await repo.saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 1, 2)));
+          await repo.saveReport(reportOf('1.3.0', at: DateTime.utc(2026, 2, 2)));
+          await repo.saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 3, 2)));
+
+          expect(await repo.revisionsFor(id), hasLength(3));
+          final latest = await repo.reportFor(id);
+          expect(latest!.nodes.single.installed, '1.2.0');
+        });
+
+        test('counts come back from the jsonb without decoding it', () async {
+          await repo.add(fixture());
+
+          await repo.saveReport(
+            DepReport(
+              projectId: id,
+              generatedAt: DateTime.utc(2026, 1, 2),
+              nodes: const [
+                DepNode(
+                  name: 'http',
+                  kind: DepKind.direct,
+                  installed: '1.2.0',
+                  status: DepStatus.vulnerable,
+                ),
+                DepNode(
+                  name: 'yaml',
+                  kind: DepKind.direct,
+                  installed: '3.1.0',
+                  status: DepStatus.outdated,
+                ),
+                DepNode(name: 'meta', kind: DepKind.direct, installed: '1.0.0'),
+              ],
+            ),
+          );
+
+          // Read back through revisionsFor, which computes them in SQL rather
+          // than taking them from the report in hand.
+          final revision = (await repo.revisionsFor(id)).single;
+          expect(revision.total, 3);
+          expect(revision.vulnerable, 1);
+          expect(revision.outdated, 1);
+        });
+
+        test('a revision is read back in full by id', () async {
+          await repo.add(fixture());
+
+          final first =
+              await repo.saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 1, 2)));
+          await repo.saveReport(reportOf('1.3.0', at: DateTime.utc(2026, 2, 2)));
+
+          final stored = await repo.reportAt(id, first.id);
+          expect(stored!.nodes.single.installed, '1.2.0');
+        });
+
+        test('a revision is not readable through another project', () async {
+          await repo.add(fixture());
+          final revision =
+              await repo.saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 1, 2)));
+
+          expect(
+            await repo.reportAt(
+              '55555555-5555-5555-5555-555555555555',
+              revision.id,
+            ),
+            isNull,
+          );
+        });
+
+        test('a commit id learned later fills the gap on the same revision',
+            () async {
+          await repo.add(fixture());
+
+          await repo.saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 1, 2)));
+          final seen = await repo.saveReport(
+            reportOf('1.2.0', at: DateTime.utc(2026, 2, 2)),
+            commitSha: 'abc123',
+          );
+
+          expect(await repo.revisionsFor(id), hasLength(1));
+          expect(seen.commitSha, 'abc123');
+        });
+
+        test('lastSeenAt never moves backwards', () async {
+          await repo.add(fixture());
+
+          await repo.saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 6, 1)));
+          final seen =
+              await repo.saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 3, 1)));
+
+          expect(seen.lastSeenAt, DateTime.utc(2026, 6, 1));
+        });
+
+        test('deleting a project cascades to its history', () async {
+          await repo.add(fixture());
+          await repo.saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 1, 2)));
+
+          expect(await repo.delete(id, ownerId: owner), isTrue);
+          expect(await repo.revisionsFor(id), isEmpty);
+        });
+      });
+
       test('byId does not return a project owned by someone else', () async {
         await repo.add(fixture());
         expect(await repo.byId(id, ownerId: otherOwner), isNull);
