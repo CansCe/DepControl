@@ -134,16 +134,22 @@ class PostgresProjectRepository implements ProjectRepository {
   Future<void> saveReport(DepReport report) async {
     await _pool.execute(
       Sql.named('''
-        insert into dep_reports (project_id, generated_at, nodes)
-        values (@projectId:uuid, @generatedAt:timestamptz, @nodes:jsonb)
+        insert into dep_reports (project_id, generated_at, nodes, manifests,
+                                 coverage_note)
+        values (@projectId:uuid, @generatedAt:timestamptz, @nodes:jsonb,
+                @manifests:jsonb, @coverageNote:text)
         on conflict (project_id) do update set
-          generated_at = excluded.generated_at,
-          nodes        = excluded.nodes
+          generated_at  = excluded.generated_at,
+          nodes         = excluded.nodes,
+          manifests     = excluded.manifests,
+          coverage_note = excluded.coverage_note
       '''),
       parameters: {
         'projectId': report.projectId,
         'generatedAt': report.generatedAt,
         'nodes': report.nodes.map((n) => n.toJson()).toList(),
+        'manifests': report.manifests,
+        'coverageNote': report.coverageNote,
       },
     );
   }
@@ -151,27 +157,34 @@ class PostgresProjectRepository implements ProjectRepository {
   @override
   Future<DepReport?> reportFor(String projectId) async {
     final result = await _pool.execute(
-      Sql.named('select project_id, generated_at, nodes '
-          'from dep_reports where project_id = @id:uuid'),
+      Sql.named('select project_id, generated_at, nodes, manifests, '
+          'coverage_note from dep_reports where project_id = @id:uuid'),
       parameters: {'id': projectId},
     );
     if (result.isEmpty) return null;
     final row = result.first.toColumnMap();
 
-    // jsonb decodes to a parsed Dart structure (List of node maps).
-    final rawNodes = row['nodes'];
-    final nodeList = rawNodes is String
-        ? (jsonDecodeList(rawNodes))
-        : (rawNodes as List? ?? const []);
-
+    // Rows written before backend/sql/report_coverage.sql have no manifests and
+    // no note, which reads back the same as a single-package scan.
     return DepReport(
       projectId: row['project_id'].toString(),
       generatedAt: row['generated_at'] as DateTime,
-      nodes: nodeList
+      nodes: _jsonbList(row['nodes'])
           .map((e) => DepNode.fromJson((e as Map).cast<String, dynamic>()))
           .toList(),
+      manifests: _jsonbList(row['manifests']).cast<String>(),
+      coverageNote: row['coverage_note'] as String?,
     );
   }
+
+  /// A jsonb column as a Dart list. The driver hands back a parsed structure,
+  /// but a null column (a row predating the column) and a driver that surfaces
+  /// jsonb as a raw string both reach here too.
+  static List<dynamic> _jsonbList(Object? value) => switch (value) {
+        final String s => jsonDecodeList(s),
+        final List l => l,
+        _ => const [],
+      };
 
   Project _projectFromRow(Map<String, dynamic> row) => Project(
         id: row['id'].toString(),
