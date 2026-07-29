@@ -269,6 +269,11 @@ class _Summary extends StatelessWidget {
         report.nodes.where((n) => n.status == DepStatus.unknown).length;
     final inferred =
         report.nodes.where((n) => n.source == DepSource.constraint).length;
+    // Both empty when the scan never read any source, which is the right
+    // silence: a report that could not look must not imply it looked and found
+    // nothing.
+    final undeclared = report.undeclaredImports;
+    final unimported = report.unimportedDeclarations;
 
     return InkBand(
       child: Column(
@@ -356,11 +361,47 @@ class _Summary extends StatelessWidget {
                   'pub get would install today.',
             ),
           ],
+          // The build that breaks for a reason nothing in the pubspec predicts,
+          // so it is a warning rather than a remark.
+          if (undeclared.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _Note(
+              icon: Icons.link_off,
+              isWarning: true,
+              text: '${_count(undeclared.length, 'package')} imported without '
+                  'being declared: ${_names(undeclared)}. These resolve only '
+                  'while another dependency keeps pulling them in — declare '
+                  'them to stop that being luck.',
+            ),
+          ],
+          if (unimported.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _Note(
+              icon: Icons.delete_sweep_outlined,
+              text: 'No Dart source imports ${_names(unimported)} — '
+                  '${_count(unimported.length, 'declared dependency', plural: 'declared dependencies')} '
+                  'to consider dropping. Build tooling and lint sets are '
+                  'already excluded.',
+            ),
+          ],
         ],
       ),
     );
   }
 }
+
+/// The package names, at most a handful, then a count of the rest.
+///
+/// A note is read at a glance or not at all, and forty names in a paragraph is
+/// not read at all.
+String _names(List<DepNode> nodes, {int limit = 6}) {
+  final names = nodes.map((n) => n.name).toList();
+  if (names.length <= limit) return names.join(', ');
+  return '${names.take(limit).join(', ')} and ${names.length - limit} more';
+}
+
+String _count(int n, String noun, {String? plural}) =>
+    n == 1 ? '1 $noun' : '$n ${plural ?? '${noun}s'}';
 
 /// A line of context inside the header band: what the report covers, or what it
 /// could not.

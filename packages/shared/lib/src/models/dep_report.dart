@@ -118,6 +118,85 @@ class DepReport {
     };
   }
 
+  /// Whether this report knows anything about what the project's source
+  /// imports. False for a scan that could only reach the manifests, where both
+  /// import findings below are silent rather than empty.
+  bool get scannedImports => nodes.any((n) => n.imported != null);
+
+  /// Packages the source imports without any pubspec declaring them, worst
+  /// first by name.
+  ///
+  /// These resolve today only because another dependency happens to pull them
+  /// in. Nothing warns when that stops being true — the build simply fails, at
+  /// whatever unrelated moment somebody upgrades the package in the middle.
+  List<DepNode> get undeclaredImports => nodes
+      .where((n) => n.kind == DepKind.transitive && n.imported == true)
+      .toList()
+    ..sort((a, b) => a.name.compareTo(b.name));
+
+  /// Declared dependencies no source file imports.
+  ///
+  /// Worth deleting: each one is a package whose advisories somebody has to
+  /// read, whose version constrains the resolution of everything else, and
+  /// which buys nothing. Packages that are used *without* being imported are
+  /// excluded — see [usedWithoutImporting] for what that means and why the
+  /// exclusion has to exist.
+  List<DepNode> get unimportedDeclarations => nodes
+      .where(
+        (n) =>
+            n.kind != DepKind.transitive &&
+            n.imported == false &&
+            !usedWithoutImporting(n.name),
+      )
+      .toList()
+    ..sort((a, b) => a.name.compareTo(b.name));
+
+  /// Whether [package] is the kind of dependency a project uses without ever
+  /// importing it, and so cannot be called unused on the evidence of its
+  /// imports alone.
+  ///
+  /// Three sorts qualify:
+  ///
+  /// * lint rule sets, pulled in by `analysis_options.yaml` — though the
+  ///   scanner reads `include:` lines too, so these are only reached when a
+  ///   project configures them somewhere else;
+  /// * build tooling, which runs as a command rather than being called;
+  /// * code generators, whose *output* is what the project imports. The `_gen`
+  ///   suffixes catch the ones nobody thought to list here, which is most of
+  ///   them — the ecosystem's naming convention is doing real work.
+  ///
+  /// The list is a judgement and will be wrong at the edges. It errs towards
+  /// staying quiet: a package wrongly excluded costs a suggestion nobody was
+  /// obliged to take, and a package wrongly named unused costs the reader's
+  /// trust in every other line of the report.
+  static bool usedWithoutImporting(String package) =>
+      _usedWithoutImporting.contains(package) ||
+      package.endsWith('_generator') ||
+      package.endsWith('_builder') ||
+      package.endsWith('_gen');
+
+  static const _usedWithoutImporting = {
+    // Lint rule sets.
+    'lints',
+    'flutter_lints',
+    'very_good_analysis',
+    'dart_flutter_team_lints',
+    // Build and release tooling, invoked from the command line.
+    'build_runner',
+    'build_web_compilers',
+    'build_test',
+    'dart_frog_cli',
+    'melos',
+    'pana',
+    'coverage',
+    'flutter_launcher_icons',
+    'flutter_native_splash',
+    // Generators whose output, not whose API, is what gets imported.
+    'json_serializable',
+    'freezed',
+    'drift_dev',
+  };
+
   factory DepReport.fromJson(Map<String, dynamic> json) {
     return DepReport(
       projectId: json['projectId'] as String,

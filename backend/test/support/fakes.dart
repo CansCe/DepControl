@@ -13,7 +13,15 @@ dependencies:
 /// A [GitFetcher] that returns canned pubspec content instead of hitting the
 /// network. Pass [onFetch] to simulate a failure or vary the response.
 class FakeGitFetcher implements GitFetcher {
-  FakeGitFetcher({this.onFetch, this.extraManifests = const []});
+  FakeGitFetcher({
+    this.onFetch,
+    this.extraManifests = const [],
+    this.importedPackages,
+  });
+
+  /// What the root manifest's source imports, or null for a scan that only read
+  /// manifests.
+  final Set<String>? importedPackages;
 
   /// Called in place of the real fetch. Receives the git URL and ref.
   final FetchedPubspecs Function(String gitUrl, String ref)? onFetch;
@@ -42,14 +50,11 @@ class FakeGitFetcher implements GitFetcher {
           RepositoryManifest(
             directory: '',
             files: await fetch(gitUrl, ref: ref),
+            importedPackages: importedPackages,
           ),
           ...extraManifests,
         ],
       );
-
-  @override
-  Future<FetchedPubspecs> fetchViaGitArchive(String gitUrl, String ref) =>
-      fetch(gitUrl, ref: ref);
 
   @override
   void close() {}
@@ -73,7 +78,11 @@ class FakeAnalyzer implements PubspecAnalyzer {
   final List<DepNode> nodes;
 
   @override
-  Future<DepReport> analyze(String projectId, FetchedPubspecs files) async =>
+  Future<DepReport> analyze(
+    String projectId,
+    FetchedPubspecs files, {
+    Set<String>? imported,
+  }) async =>
       DepReport(
         projectId: projectId,
         generatedAt: DateTime.utc(2026, 1, 1),

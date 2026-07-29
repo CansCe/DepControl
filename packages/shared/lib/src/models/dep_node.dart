@@ -37,6 +37,7 @@ class DepNode {
     this.license,
     this.dependencies = const [],
     this.manifests = const [],
+    this.imported,
   });
 
   /// Identity within a report: two versions of one package are two entries.
@@ -55,6 +56,7 @@ class DepNode {
         license: license,
         dependencies: dependencies,
         manifests: manifests,
+        imported: imported,
       );
 
   final String name;
@@ -98,6 +100,20 @@ class DepNode {
   /// different things to assess, since an advisory applies to a version.
   final List<String> manifests;
 
+  /// Whether any of the repository's own Dart source imports this package.
+  ///
+  /// Null means the source was never read — a report from a scan that could
+  /// only reach the manifests. That is not the same as false, which is a
+  /// measurement, and the two must not be shown alike: false on a declared
+  /// dependency says nothing in the project uses it, and null says nobody
+  /// checked.
+  ///
+  /// True on a transitive dependency is the more urgent reading. The project
+  /// imports a package it never declared, so it compiles only for as long as
+  /// something else keeps pulling that package in — and nothing in the pubspec
+  /// will warn about the upgrade that stops it.
+  final bool? imported;
+
   factory DepNode.fromJson(Map<String, dynamic> json) {
     return DepNode(
       name: json['name'] as String,
@@ -120,6 +136,7 @@ class DepNode {
       dependencies:
           (json['dependencies'] as List?)?.cast<String>() ?? const [],
       manifests: (json['manifests'] as List?)?.cast<String>() ?? const [],
+      imported: json['imported'] as bool?,
     );
   }
 
@@ -154,5 +171,8 @@ class DepNode {
         if (license != null) 'license': license!.toJson(),
         'dependencies': dependencies,
         if (manifests.isNotEmpty) 'manifests': manifests,
+        // Omitted rather than written as null, so a report stored before import
+        // scanning keeps reading back as "never scanned".
+        if (imported != null) 'imported': imported,
       };
 }

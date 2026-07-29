@@ -242,6 +242,96 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    group('what the source imports', () {
+      DepReport reportOf(List<DepNode> nodes) => DepReport(
+            projectId: 'p1',
+            generatedAt: DateTime.utc(2026, 1, 1),
+            nodes: nodes,
+          );
+
+      Future<void> show(WidgetTester tester, DepReport shown) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ReportScreen(project: project, api: apiReturning(shown)),
+          ),
+        );
+        await tester.pumpAndSettle();
+      }
+
+      testWidgets('names a package imported without being declared',
+          (tester) async {
+        await show(
+          tester,
+          reportOf(const [
+            DepNode(
+              name: 'http',
+              kind: DepKind.direct,
+              installed: '1.0.0',
+              imported: true,
+              dependencies: ['meta'],
+            ),
+            DepNode(
+              name: 'meta',
+              kind: DepKind.transitive,
+              installed: '1.16.0',
+              imported: true,
+            ),
+          ]),
+        );
+
+        expect(
+          find.textContaining('1 package imported without being declared'),
+          findsOneWidget,
+        );
+        expect(find.textContaining('meta'), findsWidgets);
+      });
+
+      testWidgets('names a declared dependency nothing imports',
+          (tester) async {
+        await show(
+          tester,
+          reportOf(const [
+            DepNode(
+              name: 'http',
+              kind: DepKind.direct,
+              installed: '1.0.0',
+              imported: true,
+            ),
+            DepNode(
+              name: 'crypto',
+              kind: DepKind.direct,
+              installed: '3.0.0',
+              imported: false,
+            ),
+          ]),
+        );
+
+        expect(
+          find.textContaining('No Dart source imports crypto'),
+          findsOneWidget,
+        );
+      });
+
+      // The silence that matters: a report from a scan that never read source
+      // must not imply it read some and found nothing.
+      testWidgets('says nothing when no source was scanned', (tester) async {
+        await show(
+          tester,
+          reportOf(const [
+            DepNode(name: 'http', kind: DepKind.direct, installed: '1.0.0'),
+            DepNode(
+              name: 'meta',
+              kind: DepKind.transitive,
+              installed: '1.16.0',
+            ),
+          ]),
+        );
+
+        expect(find.textContaining('without being declared'), findsNothing);
+        expect(find.textContaining('No Dart source imports'), findsNothing);
+      });
+    });
+
     group('the advisories card', () {
       /// A report with one vulnerable direct package and one vulnerable
       /// transitive package, which is the distinction the card has to make.

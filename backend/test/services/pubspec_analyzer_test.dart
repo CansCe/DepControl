@@ -746,6 +746,128 @@ dependencies:
       });
     });
 
+    group('what the source imports', () {
+      const lockWithTransitive = '''
+packages:
+  http:
+    dependency: "direct main"
+    version: "1.2.0"
+  test:
+    dependency: "direct dev"
+    version: "1.25.0"
+  meta:
+    dependency: transitive
+    version: "1.16.0"
+''';
+
+      PubspecAnalyzer stub() => _stubAnalyzer({
+            'http': '1.2.0',
+            'test': '1.25.0',
+            'meta': '1.16.0',
+          });
+
+      Future<DepReport> analyzeWith(Set<String>? imported) => stub().analyze(
+            'p',
+            const FetchedPubspecs(
+              pubspecYaml: _pubspecYaml,
+              pubspecLock: lockWithTransitive,
+            ),
+            imported: imported,
+          );
+
+      test('records a declared dependency the source uses', () async {
+        final report = await analyzeWith({'http'});
+
+        expect(report.nodes.firstWhere((n) => n.name == 'http').imported, true);
+        expect(report.scannedImports, isTrue);
+      });
+
+      test('records a declared dependency nothing imports', () async {
+        final report = await analyzeWith({'http'});
+
+        final unused = report.unimportedDeclarations.map((n) => n.name);
+        expect(unused, ['test']);
+      });
+
+      // The finding that costs someone a broken build later: it resolves today
+      // only because http happens to bring meta along.
+      test('flags a transitive package the source imports', () async {
+        final report = await analyzeWith({'http', 'meta'});
+
+        expect(report.undeclaredImports.map((n) => n.name), ['meta']);
+        // And it is not also reported as an unused declaration.
+        expect(report.unimportedDeclarations.map((n) => n.name), ['test']);
+      });
+
+      // Null is "nobody looked" and must not read as "nothing uses it", which
+      // would accuse every dependency in the report at once.
+      test('says nothing at all when no source was read', () async {
+        final report = await analyzeWith(null);
+
+        expect(report.nodes.every((n) => n.imported == null), isTrue);
+        expect(report.scannedImports, isFalse);
+        expect(report.unimportedDeclarations, isEmpty);
+        expect(report.undeclaredImports, isEmpty);
+      });
+
+      test('one package importing it is enough for the repository', () async {
+        final analyzer = stub();
+
+        RepositoryManifest manifest(String directory, Set<String>? imported) =>
+            RepositoryManifest(
+              directory: directory,
+              files: const FetchedPubspecs(
+                pubspecYaml: _pubspecYaml,
+                pubspecLock: _pubspecLock,
+              ),
+              importedPackages: imported,
+            );
+
+        final report = await analyzer.analyzeRepository(
+          'p',
+          FetchedRepository(
+            manifests: [
+              manifest('', const {}),
+              manifest('tools/x', const {'http'}),
+            ],
+          ),
+        );
+
+        expect(report.nodes.firstWhere((n) => n.name == 'http').imported, true);
+      });
+
+      // A manifest whose source was never read contributes nothing rather than
+      // a `false` that would outvote the manifest that did get scanned.
+      test('an unscanned manifest does not vote', () async {
+        final analyzer = stub();
+
+        final report = await analyzer.analyzeRepository(
+          'p',
+          FetchedRepository(
+            manifests: [
+              RepositoryManifest(
+                directory: '',
+                files: const FetchedPubspecs(
+                  pubspecYaml: _pubspecYaml,
+                  pubspecLock: _pubspecLock,
+                ),
+                importedPackages: const {'http'},
+              ),
+              const RepositoryManifest(
+                directory: 'tools/x',
+                files: FetchedPubspecs(
+                  pubspecYaml: _pubspecYaml,
+                  pubspecLock: _pubspecLock,
+                ),
+              ),
+            ],
+          ),
+        );
+
+        expect(report.nodes.firstWhere((n) => n.name == 'http').imported, true);
+      });
+    });
+
     test('an unparseable locked version degrades to unknown', () async {
       final analyzer = _stubAnalyzer({'http': '1.3.0', 'test': '1.25.0'});
 

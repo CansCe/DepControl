@@ -62,9 +62,36 @@ counts dependency edges per manifest and does not deduplicate across them, so
 its number for a monorepo is legitimately higher — it counts a shared package
 once per manifest.
 
-Discovery uses the forge's tree API, which is rate limited. When it is
-unavailable the scan falls back to the repository root and the report says so
-rather than implying the repository holds one package.
+A scan downloads the repository's source tarball — one request to
+`codeload.github.com` or GitLab's archive endpoint — and reads everything out of
+it. Where a repository holds more packages than a single report is worth, the
+libraries are read before the example apps, since the cap has to fall somewhere.
+
+When the tarball cannot be had (the ref is gone, the download is oversized, the
+bytes do not decode) the scan falls back to the older path: list the tree, then
+fetch each `pubspec.yaml` over raw HTTP. That still produces a complete
+dependency report — it just cannot say anything about imports. If the tree API,
+which is rate limited, is unavailable too, the scan falls back to the repository
+root and the report says so rather than implying the repository holds one
+package.
+
+## What the source says
+
+Reading the tarball means reading the Dart source, not just the manifests, and
+the gap between the two is worth reporting:
+
+- **Imported but not declared.** The package resolves today only because
+  something else pulls it in. Nothing in the pubspec warns before the upgrade
+  that stops it, so the build breaks for a reason that is nowhere in the diff.
+- **Declared but never imported.** Dead weight: a package whose advisories
+  somebody triages, whose version constrains everything else's resolution, and
+  which buys nothing. Build tooling, lint sets and code generators are excluded,
+  since those are used without ever being imported — `analysis_options.yaml`
+  `include:` lines are read for the same reason.
+
+Both are silent — not empty — on a report whose source was never read. "Nobody
+looked" and "nothing uses it" are different claims, and only one of them is
+worth acting on.
 
 ## Managing the registry
 

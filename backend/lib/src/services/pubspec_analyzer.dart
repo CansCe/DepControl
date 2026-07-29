@@ -31,7 +31,11 @@ class PubspecAnalyzer {
     // One manifest is the common case, and merging machinery would only make
     // its result harder to read.
     if (repository.manifests.length == 1) {
-      final report = await analyze(projectId, repository.primary.files);
+      final report = await analyze(
+        projectId,
+        repository.primary.files,
+        imported: repository.primary.importedPackages,
+      );
       return DepReport(
         projectId: report.projectId,
         generatedAt: report.generatedAt,
@@ -45,7 +49,11 @@ class PubspecAnalyzer {
     final origins = <String, List<String>>{};
 
     for (final manifest in repository.manifests) {
-      final report = await analyze(projectId, manifest.files);
+      final report = await analyze(
+        projectId,
+        manifest.files,
+        imported: manifest.importedPackages,
+      );
       for (final node in report.nodes) {
         final where = origins.putIfAbsent(node.key, () => <String>[]);
         if (!where.contains(manifest.label)) where.add(manifest.label);
@@ -83,7 +91,16 @@ class PubspecAnalyzer {
     final edges = {...a.dependencies, ...b.dependencies}.toList()..sort();
     final declared = a.kind != DepKind.transitive ? a : b;
 
+    // One package in a monorepo importing something is enough for the
+    // repository to depend on it, so any `true` wins. A manifest whose source
+    // was never scanned contributes nothing either way rather than a `false`.
+    final imported = switch ((a.imported, b.imported)) {
+      (null, final other) || (final other, null) => other,
+      (final x?, final y?) => x || y,
+    };
+
     return DepNode(
+      imported: imported,
       name: a.name,
       kind: declared.kind,
       installed: a.installed,
@@ -99,10 +116,17 @@ class PubspecAnalyzer {
     );
   }
 
+  /// Analyzes one manifest.
+  ///
+  /// [imported] is the set of packages that manifest's own Dart source reaches
+  /// for, or null when the source was not read. It is passed down to each node
+  /// verbatim: whether a package being absent from it is worth reporting is a
+  /// question for [DepReport], which has the whole picture.
   Future<DepReport> analyze(
     String projectId,
-    FetchedPubspecs files,
-  ) async {
+    FetchedPubspecs files, {
+    Set<String>? imported,
+  }) async {
     final pubspec = Pubspec.parse(files.pubspecYaml);
     final directNames = pubspec.dependencies.keys.toSet();
     final devNames = pubspec.devDependencies.keys.toSet();
@@ -163,6 +187,10 @@ class PubspecAnalyzer {
               ? DepKind.dev
               : DepKind.transitive;
 
+      // Null when no source was read, so the node says "not checked" rather
+      // than "not imported".
+      final usedInSource = imported?.contains(name);
+
       // A package that does not come from pub.dev is not asked about there.
       // pub.dev serves packages under some of these names — `flutter` and
       // `sky_engine` are both discontinued placeholders with a few dozen
@@ -176,6 +204,7 @@ class PubspecAnalyzer {
           installed: installed,
           constraint: constraint,
           source: source,
+          imported: usedInSource,
           license: PackageLicense.notFromPubDev(origin),
           dependencies: resolvedPackage?.dependencies
                   .where(names.contains)
@@ -217,6 +246,7 @@ class PubspecAnalyzer {
         latest: info.latest,
         status: status,
         source: source,
+        imported: usedInSource,
         advisories: advisories,
         license: license,
         dependencies: children,

@@ -132,4 +132,111 @@ void main() {
 
     expect(report.worstSeverity, AdvisorySeverity.critical);
   });
+
+  group('what the source imports', () {
+    DepNode used(String name, DepKind kind, {bool? imported}) => DepNode(
+          name: name,
+          kind: kind,
+          installed: '1.0.0',
+          imported: imported,
+        );
+
+    test('a transitive package the source imports is undeclared', () {
+      final report = reportOf([
+        used('http', DepKind.direct, imported: true),
+        used('meta', DepKind.transitive, imported: true),
+        used('path', DepKind.transitive, imported: false),
+      ]);
+
+      expect(report.undeclaredImports.map((n) => n.name), ['meta']);
+    });
+
+    test('a declared package nothing imports is a candidate to drop', () {
+      final report = reportOf([
+        used('http', DepKind.direct, imported: true),
+        used('crypto', DepKind.direct, imported: false),
+        used('mocktail', DepKind.dev, imported: false),
+      ]);
+
+      expect(
+        report.unimportedDeclarations.map((n) => n.name),
+        ['crypto', 'mocktail'],
+      );
+    });
+
+    // The exclusion that keeps the finding credible: every one of these is
+    // used, just never through an import.
+    test('does not call build tooling unused', () {
+      final report = reportOf([
+        used('build_runner', DepKind.dev, imported: false),
+        used('lints', DepKind.dev, imported: false),
+        used('json_serializable', DepKind.dev, imported: false),
+        used('freezed_annotation', DepKind.direct, imported: false),
+      ]);
+
+      // freezed_annotation is genuinely imported by generated code, so it is
+      // not on the list — the suffix rules cover the generators themselves.
+      expect(
+        report.unimportedDeclarations.map((n) => n.name),
+        ['freezed_annotation'],
+      );
+    });
+
+    test('excludes generators by their naming convention', () {
+      for (final name in [
+        'retrofit_generator',
+        'go_router_builder',
+        'envied_generator',
+        'pigeon_gen',
+      ]) {
+        expect(
+          DepReport.usedWithoutImporting(name),
+          isTrue,
+          reason: '$name is build tooling',
+        );
+      }
+      expect(DepReport.usedWithoutImporting('http'), isFalse);
+    });
+
+    // Null is "nobody looked". Reading it as false would accuse every
+    // dependency in every report generated before scanning existed.
+    test('an unscanned report reports nothing either way', () {
+      final report = reportOf([
+        used('http', DepKind.direct),
+        used('meta', DepKind.transitive),
+      ]);
+
+      expect(report.scannedImports, isFalse);
+      expect(report.undeclaredImports, isEmpty);
+      expect(report.unimportedDeclarations, isEmpty);
+    });
+  });
+
+  group('serialization', () {
+    test('round-trips whether a package is imported', () {
+      for (final imported in [true, false]) {
+        final node = DepNode(
+          name: 'http',
+          kind: DepKind.direct,
+          installed: '1.0.0',
+          imported: imported,
+        );
+
+        expect(DepNode.fromJson(node.toJson()).imported, imported);
+      }
+    });
+
+    // A report stored before scanning existed has no `imported` key at all, and
+    // must read back as unknown rather than as "nothing is imported".
+    test('a report stored before scanning reads back as unscanned', () {
+      const node = DepNode(
+        name: 'http',
+        kind: DepKind.direct,
+        installed: '1.0.0',
+      );
+
+      expect(node.toJson().containsKey('imported'), isFalse);
+      expect(DepNode.fromJson(node.toJson()).imported, isNull);
+    });
+  });
 }
