@@ -1,11 +1,8 @@
 import 'package:pub_semver/pub_semver.dart';
-import 'package:pubspec_parse/pubspec_parse.dart';
 import 'package:shared/shared.dart';
-import 'package:yaml/yaml.dart';
 
+import '../ecosystem/ecosystem.dart';
 import 'constraint_resolver.dart';
-import 'git_fetcher.dart';
-import 'pub_api_client.dart';
 
 /// Simulates "what happens if I change this dependency's constraint".
 ///
@@ -22,12 +19,12 @@ import 'pub_api_client.dart';
 /// weaker than pub's answer. Conflicts name the packages involved so the reason
 /// is visible.
 class Resolver {
-  Resolver(this._pub);
+  Resolver(this._ecosystem);
 
-  final PubApiClient _pub;
+  final Ecosystem _ecosystem;
 
   Future<ResolutionResult> simulate(
-    FetchedPubspecs files,
+    ManifestFiles files,
     ResolutionRequest request,
   ) async {
     final target = _parseConstraint(request.targetConstraint);
@@ -40,19 +37,19 @@ class Resolver {
       );
     }
 
-    final Pubspec pubspec;
+    final ParsedManifest parsed;
     try {
-      pubspec = Pubspec.parse(files.pubspecYaml);
+      parsed = _ecosystem.parse(files);
     } on Exception catch (e) {
       return ResolutionResult(
         request: request,
         success: false,
-        conflict: 'Could not read pubspec.yaml: $e',
+        conflict: 'Could not read ${_ecosystem.naming.manifest}: $e',
       );
     }
 
-    final deps = _hosted(pubspec.dependencies);
-    final devDeps = _hosted(pubspec.devDependencies);
+    final deps = parsed.registryConstraints(parsed.dependencies);
+    final devDeps = parsed.registryConstraints(parsed.devDependencies);
 
     // Where the change lands: an existing dev dependency stays a dev
     // dependency; anything else is treated as a regular one.
@@ -65,8 +62,11 @@ class Resolver {
     // Baseline: the lockfile is what is actually installed. Without one, fall
     // back to resolving the constraints as they stand, so the diff still means
     // something.
-    final baseline = files.hasLock
-        ? _parseLock(files.pubspecLock!)
+    final baseline = parsed.hasLock
+        ? {
+            for (final entry in parsed.locked.entries)
+              entry.key: entry.value.version,
+          }
         : _versionsOf(await _resolve(deps, devDeps));
 
     final after = await _resolve(proposedDeps, proposedDev);
@@ -101,21 +101,21 @@ class Resolver {
   /// guessing "absent means unchanged" would make it depend on which baseline
   /// the simulation happened to use.
   Future<Map<String, String>?> resolvedVersionsFor(
-    FetchedPubspecs files,
+    ManifestFiles files,
     ResolutionRequest request,
   ) async {
     final target = _parseConstraint(request.targetConstraint);
     if (target == null) return null;
 
-    final Pubspec pubspec;
+    final ParsedManifest parsed;
     try {
-      pubspec = Pubspec.parse(files.pubspecYaml);
+      parsed = _ecosystem.parse(files);
     } on Exception {
       return null;
     }
 
-    final deps = _hosted(pubspec.dependencies);
-    final devDeps = _hosted(pubspec.devDependencies);
+    final deps = parsed.registryConstraints(parsed.dependencies);
+    final devDeps = parsed.registryConstraints(parsed.devDependencies);
 
     final isDev = devDeps.containsKey(request.package);
     final proposedDeps = {...deps};
@@ -132,7 +132,7 @@ class Resolver {
     Map<String, String> dev,
   ) =>
       // A fresh resolver per call: it caches version listings for the run.
-      ConstraintResolver(_pub).resolve(deps, dev: dev);
+      ConstraintResolver(_ecosystem).resolve(deps, dev: dev);
 
   Map<String, String> _versionsOf(ResolutionOutcome outcome) => {
         for (final entry in outcome.packages.entries)
@@ -200,34 +200,10 @@ class Resolver {
     return buffer.toString().trimRight();
   }
 
-  Map<String, String> _hosted(Map<String, Dependency> deps) => {
-        for (final entry in deps.entries)
-          if (entry.value case final HostedDependency hosted)
-            entry.key: hosted.version.toString(),
-      };
-
-  /// Minimal pubspec.lock reader: package -> resolved version.
-  Map<String, String> _parseLock(String lockContent) {
-    try {
-      final doc = loadYaml(lockContent) as YamlMap;
-      final packages = doc['packages'] as YamlMap?;
-      if (packages == null) return {};
-      return {
-        for (final entry in packages.entries)
-          entry.key as String:
-              (entry.value as YamlMap)['version'] as String? ?? '(unknown)',
-      };
-    } catch (_) {
-      return {};
-    }
-  }
-
-  static VersionConstraint? _parseConstraint(String raw) {
-    if (raw.trim().isEmpty) return null;
-    try {
-      return VersionConstraint.parse(raw);
-    } on FormatException {
-      return null;
-    }
-  }
+  /// The requested constraint, or null when it is not one this ecosystem can
+  /// resolve against. An empty string is rejected here rather than in the
+  /// ecosystem, because "any version" is a legal constraint and an empty text
+  /// box is not a request to install one.
+  VersionConstraint? _parseConstraint(String raw) =>
+      raw.trim().isEmpty ? null : _ecosystem.parseConstraint(raw);
 }

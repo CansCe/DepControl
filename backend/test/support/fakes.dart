@@ -1,5 +1,6 @@
+import 'package:backend/src/ecosystem/ecosystems.dart';
 import 'package:backend/src/services/git_fetcher.dart';
-import 'package:backend/src/services/pubspec_analyzer.dart';
+import 'package:backend/src/services/dependency_analyzer.dart';
 import 'package:shared/shared.dart';
 
 const samplePubspecYaml = '''
@@ -24,7 +25,7 @@ class FakeGitFetcher implements GitFetcher {
   final Set<String>? importedPackages;
 
   /// Called in place of the real fetch. Receives the git URL and ref.
-  final FetchedPubspecs Function(String gitUrl, String ref)? onFetch;
+  final ManifestFiles Function(String gitUrl, String ref)? onFetch;
 
   /// Manifests discovery should find besides the root, for tests that exercise
   /// a repository holding more than one package.
@@ -34,10 +35,14 @@ class FakeGitFetcher implements GitFetcher {
   final calls = <({String gitUrl, String ref})>[];
 
   @override
-  Future<FetchedPubspecs> fetch(String gitUrl, {String ref = 'HEAD'}) async {
+  Future<ManifestFiles> fetch(
+    String gitUrl, {
+    String ref = 'HEAD',
+    ManifestNaming? naming,
+  }) async {
     calls.add((gitUrl: gitUrl, ref: ref));
     if (onFetch != null) return onFetch!(gitUrl, ref);
-    return const FetchedPubspecs(pubspecYaml: samplePubspecYaml);
+    return const ManifestFiles(manifest: samplePubspecYaml);
   }
 
   @override
@@ -60,8 +65,8 @@ class FakeGitFetcher implements GitFetcher {
   void close() {}
 }
 
-/// A [PubspecAnalyzer] that returns a fixed report without calling pub.dev.
-class FakeAnalyzer implements PubspecAnalyzer {
+/// A [DependencyAnalyzer] that returns a fixed report without calling pub.dev.
+class FakeAnalyzer implements DependencyAnalyzer {
   FakeAnalyzer({this.nodes = defaultNodes});
 
   static const defaultNodes = [
@@ -80,7 +85,8 @@ class FakeAnalyzer implements PubspecAnalyzer {
   @override
   Future<DepReport> analyze(
     String projectId,
-    FetchedPubspecs files, {
+    ManifestFiles files, {
+    String ecosystem = DepNode.defaultEcosystem,
     Set<String>? imported,
   }) async =>
       DepReport(
@@ -100,7 +106,7 @@ class FakeAnalyzer implements PubspecAnalyzer {
       generatedAt: report.generatedAt,
       nodes: report.nodes,
       manifests: repository.manifests.length > 1
-          ? repository.manifests.map((m) => m.label).toList()
+          ? [for (final m in repository.manifests) repository.labelOf(m)]
           : const [],
       coverageNote: repository.discoveryNote,
     );

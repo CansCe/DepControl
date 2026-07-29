@@ -162,12 +162,20 @@ class _ReportScreenState extends State<ReportScreen> {
               );
             }
 
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _Summary(project: _project, report: report),
-                Expanded(
-                  child: SingleChildScrollView(
+            // The summary scrolls away with everything else rather than being
+            // pinned above it. It is a tall band — repository, ref, when it was
+            // analyzed, and the counts — and holding all of that on screen
+            // costs more room than it is worth once the reader has moved on to
+            // the advisories and the table.
+            //
+            // It keeps its own full-bleed padding, so the scroll view has none
+            // and the content below carries the page inset instead.
+            return SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _Summary(project: _project, report: report),
+                  Padding(
                     padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -246,8 +254,8 @@ class _ReportScreenState extends State<ReportScreen> {
                       ],
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             );
           },
         ),

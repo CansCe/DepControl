@@ -76,6 +76,65 @@ void main() {
     });
   });
 
+  group('ecosystem', () {
+    test('is part of the identity of a node', () {
+      // Both registries publish a package called `path`, by different people,
+      // doing different things. Merging them on name and version would
+      // attribute one's advisories to the other.
+      const dart = DepNode(
+        name: 'path',
+        kind: DepKind.direct,
+        installed: '1.9.0',
+      );
+      const npm = DepNode(
+        name: 'path',
+        kind: DepKind.direct,
+        installed: '1.9.0',
+        ecosystem: 'npm',
+      );
+
+      expect(dart.key, isNot(npm.key));
+      expect(dart.key, 'dart:path@1.9.0');
+      expect(npm.key, 'npm:path@1.9.0');
+    });
+
+    test('round-trips through json', () {
+      const node = DepNode(
+        name: 'lodash',
+        kind: DepKind.direct,
+        installed: '4.17.21',
+        ecosystem: 'npm',
+      );
+
+      expect(DepNode.fromJson(node.toJson()).ecosystem, 'npm');
+    });
+
+    test('a report stored before ecosystems existed reads back as Dart', () {
+      // Those rows carry no `ecosystem` key at all, and every one of them was
+      // Dart. Defaulting to anything else would relabel history.
+      final legacy = DepNode.fromJson(const {
+        'name': 'http',
+        'kind': 'direct',
+        'installed': '1.2.0',
+      });
+
+      expect(legacy.ecosystem, 'dart');
+      expect(legacy.key, 'dart:http@1.2.0');
+    });
+
+    test('is left out of json when it is the default', () {
+      // So a Dart-only report serialises exactly as it did before, and a
+      // stored report is not rewritten by the act of reading it.
+      const node = DepNode(
+        name: 'http',
+        kind: DepKind.direct,
+        installed: '1.2.0',
+      );
+
+      expect(node.toJson().containsKey('ecosystem'), isFalse);
+    });
+  });
+
   test('an advisory links to where it can be read', () {
     const advisory = DepAdvisory(id: 'GHSA-4rgh-jx4f-qfcq');
     expect(advisory.url, 'https://osv.dev/vulnerability/GHSA-4rgh-jx4f-qfcq');

@@ -61,7 +61,7 @@ Future<Response> onRequest(
   try {
     final files = await deps.gitFetcher.fetch(project.gitUrl, ref: project.ref);
     projectSdk =
-        Pubspec.parse(files.pubspecYaml).environment['sdk']?.toString();
+        Pubspec.parse(files.manifest).environment['sdk']?.toString();
   } catch (_) {
     // Without it the SDK check is simply skipped; everything else still holds.
   }

@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:backend/src/services/git_fetcher.dart';
+import 'package:backend/src/ecosystem/ecosystems.dart';
 import 'package:backend/src/services/pub_api_client.dart';
 import 'package:backend/src/services/resolver.dart';
 import 'package:http/http.dart' as http;
@@ -34,7 +34,7 @@ Resolver resolverFor(Registry registry) {
     );
   });
 
-  return Resolver(PubApiClient(client: client));
+  return Resolver(DartEcosystem(PubApiClient(client: client)));
 }
 
 const _pubspec = '''
@@ -47,8 +47,8 @@ dev_dependencies:
   test: ^1.20.0
 ''';
 
-FetchedPubspecs files({String? lock}) =>
-    FetchedPubspecs(pubspecYaml: _pubspec, pubspecLock: lock);
+ManifestFiles files({String? lock}) =>
+    ManifestFiles(manifest: _pubspec, lock: lock);
 
 void main() {
   group('simulating a bump', () {
@@ -202,7 +202,7 @@ void main() {
       final resolver = resolverFor({});
 
       final result = await resolver.simulate(
-        const FetchedPubspecs(pubspecYaml: 'this: is: not: a: pubspec'),
+        const ManifestFiles(manifest: 'this: is: not: a: pubspec'),
         const ResolutionRequest(package: 'http', targetConstraint: '^1.0.0'),
       );
 

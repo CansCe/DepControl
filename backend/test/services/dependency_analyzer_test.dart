@@ -1,8 +1,9 @@
 import 'dart:convert';
 
+import 'package:backend/src/ecosystem/ecosystems.dart';
 import 'package:backend/src/services/git_fetcher.dart';
 import 'package:backend/src/services/pub_api_client.dart';
-import 'package:backend/src/services/pubspec_analyzer.dart';
+import 'package:backend/src/services/dependency_analyzer.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared/shared.dart';
@@ -85,14 +86,14 @@ http.Response _ok(Map<String, dynamic> body) => http.Response(
     );
 
 void main() {
-  group('PubspecAnalyzer', () {
+  group('DependencyAnalyzer', () {
     test('flags an outdated dependency when a lockfile is present', () async {
       final analyzer = _stubAnalyzer({'http': '1.3.0', 'test': '1.25.0'});
       final report = await analyzer.analyze(
         'p1',
-        const FetchedPubspecs(
-          pubspecYaml: _pubspecYaml,
-          pubspecLock: _pubspecLock,
+        const ManifestFiles(
+          manifest: _pubspecYaml,
+          lock: _pubspecLock,
         ),
       );
 
@@ -118,7 +119,7 @@ void main() {
 
       final report = await analyzer.analyze(
         'p2',
-        const FetchedPubspecs(pubspecYaml: _pubspecYaml),
+        const ManifestFiles(manifest: _pubspecYaml),
       );
 
       expect(report.nodes, hasLength(2));
@@ -176,9 +177,9 @@ void main() {
         );
         final report = await analyzer.analyze(
           'p',
-          FetchedPubspecs(
-            pubspecYaml: _pubspecYaml,
-            pubspecLock: 'packages:\n'
+          ManifestFiles(
+            manifest: _pubspecYaml,
+            lock: 'packages:\n'
                 '  http:\n'
                 '    dependency: "direct main"\n'
                 '    version: "$installed"\n',
@@ -232,9 +233,9 @@ void main() {
 
         final report = await analyzer.analyze(
           'p',
-          const FetchedPubspecs(
-            pubspecYaml: _pubspecYaml,
-            pubspecLock: 'packages:\n'
+          const ManifestFiles(
+            manifest: _pubspecYaml,
+            lock: 'packages:\n'
                 '  http:\n'
                 '    dependency: "direct main"\n'
                 '    version: "0.13.0"\n',
@@ -269,9 +270,9 @@ void main() {
 
         final report = await analyzer.analyze(
           'p',
-          const FetchedPubspecs(
-            pubspecYaml: _pubspecYaml,
-            pubspecLock: 'packages:\n'
+          const ManifestFiles(
+            manifest: _pubspecYaml,
+            lock: 'packages:\n'
                 '  http:\n'
                 '    dependency: "direct main"\n'
                 '    version: "0.13.0"\n',
@@ -322,9 +323,9 @@ void main() {
 
         final report = await analyzer.analyze(
           'p',
-          const FetchedPubspecs(
-            pubspecYaml: _pubspecYaml,
-            pubspecLock: 'packages:\n'
+          const ManifestFiles(
+            manifest: _pubspecYaml,
+            lock: 'packages:\n'
                 '  http:\n'
                 '    dependency: "direct main"\n'
                 '    version: "0.13.0"\n',
@@ -369,9 +370,9 @@ void main() {
 
         final report = await analyzer.analyze(
           'p',
-          const FetchedPubspecs(
-            pubspecYaml: _pubspecYaml,
-            pubspecLock: 'packages:\n'
+          const ManifestFiles(
+            manifest: _pubspecYaml,
+            lock: 'packages:\n'
                 '  http:\n'
                 '    dependency: "direct main"\n'
                 '    version: "0.13.0"\n',
@@ -393,7 +394,7 @@ void main() {
         // No lockfile, so nothing can be judged as affected.
         final report = await analyzer.analyze(
           'p',
-          const FetchedPubspecs(pubspecYaml: _pubspecYaml),
+          const ManifestFiles(manifest: _pubspecYaml),
         );
         final node = report.nodes.firstWhere((n) => n.name == 'http');
         expect(node.advisories, isEmpty);
@@ -413,9 +414,9 @@ void main() {
         );
         final report = await analyzer.analyze(
           'p',
-          const FetchedPubspecs(
-            pubspecYaml: _pubspecYaml,
-            pubspecLock: _pubspecLock,
+          const ManifestFiles(
+            manifest: _pubspecYaml,
+            lock: _pubspecLock,
           ),
         );
         return report.nodes.firstWhere((n) => n.name == 'http');
@@ -552,7 +553,7 @@ dependencies:
             },
           ).analyze(
             'p',
-            FetchedPubspecs(pubspecYaml: sdkPubspec, pubspecLock: lock),
+            ManifestFiles(manifest: sdkPubspec, lock: lock),
           );
 
       test('are named as coming from somewhere else, not left unlicensed',
@@ -620,13 +621,13 @@ dependencies:
       RepositoryManifest manifest(String directory, String analyzerVersion) =>
           RepositoryManifest(
             directory: directory,
-            files: FetchedPubspecs(
-              pubspecYaml: 'name: ${directory.isEmpty ? 'root' : directory}\n'
+            files: ManifestFiles(
+              manifest: 'name: ${directory.isEmpty ? 'root' : directory}\n'
                   'environment:\n'
                   '  sdk: ^3.6.0\n'
                   'dependencies:\n'
                   '  analyzer: any\n',
-              pubspecLock: 'packages:\n'
+              lock: 'packages:\n'
                   '  analyzer:\n'
                   '    dependency: "direct main"\n'
                   '    version: "$analyzerVersion"\n',
@@ -760,7 +761,7 @@ packages:
     version: "1.16.0"
 ''';
 
-      PubspecAnalyzer stub() => _stubAnalyzer({
+      DependencyAnalyzer stub() => _stubAnalyzer({
             'http': '1.2.0',
             'test': '1.25.0',
             'meta': '1.16.0',
@@ -768,9 +769,9 @@ packages:
 
       Future<DepReport> analyzeWith(Set<String>? imported) => stub().analyze(
             'p',
-            const FetchedPubspecs(
-              pubspecYaml: _pubspecYaml,
-              pubspecLock: lockWithTransitive,
+            const ManifestFiles(
+              manifest: _pubspecYaml,
+              lock: lockWithTransitive,
             ),
             imported: imported,
           );
@@ -816,9 +817,9 @@ packages:
         RepositoryManifest manifest(String directory, Set<String>? imported) =>
             RepositoryManifest(
               directory: directory,
-              files: const FetchedPubspecs(
-                pubspecYaml: _pubspecYaml,
-                pubspecLock: _pubspecLock,
+              files: const ManifestFiles(
+                manifest: _pubspecYaml,
+                lock: _pubspecLock,
               ),
               importedPackages: imported,
             );
@@ -847,17 +848,17 @@ packages:
             manifests: [
               RepositoryManifest(
                 directory: '',
-                files: const FetchedPubspecs(
-                  pubspecYaml: _pubspecYaml,
-                  pubspecLock: _pubspecLock,
+                files: const ManifestFiles(
+                  manifest: _pubspecYaml,
+                  lock: _pubspecLock,
                 ),
                 importedPackages: const {'http'},
               ),
               const RepositoryManifest(
                 directory: 'tools/x',
-                files: FetchedPubspecs(
-                  pubspecYaml: _pubspecYaml,
-                  pubspecLock: _pubspecLock,
+                files: ManifestFiles(
+                  manifest: _pubspecYaml,
+                  lock: _pubspecLock,
                 ),
               ),
             ],
@@ -873,9 +874,9 @@ packages:
 
       final report = await analyzer.analyze(
         'p3',
-        const FetchedPubspecs(
-          pubspecYaml: _pubspecYaml,
-          pubspecLock: '''
+        const ManifestFiles(
+          manifest: _pubspecYaml,
+          lock: '''
 packages:
   http:
     dependency: "direct main"
@@ -891,19 +892,21 @@ packages:
   });
 }
 
-PubspecAnalyzer _stubAnalyzer(
+DependencyAnalyzer _stubAnalyzer(
   Map<String, String> latest, {
   Map<String, List<Map<String, dynamic>>> advisories = const {},
   Map<String, List<String>> published = const {},
   Map<String, List<String>> versionTags = const {},
   Map<String, List<String>> latestTags = const {},
 }) =>
-    PubspecAnalyzer(
-      _stubPub(
-        latest,
-        advisories: advisories,
-        published: published,
-        versionTags: versionTags,
-        latestTags: latestTags,
+    DependencyAnalyzer(
+      Ecosystems.standard(
+        pub: _stubPub(
+          latest,
+          advisories: advisories,
+          published: published,
+          versionTags: versionTags,
+          latestTags: latestTags,
+        ),
       ),
     );

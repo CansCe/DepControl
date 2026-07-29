@@ -4,208 +4,16 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:pub_semver/pub_semver.dart';
 
-/// A security advisory published for a package, in the OSV shape pub.dev serves.
-///
-/// An advisory applies to specific versions, not to the package as a whole, so
-/// [affects] must be consulted before reporting a dependency as vulnerable.
-class Advisory {
-  const Advisory({
-    required this.id,
-    this.aliases = const [],
-    this.summary,
-    this.affectedVersions = const {},
-    this.ranges = const [],
-    this.cvssVector,
-    this.databaseSeverity,
-  });
+import '../ecosystem/package_registry.dart';
 
-  final String id;
-
-  /// Other identifiers for the same issue, e.g. `CVE-2020-35669`.
-  final List<String> aliases;
-  final String? summary;
-
-  /// Exact versions pub.dev lists as affected. Authoritative when present.
-  final Set<String> affectedVersions;
-
-  /// Version ranges, used when no explicit version list is published.
-  final List<AdvisoryRange> ranges;
-
-  /// The CVSS v3 base vector, when one was published. Scored by [CvssV3].
-  final String? cvssVector;
-
-  /// The publishing database's own band — GitHub writes `MODERATE` where CVSS
-  /// says medium. Used only when there is no vector to score.
-  final String? databaseSeverity;
-
-  /// Whether [version] is actually affected by this advisory.
-  bool affects(Version version) {
-    if (affectedVersions.isNotEmpty) {
-      return affectedVersions.contains(version.toString());
-    }
-    if (ranges.isEmpty) return false;
-    return ranges.any((r) => r.contains(version));
-  }
-
-  /// The version this advisory says fixes [version], from the OSV ranges.
-  ///
-  /// Only the range actually covering [version] can answer: an advisory may
-  /// carry several `[introduced, fixed)` windows across different release
-  /// lines, and the fix for the 2.x line says nothing to someone on 1.x.
-  ///
-  /// Null when the advisory listed affected versions individually, or left a
-  /// range open — in OSV that means no fix has been published yet.
-  Version? fixedVersionFor(Version version) {
-    Version? best;
-    for (final range in ranges) {
-      final fixed = range.fixed;
-      if (fixed == null || !range.contains(version)) continue;
-      if (best == null || fixed < best) best = fixed;
-    }
-    return best;
-  }
-
-  static Advisory? fromJson(Map<String, dynamic> json) {
-    final id = json['id']?.toString();
-    if (id == null) return null;
-
-    final affected = (json['affected'] as List?) ?? const [];
-    final versions = <String>{};
-    final ranges = <AdvisoryRange>[];
-
-    for (final entry in affected.whereType<Map<String, dynamic>>()) {
-      versions.addAll(
-        ((entry['versions'] as List?) ?? const []).map((v) => v.toString()),
-      );
-      for (final range in ((entry['ranges'] as List?) ?? const [])
-          .whereType<Map<String, dynamic>>()) {
-        ranges.addAll(AdvisoryRange.fromEvents(range['events'] as List?));
-      }
-    }
-
-    return Advisory(
-      id: id,
-      aliases:
-          ((json['aliases'] as List?) ?? const []).map((a) => '$a').toList(),
-      summary: json['summary']?.toString(),
-      affectedVersions: versions,
-      ranges: ranges,
-      cvssVector: _cvssVector(json['severity']),
-      databaseSeverity: (json['database_specific']
-          as Map<String, dynamic>?)?['severity']
-          ?.toString(),
-    );
-  }
-
-  /// The CVSS v3 vector from an OSV `severity` array.
-  ///
-  /// The array may carry several scoring systems. v3 is the one taken: it is
-  /// what every advisory in this ecosystem publishes, and mixing scales would
-  /// make the numbers incomparable across packages.
-  static String? _cvssVector(Object? severity) {
-    if (severity is! List) return null;
-    for (final entry in severity.whereType<Map<String, dynamic>>()) {
-      if (entry['type'] == 'CVSS_V3') return entry['score']?.toString();
-    }
-    return null;
-  }
-}
-
-/// A half-open version range `[introduced, fixed)`, as described by OSV events.
-class AdvisoryRange {
-  const AdvisoryRange({this.introduced, this.fixed, this.lastAffected});
-
-  final Version? introduced;
-  final Version? fixed;
-  final Version? lastAffected;
-
-  bool contains(Version version) {
-    if (introduced != null && version < introduced!) return false;
-    if (fixed != null && version >= fixed!) return false;
-    if (lastAffected != null && version > lastAffected!) return false;
-    return true;
-  }
-
-  /// Walks an OSV `events` array, which is an ordered stream of `introduced`
-  /// and `fixed`/`last_affected` markers rather than a list of range objects.
-  static List<AdvisoryRange> fromEvents(List<dynamic>? events) {
-    if (events == null) return const [];
-
-    final ranges = <AdvisoryRange>[];
-    Version? introduced;
-    var open = false;
-
-    for (final event in events.whereType<Map<String, dynamic>>()) {
-      if (event['introduced'] != null) {
-        introduced = _parse('${event['introduced']}');
-        open = true;
-      }
-      if (event['fixed'] != null) {
-        ranges.add(
-          AdvisoryRange(
-            introduced: introduced,
-            fixed: _parse('${event['fixed']}'),
-          ),
-        );
-        open = false;
-      } else if (event['last_affected'] != null) {
-        ranges.add(
-          AdvisoryRange(
-            introduced: introduced,
-            lastAffected: _parse('${event['last_affected']}'),
-          ),
-        );
-        open = false;
-      }
-    }
-
-    // An `introduced` with no closing event means everything from there on.
-    if (open) ranges.add(AdvisoryRange(introduced: introduced));
-    return ranges;
-  }
-
-  /// OSV uses `"0"` to mean "from the beginning", which is not valid semver.
-  static Version? _parse(String raw) {
-    if (raw == '0') return Version.none;
-    try {
-      return Version.parse(raw);
-    } on FormatException {
-      return null;
-    }
-  }
-}
-
-/// One published version of a package, with the dependency constraints that
-/// version declares.
-class PackageVersion {
-  const PackageVersion({
-    required this.version,
-    this.dependencies = const {},
-    this.sdkConstraint,
-  });
-
-  final Version version;
-
-  /// The Dart SDK range this version declares, from `environment.sdk`.
-  /// A version demanding a newer SDK than the project allows cannot be taken.
-  final String? sdkConstraint;
-
-  /// Regular (non-dev) dependencies: package name -> constraint string. Only
-  /// hosted constraints are usable; git/path/sdk entries are dropped because
-  /// pub.dev cannot resolve them.
-  final Map<String, String> dependencies;
-}
-
-/// Latest version + advisory info for a package from pub.dev.
-class PubInfo {
-  const PubInfo({required this.latest, this.advisories = const []});
-
-  final String? latest;
-
-  /// Every advisory published for the package, unfiltered. Callers must use
-  /// [Advisory.affects] to decide which apply to the version in use.
-  final List<Advisory> advisories;
-}
+// The OSV advisory types, the published-version record and the registry info
+// envelope were defined here when pub.dev was the only registry this server
+// knew about. They were never pub-specific — OSV is a cross-ecosystem format
+// and semver is shared — so they now live in the ecosystem layer, and are
+// re-exported here so that reading pub.dev's client still hands you the types
+// it deals in.
+export '../ecosystem/package_registry.dart'
+    show Advisory, AdvisoryRange, PackageVersion, RegistryInfo;
 
 /// Thin client over the public pub.dev API.
 ///
@@ -232,10 +40,17 @@ class PubApiClient {
   /// advisories and its license all came back as unknown rather than as an error.
   static final _packageName = RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]{0,63}$');
 
-  Future<PubInfo> info(String package) async {
+  /// Whether [name] is a package name pub.dev could serve, by the rule above.
+  ///
+  /// Public because the rule belongs to pub.dev rather than to this client, and
+  /// [DartRegistry] answers the same question for the ecosystem layer. A second
+  /// copy of the pattern is how the leading-underscore bug gets reintroduced.
+  static bool isPackageName(String name) => _packageName.hasMatch(name);
+
+  Future<RegistryInfo> info(String package) async {
     final latest = await _latest(package);
     final advisories = await _advisories(package);
-    return PubInfo(latest: latest, advisories: advisories);
+    return RegistryInfo(latest: latest, advisories: advisories);
   }
 
   Future<String?> _latest(String package) async {

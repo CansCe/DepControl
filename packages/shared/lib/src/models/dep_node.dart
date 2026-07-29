@@ -29,6 +29,7 @@ class DepNode {
     required this.name,
     required this.kind,
     required this.installed,
+    this.ecosystem = defaultEcosystem,
     this.constraint,
     this.latest,
     this.status = DepStatus.unknown,
@@ -40,23 +41,58 @@ class DepNode {
     this.imported,
   });
 
-  /// Identity within a report: two versions of one package are two entries.
-  String get key => '$name@$installed';
+  /// The ecosystem this package was published in — `dart`, `npm`.
+  ///
+  /// Defaults to Dart, which every report stored before a second ecosystem
+  /// existed was, and which is therefore the right reading of a row that does
+  /// not say.
+  final String ecosystem;
+
+  /// What a node means when it does not name an ecosystem.
+  static const defaultEcosystem = 'dart';
+
+  /// Identity within a report: two versions of one package are two entries,
+  /// and so are two packages of the same name from different registries.
+  ///
+  /// The ecosystem is part of the identity because the names collide in
+  /// practice rather than in principle: `path`, `args`, `crypto`, `http` and
+  /// `stack_trace` are all published on both pub.dev and npm, by different
+  /// people, doing different things. Merging those would attribute one's
+  /// advisories to the other.
+  String get key => '$ecosystem:$name@$installed';
 
   /// A copy carrying [manifests].
-  DepNode inManifests(List<String> manifests) => DepNode(
-        name: name,
-        kind: kind,
-        installed: installed,
-        constraint: constraint,
-        latest: latest,
-        status: status,
-        source: source,
-        advisories: advisories,
-        license: license,
-        dependencies: dependencies,
-        manifests: manifests,
-        imported: imported,
+  DepNode inManifests(List<String> manifests) => copyWith(manifests: manifests);
+
+  DepNode copyWith({
+    String? name,
+    DepKind? kind,
+    String? installed,
+    String? ecosystem,
+    String? constraint,
+    String? latest,
+    DepStatus? status,
+    DepSource? source,
+    List<DepAdvisory>? advisories,
+    PackageLicense? license,
+    List<String>? dependencies,
+    List<String>? manifests,
+    bool? imported,
+  }) =>
+      DepNode(
+        name: name ?? this.name,
+        kind: kind ?? this.kind,
+        installed: installed ?? this.installed,
+        ecosystem: ecosystem ?? this.ecosystem,
+        constraint: constraint ?? this.constraint,
+        latest: latest ?? this.latest,
+        status: status ?? this.status,
+        source: source ?? this.source,
+        advisories: advisories ?? this.advisories,
+        license: license ?? this.license,
+        dependencies: dependencies ?? this.dependencies,
+        manifests: manifests ?? this.manifests,
+        imported: imported ?? this.imported,
       );
 
   final String name;
@@ -119,6 +155,9 @@ class DepNode {
       name: json['name'] as String,
       kind: DepKind.values.byName(json['kind'] as String),
       installed: json['installed'] as String,
+      // Absent on every report stored before ecosystems existed, all of which
+      // were Dart.
+      ecosystem: (json['ecosystem'] as String?) ?? defaultEcosystem,
       constraint: json['constraint'] as String?,
       latest: json['latest'] as String?,
       status: DepStatus.values.byName(
@@ -161,6 +200,9 @@ class DepNode {
         'name': name,
         'kind': kind.name,
         'installed': installed,
+        // Written only when it is not the default, so a Dart-only report reads
+        // back byte-for-byte as it did before ecosystems existed.
+        if (ecosystem != defaultEcosystem) 'ecosystem': ecosystem,
         'constraint': constraint,
         'latest': latest,
         'status': status.name,

@@ -47,7 +47,7 @@ void main() {
         ref: 'main',
       );
 
-      expect(files.pubspecYaml, _pubspec);
+      expect(files.manifest, _pubspec);
       expect(f.requested.first.host, 'raw.githubusercontent.com');
       expect(f.requested.first.path, '/acme/demo/main/pubspec.yaml');
     });
@@ -211,7 +211,7 @@ void main() {
       final f = fetcherFor(bodies: {'/acme/demo/HEAD/pubspec.yaml': big});
 
       final files = await f.fetcher.fetch('https://github.com/acme/demo');
-      expect(files.pubspecYaml.length, GitFetcher.maxResponseBytes);
+      expect(files.manifest.length, GitFetcher.maxResponseBytes);
     });
 
     test('gives up on a host that never responds', () async {
@@ -293,7 +293,7 @@ void main() {
       expect(f.requested.single.path, '/acme/demo/tar.gz/main');
 
       expect(repo.manifests, hasLength(1));
-      expect(repo.primary.files.pubspecYaml, 'name: demo\n');
+      expect(repo.primary.files.manifest, 'name: demo\n');
       expect(repo.primary.files.hasLock, isTrue);
       expect(repo.primary.importedPackages, {'http', 'test'});
       expect(repo.discoveryNote, isNull);
@@ -406,14 +406,14 @@ void main() {
       expect(read, contains(demo(0)));
     });
 
-    test('a repository with no pubspec anywhere is an error', () async {
+    test('a repository with no manifest anywhere is an error', () async {
       final f = serving(_tarGz({'README.md': '# nothing here\n'}));
 
       await expectLater(
         f.fetcher.fetchAll('https://github.com/acme/demo'),
         throwsA(
           isA<StateError>()
-              .having((e) => e.message, 'message', contains('No pubspec.yaml')),
+              .having((e) => e.message, 'message', contains('No package manifest')),
         ),
       );
     });
@@ -445,7 +445,7 @@ void main() {
         final repo = await f.fetcher.fetchAll('https://github.com/acme/demo');
 
         expect(repo.manifests, hasLength(1));
-        expect(repo.primary.files.pubspecYaml, 'name: root\n');
+        expect(repo.primary.files.manifest, 'name: root\n');
         // The report is complete; only the import facts are missing, and a null
         // says so rather than an empty set claiming nothing is imported.
         expect(repo.primary.importedPackages, isNull);
@@ -461,7 +461,7 @@ void main() {
         );
 
         final repo = await f.fetcher.fetchAll('https://github.com/acme/demo');
-        expect(repo.primary.files.pubspecYaml, 'name: root\n');
+        expect(repo.primary.files.manifest, 'name: root\n');
       });
 
       // A few hundred kilobytes of gzip expands to gigabytes. The cap is
@@ -476,7 +476,7 @@ void main() {
 
         final repo = await f.fetcher.fetchAll('https://github.com/acme/demo');
 
-        expect(repo.primary.files.pubspecYaml, 'name: root\n');
+        expect(repo.primary.files.manifest, 'name: root\n');
         expect(repo.primary.importedPackages, isNull);
       });
     });
@@ -537,8 +537,8 @@ void main() {
       final repo = await fetcher.fetchAll('https://github.com/acme/demo');
 
       expect(repo.manifests.map((m) => m.directory), ['', 'tools/differ']);
-      expect(repo.manifests.first.files.pubspecYaml, 'name: root\n');
-      expect(repo.manifests.last.files.pubspecYaml, 'name: differ\n');
+      expect(repo.manifests.first.files.manifest, 'name: root\n');
+      expect(repo.manifests.last.files.manifest, 'name: differ\n');
       expect(repo.manifests.last.files.hasLock, isTrue);
       expect(repo.discoveryNote, isNull);
     });
@@ -579,7 +579,7 @@ void main() {
       final repo = await fetcher.fetchAll('https://github.com/acme/demo');
 
       expect(repo.manifests, hasLength(1));
-      expect(repo.discoveryNote, contains('only the pubspec.yaml at its root'));
+      expect(repo.discoveryNote, contains('only the manifests at its root'));
     });
 
     test('caps how many manifests it reads, and says it capped', () async {
@@ -599,7 +599,11 @@ void main() {
 
       final repo = await fetcher.fetchAll('https://github.com/acme/demo');
 
-      expect(repo.manifests, hasLength(GitFetcher.maxManifests + 1));
+      // The cap counts the root manifest too. This path used to read
+      // `maxManifests` *nested* manifests on top of the root, exceeding its own
+      // stated limit by one and disagreeing with the archive path, which has
+      // always capped the total.
+      expect(repo.manifests, hasLength(GitFetcher.maxManifests));
       expect(repo.discoveryNote, contains('were read'));
     });
 
@@ -637,6 +641,6 @@ void main() {
 
     final files =
         await GitFetcher(client: client).fetch('https://github.com/acme/demo');
-    expect(files.pubspecYaml, startsWith('name: demo'));
+    expect(files.manifest, startsWith('name: demo'));
   });
 }

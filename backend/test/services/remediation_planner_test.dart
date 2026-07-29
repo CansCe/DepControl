@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:backend/src/services/git_fetcher.dart';
+import 'package:backend/src/ecosystem/ecosystems.dart';
 import 'package:backend/src/services/pub_api_client.dart';
 import 'package:backend/src/services/remediation_planner.dart';
 import 'package:backend/src/services/resolver.dart';
@@ -35,7 +35,7 @@ RemediationPlanner plannerFor(Registry registry) {
     );
   });
 
-  return RemediationPlanner(Resolver(PubApiClient(client: client)));
+  return RemediationPlanner(Resolver(DartEcosystem(PubApiClient(client: client))));
 }
 
 DepNode node(
@@ -97,7 +97,7 @@ dependencies:
             advisories: [advisory(fixedIn: '0.13.3')],
           ),
         ]),
-        const FetchedPubspecs(pubspecYaml: pubspec),
+        const ManifestFiles(manifest: pubspec),
       );
 
       final fix = plan.remediations.single;
@@ -124,7 +124,7 @@ dependencies:
             advisories: [advisory(fixedIn: '0.13.3')],
           ),
         ]),
-        const FetchedPubspecs(pubspecYaml: pubspec),
+        const ManifestFiles(manifest: pubspec),
       );
 
       expect(plan.remediations.single.resolvedVersion, '0.13.3');
@@ -145,7 +145,7 @@ dependencies:
             advisories: [advisory(fixedIn: '1.0.0')],
           ),
         ]),
-        const FetchedPubspecs(pubspecYaml: pubspec),
+        const ManifestFiles(manifest: pubspec),
       );
 
       expect(plan.remediations.single.caveat, contains('breaking upgrade'));
@@ -170,7 +170,7 @@ dependencies:
             ],
           ),
         ]),
-        const FetchedPubspecs(pubspecYaml: pubspec),
+        const ManifestFiles(manifest: pubspec),
       );
 
       final fix = plan.remediations.single;
@@ -214,7 +214,7 @@ dependencies:
             advisories: [advisory(fixedIn: '3.4.10')],
           ),
         ]),
-        const FetchedPubspecs(pubspecYaml: pubspec),
+        const ManifestFiles(manifest: pubspec),
       );
 
       final fix = plan.remediations.single;
@@ -258,7 +258,7 @@ dependencies:
             advisories: [advisory(fixedIn: '3.4.10')],
           ),
         ]),
-        const FetchedPubspecs(pubspecYaml: pubspec),
+        const ManifestFiles(manifest: pubspec),
       );
 
       final fix = plan.remediations.single;
@@ -296,7 +296,7 @@ dependencies:
             advisories: [advisory(fixedIn: '3.4.10')],
           ),
         ]),
-        const FetchedPubspecs(pubspecYaml: pubspec),
+        const ManifestFiles(manifest: pubspec),
       );
 
       final fix = plan.remediations.single;
@@ -329,7 +329,7 @@ dependencies:
             advisories: [advisory()],
           ),
         ]),
-        const FetchedPubspecs(pubspecYaml: pubspec),
+        const ManifestFiles(manifest: pubspec),
       );
 
       final fix = plan.remediations.single;
@@ -357,7 +357,7 @@ dependencies:
             advisories: [advisory(fixedIn: '0.13.3')],
           ),
         ]),
-        const FetchedPubspecs(pubspecYaml: pubspec),
+        const ManifestFiles(manifest: pubspec),
       );
 
       expect(plan.remediations.single.blocker, RemediationBlocker.unreachable);
@@ -372,7 +372,7 @@ dependencies:
         reportOf([
           node('http', kind: DepKind.direct, installed: '0.13.0'),
         ]),
-        const FetchedPubspecs(pubspecYaml: pubspec),
+        const ManifestFiles(manifest: pubspec),
       );
 
       expect(plan.remediations, isEmpty);
@@ -415,7 +415,7 @@ dependencies:
           ],
         ),
       ]),
-      const FetchedPubspecs(pubspecYaml: pubspec),
+      const ManifestFiles(manifest: pubspec),
     );
 
     expect(plan.remediations.map((r) => r.package), ['yaml', 'http']);

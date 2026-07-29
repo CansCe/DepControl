@@ -33,7 +33,7 @@ class RemediationPlanner {
   /// where anyone starts anyway.
   Future<RemediationPlan> plan(
     DepReport report,
-    FetchedPubspecs files, {
+    ManifestFiles files, {
     int maxPackages = 10,
   }) async {
     final affected = report.affectedNodes.take(maxPackages);
@@ -53,7 +53,7 @@ class RemediationPlanner {
   Future<Remediation> _forPackage(
     DepNode node,
     DepReport report,
-    FetchedPubspecs files,
+    ManifestFiles files,
   ) async {
     final ids = node.advisories.map((a) => a.id).toList();
 
@@ -167,7 +167,7 @@ class RemediationPlanner {
   /// already at the wanted version does not appear in a diff, and "absent"
   /// would otherwise have to mean two opposite things.
   Future<List<VersionChange>?> _verify({
-    required FetchedPubspecs files,
+    required ManifestFiles files,
     required String editPackage,
     required String constraint,
     required String vulnerable,

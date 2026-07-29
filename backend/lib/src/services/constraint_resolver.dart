@@ -1,6 +1,6 @@
 import 'package:pub_semver/pub_semver.dart';
 
-import 'pub_api_client.dart';
+import '../ecosystem/ecosystem.dart';
 
 /// One package pinned to a concrete version by [ConstraintResolver].
 class ResolvedPackage {
@@ -74,9 +74,17 @@ class ResolutionOutcome {
 /// Prereleases are skipped unless the constraint can only be satisfied by one,
 /// matching pub's own preference for stable versions.
 class ConstraintResolver {
-  ConstraintResolver(this._pub, {this.maxPackages = 200, this.maxRounds = 12});
+  ConstraintResolver(
+    this._ecosystem, {
+    this.maxPackages = 200,
+    this.maxRounds = 12,
+  });
 
-  final PubApiClient _pub;
+  /// The ecosystem whose registry publishes the versions, and whose dialect
+  /// the constraints are written in. Resolution itself is the same algorithm
+  /// either way — highest version satisfying every constraint, stable
+  /// preferred — because both ecosystems here are semver.
+  final Ecosystem _ecosystem;
 
   /// Stops runaway traversal of a pathological dependency graph.
   final int maxPackages;
@@ -209,16 +217,11 @@ class ConstraintResolver {
   Future<List<PackageVersion>> _versionsOf(String package) async {
     final cached = _versionCache[package];
     if (cached != null) return cached;
-    final versions = await _pub.versions(package);
+    final versions = await _ecosystem.registry.versions(package);
     _versionCache[package] = versions;
     return versions;
   }
 
-  static VersionConstraint? _parseConstraint(String raw) {
-    try {
-      return VersionConstraint.parse(raw);
-    } on FormatException {
-      return null;
-    }
-  }
+  VersionConstraint? _parseConstraint(String raw) =>
+      _ecosystem.parseConstraint(raw);
 }

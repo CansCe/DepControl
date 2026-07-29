@@ -6,44 +6,43 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:http/http.dart' as http;
 
-import 'import_scanner.dart';
+import '../ecosystem/ecosystems.dart';
 
-/// The two pubspec files fetched from a repo.
-class FetchedPubspecs {
-  const FetchedPubspecs({required this.pubspecYaml, this.pubspecLock});
+export '../ecosystem/manifest.dart' show ManifestFiles;
 
-  final String pubspecYaml;
-  final String? pubspecLock; // may be absent in a repo
-
-  bool get hasLock => pubspecLock != null;
-}
-
-/// One package's pubspec files, and where in the repository they live.
+/// One package's manifest files, which ecosystem they belong to, and where in
+/// the repository they live.
 class RepositoryManifest {
   const RepositoryManifest({
     required this.directory,
     required this.files,
+    this.ecosystem = 'dart',
     this.importedPackages,
   });
 
   /// Path from the repository root, empty for the root itself.
   final String directory;
 
-  final FetchedPubspecs files;
+  /// The [Ecosystem.id] whose manifest this is. Defaults to Dart, which is
+  /// what every manifest was before there was a choice.
+  final String ecosystem;
 
-  /// Packages this manifest's own Dart source imports, or null when the source
-  /// was never read.
+  final ManifestFiles files;
+
+  /// Packages this manifest's own source imports, or null when the source was
+  /// never read.
   ///
   /// Null and empty are different answers. Empty says a scan ran and found no
   /// imports, which makes every declared dependency suspect; null says nobody
-  /// looked, and a report must not turn that into an accusation.
+  /// looked, and a report must not turn that into an accusation. An ecosystem
+  /// with no [SourceScanner] wired up yields null for the same reason.
   final Set<String>? importedPackages;
 
   /// What to call this manifest in a report.
   String get label => directory.isEmpty ? 'repository root' : directory;
 }
 
-/// Every pubspec in a repository, root first.
+/// Every manifest in a repository, root first.
 ///
 /// A repository is not always one package. A pub workspace resolves its members
 /// into a single root lockfile, but a directory deliberately kept *out* of the
@@ -65,6 +64,31 @@ class FetchedRepository {
 
   /// The root manifest, which is the one that exists in every repository.
   RepositoryManifest get primary => manifests.first;
+
+  /// The ecosystems this repository turned out to hold, in discovery order.
+  List<String> get ecosystems {
+    final seen = <String>[];
+    for (final manifest in manifests) {
+      if (!seen.contains(manifest.ecosystem)) seen.add(manifest.ecosystem);
+    }
+    return seen;
+  }
+
+  /// What to call [manifest] in a report.
+  ///
+  /// Qualified by ecosystem only where it has to be: a repository whose root
+  /// holds both a `pubspec.yaml` and a `package.json` has two manifests that
+  /// would otherwise both be called "repository root", and a merged report
+  /// naming the same origin for two unrelated dependency trees is unreadable.
+  /// Where directories are unique the plain path is clearer, so it is kept.
+  String labelOf(RepositoryManifest manifest) {
+    final shared = manifests
+        .where((other) => other.directory == manifest.directory)
+        .length;
+    return shared > 1
+        ? '${manifest.label} (${manifest.ecosystem})'
+        : manifest.label;
+  }
 }
 
 /// Fetches a repository's manifests — and, where it can, its Dart source — from
@@ -99,13 +123,18 @@ class FetchedRepository {
 class GitFetcher {
   GitFetcher({
     http.Client? client,
+    Ecosystems? ecosystems,
     Duration timeout = const Duration(seconds: 15),
     int maxArchiveBytes = defaultMaxArchiveBytes,
   })  : _client = client ?? http.Client(),
+        _ecosystems = ecosystems ?? Ecosystems.standard(),
         _timeout = timeout,
         _maxArchiveBytes = maxArchiveBytes;
 
   final http.Client _client;
+
+  /// Which manifests to look for, and whose source scanner reads which files.
+  final Ecosystems _ecosystems;
 
   /// How long a single request may take. Injectable so tests can exercise the
   /// give-up path without waiting for it.
@@ -149,24 +178,52 @@ class GitFetcher {
   /// is generated or vendored, and its directives are not the project's own.
   static const maxSourceFileBytes = 1024 * 1024;
 
-  Future<FetchedPubspecs> fetch(String gitUrl, {String ref = 'HEAD'}) async {
+  /// The root manifest of one ecosystem, over raw HTTP.
+  ///
+  /// [naming] defaults to the first configured ecosystem — Dart — because the
+  /// endpoints that call this (resolve, remediation, upgrade detail) still work
+  /// only against pub.dev. They pass their own once the resolver takes an
+  /// ecosystem.
+  Future<ManifestFiles> fetch(
+    String gitUrl, {
+    String ref = 'HEAD',
+    ManifestNaming? naming,
+  }) async {
+    final names = naming ?? _ecosystems.all.first.naming;
     final raw = _rawBaseFor(gitUrl, ref);
 
-    final yaml = await _get(raw.resolve('pubspec.yaml'));
-    if (yaml == null) {
-      throw StateError('No pubspec.yaml found at $gitUrl ($ref).');
+    final manifest = await _get(raw.resolve(names.manifest));
+    if (manifest == null) {
+      throw StateError('No ${names.manifest} found at $gitUrl ($ref).');
     }
-    final lock = await _get(raw.resolve('pubspec.lock'));
-    return FetchedPubspecs(pubspecYaml: yaml, pubspecLock: lock);
+    return ManifestFiles(
+      manifest: manifest,
+      lock: await _firstLock(raw, names),
+    );
   }
 
-  /// Every pubspec in the repository, root first, with the packages each one's
+  /// The first of [naming]'s lockfiles that exists under [base], or null.
+  ///
+  /// Ordered rather than exhaustive: npm alone has four lockfile formats and a
+  /// repository can commit more than one, so the naming's order is the
+  /// statement about which to believe. Stopping at the first hit also keeps the
+  /// request count down on the file-by-file path, where each miss is a round
+  /// trip.
+  Future<String?> _firstLock(Uri base, ManifestNaming naming) async {
+    for (final lock in naming.lockFiles) {
+      final found = await _get(base.resolve(lock));
+      if (found != null) return found;
+    }
+    return null;
+  }
+
+  /// Every manifest in the repository, root first, with the packages each one's
   /// source imports where the source could be read.
   ///
   /// Tries the tarball first and falls back to reading files one at a time; see
-  /// the class doc for why. A repository holding no `pubspec.yaml` anywhere is
-  /// an error either way — that is an answer about the repository, not a
-  /// failure of the strategy, so it is not retried down the other path.
+  /// the class doc for why. A repository holding no manifest anywhere is an
+  /// error either way — that is an answer about the repository, not a failure
+  /// of the strategy, so it is not retried down the other path.
   Future<FetchedRepository> fetchAll(
     String gitUrl, {
     String ref = 'HEAD',
@@ -181,54 +238,80 @@ class GitFetcher {
     return _fetchFileByFile(gitUrl, ref);
   }
 
-  /// The original path: list the tree, then fetch each pubspec over raw HTTP.
+  /// The original path: list the tree, then fetch each manifest over raw HTTP.
   ///
   /// Falls back to the root alone — with a note saying so — when the repository
   /// cannot be listed. Discovery runs against a rate-limited API that is not
   /// worth failing a whole scan over.
+  ///
+  /// This path reads no source, so nothing it returns carries
+  /// [RepositoryManifest.importedPackages]. That is why it is the fallback and
+  /// not the strategy.
   Future<FetchedRepository> _fetchFileByFile(
     String gitUrl,
     String ref,
   ) async {
-    final root = await fetch(gitUrl, ref: ref);
-    final rootManifest = RepositoryManifest(directory: '', files: root);
-
-    final String? note;
-    List<String> directories;
-    try {
-      final found = await _discoverManifestDirectories(gitUrl, ref);
-      if (found == null) {
-        return FetchedRepository(
-          manifests: [rootManifest],
-          discoveryNote: 'Could not list this repository, so only the '
-              'pubspec.yaml at its root was read. Any package in a '
-              'subdirectory is missing from this report.',
-        );
-      }
-      directories = found.where((d) => d.isNotEmpty).toList();
-      note = directories.length > maxManifests
-          ? 'This repository has ${directories.length} pubspecs; the first '
-              '$maxManifests were read.'
-          : null;
-      directories = directories.take(maxManifests).toList();
-    } on StateError {
-      rethrow;
-    }
-
-    final manifests = <RepositoryManifest>[rootManifest];
     final raw = _rawBaseFor(gitUrl, ref);
 
-    for (final directory in directories) {
-      final base = raw.resolve('$directory/');
-      final yaml = await _get(base.resolve('pubspec.yaml'));
-      if (yaml == null) continue; // listed but unreadable; not worth failing on
+    // The root can hold a manifest for more than one ecosystem — a Flutter app
+    // with a JavaScript web front end is the ordinary shape of that, not an
+    // exotic one — so every configured ecosystem is asked.
+    final rootManifests = <RepositoryManifest>[];
+    for (final ecosystem in _ecosystems.all) {
+      final names = ecosystem.naming;
+      final manifest = await _get(raw.resolve(names.manifest));
+      if (manifest == null) continue;
+      rootManifests.add(
+        RepositoryManifest(
+          directory: '',
+          ecosystem: ecosystem.id,
+          files: ManifestFiles(
+            manifest: manifest,
+            lock: await _firstLock(raw, names),
+          ),
+        ),
+      );
+    }
+
+    if (rootManifests.isEmpty) {
+      throw StateError(
+        'No ${_ecosystems.all.map((e) => e.naming.manifest).join(' or ')} '
+        'found at $gitUrl ($ref).',
+      );
+    }
+
+    final found = await _discoverManifests(gitUrl, ref);
+    if (found == null) {
+      return FetchedRepository(
+        manifests: rootManifests,
+        discoveryNote: 'Could not list this repository, so only the '
+            'manifests at its root were read. Any package in a '
+            'subdirectory is missing from this report.',
+      );
+    }
+
+    var nested = found.where((m) => m.directory.isNotEmpty).toList();
+    final budget = maxManifests - rootManifests.length;
+    final note = nested.length > budget
+        ? 'This repository has ${nested.length + rootManifests.length} '
+            'manifests; the first $maxManifests were read.'
+        : null;
+    nested = nested.take(budget < 0 ? 0 : budget).toList();
+
+    final manifests = <RepositoryManifest>[...rootManifests];
+    for (final location in nested) {
+      final names = _ecosystems.require(location.ecosystem).naming;
+      final base = raw.resolve('${location.directory}/');
+      final manifest = await _get(base.resolve(names.manifest));
+      if (manifest == null) continue; // listed but unreadable; not fatal
 
       manifests.add(
         RepositoryManifest(
-          directory: directory,
-          files: FetchedPubspecs(
-            pubspecYaml: yaml,
-            pubspecLock: await _get(base.resolve('pubspec.lock')),
+          directory: location.directory,
+          ecosystem: location.ecosystem,
+          files: ManifestFiles(
+            manifest: manifest,
+            lock: await _firstLock(base, names),
           ),
         ),
       );
@@ -270,79 +353,107 @@ class GitFetcher {
 
     // Pass one: where the packages are, most likely to be the point of the
     // repository first — because [maxManifests] decides what gets dropped.
-    final directories = <String>[];
+    final locations = <_ManifestLocation>[];
     for (final path in entries.keys) {
-      if (_directoryOfPubspec(path) case final directory?) {
-        directories.add(directory);
-      }
+      if (_manifestAt(path) case final location?) locations.add(location);
     }
-    if (directories.isEmpty) {
-      throw StateError('No pubspec.yaml found in $gitUrl.');
+    if (locations.isEmpty) {
+      throw StateError('No package manifest found in $gitUrl.');
     }
-    directories.sort((a, b) {
+    locations.sort((a, b) {
       // Demonstrations before shallowness: `bloc` keeps 23 example apps under
       // `examples/` and its actual libraries under `packages/`, and a plain
       // alphabetical sort spends the whole budget on the examples and reports
       // nothing about the library anyone came to read about.
-      final byRole = _isIncidental(a) == _isIncidental(b)
+      final byRole = _isIncidental(a.directory) == _isIncidental(b.directory)
           ? 0
-          : (_isIncidental(a) ? 1 : -1);
+          : (_isIncidental(a.directory) ? 1 : -1);
       if (byRole != 0) return byRole;
 
       // Then shallowest first, so the root leads when there is one.
-      final byDepth = _depth(a).compareTo(_depth(b));
-      return byDepth != 0 ? byDepth : a.compareTo(b);
+      final byDepth = _depth(a.directory).compareTo(_depth(b.directory));
+      if (byDepth != 0) return byDepth;
+
+      final byPath = a.directory.compareTo(b.directory);
+      return byPath != 0 ? byPath : a.ecosystem.compareTo(b.ecosystem);
     });
 
-    final note = directories.length > maxManifests
-        ? 'This repository has ${directories.length} pubspecs; the first '
+    final note = locations.length > maxManifests
+        ? 'This repository has ${locations.length} manifests; the first '
             '$maxManifests were read.'
         : null;
-    final kept = directories.take(maxManifests).toList();
+    final kept = locations.take(maxManifests).toList();
 
     // Pass two: attribute each source file to the package that owns it, and
     // reduce it to the set of packages it imports. Sources are scanned and
     // discarded one at a time — the archive is already in memory and there is
     // no reason to hold a second copy of it as strings.
-    final imports = {for (final directory in kept) directory: <String>{}};
+    //
+    // Attribution is per ecosystem: a `.dart` file belongs to the nearest
+    // pubspec above it, not to the nearest `package.json`, and in a repository
+    // holding both the nearest manifest of *any* kind is regularly the wrong
+    // one.
+    final imports = <String, Set<String>>{
+      for (final location in kept)
+        if (_ecosystems.byId(location.ecosystem)?.sourceScanner != null)
+          location.key: <String>{},
+    };
+
     for (final entry in entries.entries) {
-      final path = entry.key;
-      final isDart = path.endsWith('.dart');
-      final isOptions = _fileName(path) == 'analysis_options.yaml';
-      if (!isDart && !isOptions) continue;
       if (entry.value.size > maxSourceFileBytes) continue;
+      final path = entry.key;
 
-      final owner = _nearestManifest(path, kept);
-      if (owner == null) continue;
+      for (final ecosystem in _ecosystems.all) {
+        final scanner = ecosystem.sourceScanner;
+        if (scanner == null) continue;
 
-      final text = _decode(entry.value);
-      if (text == null) continue;
-      imports[owner]!.addAll(
-        isDart
-            ? ImportScanner.scan([text])
-            : ImportScanner.scan(const [], optionsFiles: [text]),
-      );
+        final naming = ecosystem.naming;
+        final isSource = naming.isSource(path);
+        final isAuxiliary = naming.isAuxiliary(_fileName(path));
+        if (!isSource && !isAuxiliary) continue;
+
+        final owner = _nearestManifest(path, kept, ecosystem.id);
+        if (owner == null) continue;
+
+        final text = _decode(entry.value);
+        if (text == null) break; // undecodable for every ecosystem alike
+
+        imports[owner.key]!.addAll(
+          isSource
+              ? scanner.scan([text])
+              : scanner.scan(const [], auxiliary: [text]),
+        );
+      }
     }
 
     final manifests = <RepositoryManifest>[];
-    for (final directory in kept) {
-      final prefix = directory.isEmpty ? '' : '$directory/';
-      final yaml = _decode(entries['${prefix}pubspec.yaml']!);
-      if (yaml == null) continue;
+    for (final location in kept) {
+      final naming = _ecosystems.require(location.ecosystem).naming;
+      final prefix =
+          location.directory.isEmpty ? '' : '${location.directory}/';
+
+      final manifest = _decode(entries['$prefix${naming.manifest}']!);
+      if (manifest == null) continue;
+
+      String? lock;
+      for (final name in naming.lockFiles) {
+        lock = _decode(entries['$prefix$name']);
+        if (lock != null) break;
+      }
 
       manifests.add(
         RepositoryManifest(
-          directory: directory,
-          files: FetchedPubspecs(
-            pubspecYaml: yaml,
-            pubspecLock: _decode(entries['${prefix}pubspec.lock']),
-          ),
-          importedPackages: imports[directory],
+          directory: location.directory,
+          ecosystem: location.ecosystem,
+          files: ManifestFiles(manifest: manifest, lock: lock),
+          importedPackages: imports[location.key],
         ),
       );
     }
 
-    if (manifests.isEmpty) throw StateError('No pubspec.yaml found in $gitUrl.');
+    if (manifests.isEmpty) {
+      throw StateError('No package manifest found in $gitUrl.');
+    }
     return FetchedRepository(manifests: manifests, discoveryNote: note);
   }
 
@@ -387,29 +498,53 @@ class GitFetcher {
     return inflated.takeBytes();
   }
 
-  /// The directory of [path] when it names a `pubspec.yaml`, else null. The
+  /// Where [path] is a manifest, which ecosystem's and in which directory. The
   /// repository root is the empty string.
-  static String? _directoryOfPubspec(String path) {
-    if (_fileName(path) != 'pubspec.yaml') return null;
-    final slash = path.lastIndexOf('/');
-    return slash < 0 ? '' : path.substring(0, slash);
+  ///
+  /// Null for everything else, which is nearly every path in a repository —
+  /// this runs once per archive entry, so it checks the file name first.
+  _ManifestLocation? _manifestAt(String path) {
+    final fileName = _fileName(path);
+    for (final naming in _ecosystems.naming) {
+      if (fileName != naming.manifest) continue;
+      final slash = path.lastIndexOf('/');
+      return _ManifestLocation(
+        directory: slash < 0 ? '' : path.substring(0, slash),
+        ecosystem: naming.ecosystem,
+      );
+    }
+    return null;
   }
 
-  /// The deepest directory in [directories] that contains [path].
+  /// The deepest manifest of [ecosystem] in [locations] whose directory
+  /// contains [path].
   ///
   /// A file belongs to the package nearest above it, not to the root: in a
   /// monorepo `tools/differ/lib/x.dart` is the differ's source, and counting its
   /// imports against the root would report the root as depending on packages it
   /// has never heard of.
-  static String? _nearestManifest(String path, List<String> directories) {
-    String? best;
-    for (final directory in directories) {
-      if (directory.isEmpty) {
-        best ??= '';
+  ///
+  /// Restricted to one ecosystem because "nearest" has to mean nearest *of the
+  /// right kind*. In a Flutter app with a JavaScript front end under `web/`,
+  /// the manifest nearest a `.dart` file may well be `web/package.json`, and
+  /// attributing Dart imports to it would report an npm package as depending on
+  /// Dart packages.
+  static _ManifestLocation? _nearestManifest(
+    String path,
+    List<_ManifestLocation> locations,
+    String ecosystem,
+  ) {
+    _ManifestLocation? best;
+    for (final location in locations) {
+      if (location.ecosystem != ecosystem) continue;
+      if (location.directory.isEmpty) {
+        best ??= location;
         continue;
       }
-      if (!path.startsWith('$directory/')) continue;
-      if (best == null || directory.length > best.length) best = directory;
+      if (!path.startsWith('${location.directory}/')) continue;
+      if (best == null || location.directory.length > best.directory.length) {
+        best = location;
+      }
     }
     return best;
   }
@@ -481,12 +616,11 @@ class GitFetcher {
     return bytes == null ? null : utf8.decode(bytes, allowMalformed: true);
   }
 
-  /// Directories holding a `pubspec.yaml`, or null when the repository could
-  /// not be listed.
+  /// Every manifest in the repository, or null when it could not be listed.
   ///
   /// Uses each forge's tree API, which returns the whole file list in one
   /// request rather than walking directories.
-  Future<List<String>?> _discoverManifestDirectories(
+  Future<List<_ManifestLocation>?> _discoverManifests(
     String gitUrl,
     String ref,
   ) async {
@@ -516,20 +650,31 @@ class GitFetcher {
       _ => const [],
     };
 
-    final directories = <String>{};
+    final found = <String, _ManifestLocation>{};
     for (final entry in entries.whereType<Map<String, dynamic>>()) {
       final path = entry['path']?.toString();
-      if (path == null || !path.endsWith('pubspec.yaml')) continue;
+      if (path == null) continue;
 
-      // Generated and vendored trees are not the project's own packages.
-      if (path.contains('.dart_tool/') || path.contains('/build/')) continue;
+      // Generated and vendored trees are not the project's own packages. This
+      // path predates the archive reader's [_isIgnored] and is deliberately
+      // narrower: the tree API lists only paths, and a repository that keeps
+      // real source under one of these names loses a manifest rather than
+      // gaining a spurious one.
+      if (path.contains('.dart_tool/') ||
+          path.contains('/build/') ||
+          path.contains('node_modules/')) {
+        continue;
+      }
 
-      final slash = path.lastIndexOf('/');
-      directories.add(slash < 0 ? '' : path.substring(0, slash));
+      final location = _manifestAt(path);
+      if (location != null) found[location.key] = location;
     }
 
-    final sorted = directories.toList()..sort();
-    return sorted;
+    return found.values.toList()
+      ..sort((a, b) {
+        final byPath = a.directory.compareTo(b.directory);
+        return byPath != 0 ? byPath : a.ecosystem.compareTo(b.ecosystem);
+      });
   }
 
   /// The endpoint serving a gzipped tar of the repository at [ref], or null for
@@ -720,4 +865,20 @@ class GitFetcher {
 /// thing to the only code that catches it, which is "read the files instead".
 class _ArchiveUnavailable implements Exception {
   const _ArchiveUnavailable();
+}
+
+/// Where a manifest sits in a repository, and which ecosystem's it is.
+class _ManifestLocation {
+  const _ManifestLocation({required this.directory, required this.ecosystem});
+
+  /// Path from the repository root, empty for the root itself.
+  final String directory;
+
+  /// The [Ecosystem.id] whose manifest was found here.
+  final String ecosystem;
+
+  /// Identity within a repository. The directory alone will not do: one
+  /// directory can hold a `pubspec.yaml` and a `package.json`, and those are
+  /// two packages with two dependency trees.
+  String get key => '$ecosystem:$directory';
 }

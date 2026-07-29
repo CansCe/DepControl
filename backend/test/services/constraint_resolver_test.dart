@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:backend/src/ecosystem/ecosystems.dart';
 import 'package:backend/src/services/constraint_resolver.dart';
 import 'package:backend/src/services/pub_api_client.dart';
 import 'package:http/http.dart' as http;
@@ -34,7 +35,7 @@ ConstraintResolver resolverFor(Registry registry, {int maxPackages = 200}) {
   });
 
   return ConstraintResolver(
-    PubApiClient(client: client),
+    DartEcosystem(PubApiClient(client: client)),
     maxPackages: maxPackages,
   );
 }

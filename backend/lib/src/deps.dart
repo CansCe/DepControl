@@ -7,10 +7,11 @@ import 'repository/postgres_license_policy_store.dart';
 import 'repository/postgres_pool.dart';
 import 'repository/postgres_project_repository.dart';
 import 'repository/project_repository.dart';
+import 'ecosystem/ecosystems.dart';
 import 'services/git_fetcher.dart';
 import 'services/logger.dart';
 import 'services/pub_api_client.dart';
-import 'services/pubspec_analyzer.dart';
+import 'services/dependency_analyzer.dart';
 import 'services/rate_limiter.dart';
 import 'services/remediation_planner.dart';
 import 'services/resolver.dart';
@@ -23,15 +24,21 @@ class Deps {
   /// Builds the production graph from the environment.
   factory Deps() {
     final pubApi = PubApiClient();
+    final ecosystems = Ecosystems.standard(pub: pubApi);
     final stores = _buildStores();
     return Deps._(
       repository: stores.repository,
       apiDiffs: stores.apiDiffs,
       licensePolicies: stores.licensePolicies,
-      gitFetcher: GitFetcher(),
+      ecosystems: ecosystems,
+      gitFetcher: GitFetcher(ecosystems: ecosystems),
       pubApi: pubApi,
-      analyzer: PubspecAnalyzer(pubApi),
-      resolver: Resolver(pubApi),
+      analyzer: DependencyAnalyzer(ecosystems),
+      // Simulation, remediation and upgrade detail still answer only for Dart:
+      // each reads a single manifest and writes a pubspec diff. They take the
+      // Dart ecosystem explicitly rather than the first configured one, so
+      // adding another does not silently repoint them.
+      resolver: Resolver(ecosystems.require('dart')),
       inspector: UpgradeInspector(pubApi),
       authVerifier: _buildVerifier(),
       limiter: _buildLimiter(),
@@ -45,7 +52,8 @@ class Deps {
   factory Deps.forTesting({
     required ProjectRepository repository,
     required GitFetcher gitFetcher,
-    required PubspecAnalyzer analyzer,
+    required DependencyAnalyzer analyzer,
+    Ecosystems? ecosystems,
     ApiDiffStore? apiDiffs,
     LicensePolicyStore? licensePolicies,
     PubApiClient? pubApi,
@@ -55,14 +63,16 @@ class Deps {
     RateLimiter? limiter,
   }) {
     final api = pubApi ?? PubApiClient();
+    final eco = ecosystems ?? Ecosystems.standard(pub: api);
     return Deps._(
       repository: repository,
       apiDiffs: apiDiffs ?? InMemoryApiDiffStore(),
       licensePolicies: licensePolicies ?? InMemoryLicensePolicyStore(),
+      ecosystems: eco,
       gitFetcher: gitFetcher,
       pubApi: api,
       analyzer: analyzer,
-      resolver: resolver ?? Resolver(api),
+      resolver: resolver ?? Resolver(eco.require('dart')),
       inspector: inspector ?? UpgradeInspector(api),
       authVerifier: authVerifier,
       limiter: limiter,
@@ -73,6 +83,7 @@ class Deps {
     required this.repository,
     required this.apiDiffs,
     required this.licensePolicies,
+    required this.ecosystems,
     required this.gitFetcher,
     required this.pubApi,
     required this.analyzer,
@@ -92,6 +103,10 @@ class Deps {
   /// the owner, because a license policy is a statement about one organisation.
   final LicensePolicyStore licensePolicies;
 
+  /// Every ecosystem this server can scan. Shared, because each holds a
+  /// registry client with its own connection pool.
+  final Ecosystems ecosystems;
+
   final GitFetcher gitFetcher;
   final PubApiClient pubApi;
   final Resolver resolver;
@@ -102,7 +117,7 @@ class Deps {
 
   final UpgradeInspector inspector;
   final JwtVerifier authVerifier;
-  final PubspecAnalyzer analyzer;
+  final DependencyAnalyzer analyzer;
 
   /// Per-user limit on the endpoints that fetch repositories and query pub.dev.
   /// Null when limiting is switched off, which tests and local dev do.
