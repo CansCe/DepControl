@@ -24,22 +24,36 @@ COPY backend ./backend
 
 WORKDIR /app/backend
 
-# Detach from the workspace: `resolution: null` cancels `resolution: workspace`
-# so this package resolves standalone, and the override points `shared` at the
-# copy alongside it. Without this, pub looks for a root pubspec that the image
-# deliberately does not carry (the root workspace also pulls in `frontend`,
-# which would drag the whole Flutter SDK into an API image).
-RUN printf 'dependency_overrides:\n  shared:\n    path: ../packages/shared\nresolution: null\n' \
+# Detach from the workspace: the image deliberately carries no root pubspec (the
+# root workspace also pulls in `frontend`, which would drag the whole Flutter SDK
+# into an API image), so `resolution: workspace` has to come out of pubspec.yaml
+# itself and the override points `shared` at the copy alongside it.
+#
+# It is NOT enough to cancel it with `resolution: null` in pubspec_overrides.yaml:
+# pub honours that, but `dart_frog build` reads pubspec.yaml directly, sees
+# `resolution: workspace`, fails to find a workspace root, and then — with only
+# an "Unable to determine workspace root" line on stdout and a zero exit code —
+# skips bundling entirely. The build still "succeeds" and still produces
+# bin/server.dart, but with an empty Router: every route 404s with "Route not
+# found" at runtime. Deleting the key here is what keeps that from coming back.
+RUN sed -i '/^resolution: workspace$/d' pubspec.yaml \
+ && printf 'dependency_overrides:\n  shared:\n    path: ../packages/shared\n' \
       > pubspec_overrides.yaml \
  && dart pub get
 
 RUN dart pub global run dart_frog_cli:dart_frog build
 
+# A routeless build is silent and still exits 0 (see above), so fail loudly here
+# rather than shipping an API that 404s everything.
+RUN test -d build/routes \
+ && grep -q "routes/index.dart" build/bin/server.dart \
+ || (echo "ERROR: dart_frog build produced no routes" && exit 1)
+
 # `dart_frog build` regenerates its own broken overrides inside `build/`.
 # Overwrite it, then resolve and compile for real. From `/app/backend/build`,
 # `../../packages/shared` is `/app/packages/shared`.
 WORKDIR /app/backend/build
-RUN printf 'dependency_overrides:\n  shared:\n    path: ../../packages/shared\nresolution: null\n' \
+RUN printf 'dependency_overrides:\n  shared:\n    path: ../../packages/shared\n' \
       > pubspec_overrides.yaml \
  && dart pub get \
  && dart compile exe bin/server.dart -o bin/server
