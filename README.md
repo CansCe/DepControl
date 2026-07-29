@@ -1,8 +1,11 @@
 # DepControl (project_cloud)
 
-A **100% Dart** hosted web app that ingests a Dart/Flutter project by **Git URL** and
-lets you **inspect & report**, **resolve & simulate** dependency changes, and track a
+A **100% Dart** hosted web app that ingests a project by **Git URL** and lets you
+**inspect & report**, **resolve & simulate** dependency changes, and track a
 **registry of many projects** over time.
+
+Scans **Dart/Flutter** (`pubspec.yaml`, pub.dev) and **npm**
+(`package.json`, registry.npmjs.org) — see [Ecosystems](#ecosystems).
 
 - **Frontend:** Flutter Web
 - **Backend:** Dart Frog (file-based routing, compiles to a single binary)
@@ -43,6 +46,64 @@ project_cloud/            # repo root = pub workspace umbrella (not an app)
 Upgrade reporting sits on top of these: what a version jump changes in published
 metadata (`UpgradeImpact`), and what it changes in the package's public API
 (`ApiDiff`, see below).
+
+## Ecosystems
+
+A dependency report is the same document whichever ecosystem produced it —
+which packages, at which versions, with which advisories and licenses,
+reachable from which manifests. None of that is a question about pub.dev, so
+only four things are per-ecosystem (`backend/lib/src/ecosystem/`): the file
+names, the manifest syntax, the registry protocol, and the constraint dialect.
+Advisories are OSV documents and versions are semver on both sides, so scoring,
+banding, blame assignment, license classification, resolution and remediation
+are shared code that never learns which ecosystem it is serving.
+
+| | Dart | npm |
+|---|---|---|
+| Manifest | `pubspec.yaml` | `package.json` |
+| Lockfile | `pubspec.lock` | `package-lock.json`, `npm-shrinkwrap.json` |
+| Registry | pub.dev | registry.npmjs.org |
+| Advisories | pub.dev `/advisories` | OSV.dev |
+| Licenses | pub.dev's detection | the publisher's `license` field |
+| Imports | `import 'package:…'` | `import`/`require`, `/// <reference types>` |
+| Resolve & simulate | yes | not yet |
+
+**A repository can be more than one.** A Flutter app with a JavaScript front
+end is the ordinary shape of that. Source files are attributed to the nearest
+manifest *of their own kind* — in a repository holding both, the nearest
+manifest of any kind is regularly the wrong one — and where two manifests share
+a directory the report names the ecosystem alongside it.
+
+Package identity carries the ecosystem, because `path`, `args`, `crypto`,
+`http` and `stack_trace` are published on both registries, by different people,
+doing different things. Merging those on name and version would attribute one's
+advisories to the other.
+
+### What differs, and why it is not smoothed over
+
+- **npm's `^` is not pub's.** `^0.0.3` admits nothing but 0.0.3 on npm; pub
+  reads the same text as `>=0.0.3 <0.1.0` and admits 0.0.4. npm also has `||`
+  unions, `x` wildcards and hyphen ranges, none of which pub has. The ranges are
+  translated rather than handed to pub's parser, which would be wrong in the
+  direction that matters — admitting versions the manifest excludes.
+- **npm licenses are weaker evidence.** pub.dev analyses each version's
+  published LICENSE file; npm reports whatever the publisher typed in a field,
+  and frequently that is an SPDX *expression* like `(MIT OR Apache-2.0)`. Those
+  keep their text and get no family, which under the standard policy means a
+  human looks at them.
+- **`yarn.lock` and `pnpm-lock.yaml` are not read.** They are deliberately not
+  listed as lockfiles either, because a lockfile the parser finds and cannot
+  read would have a project report as having no locked versions at all. Their
+  absence instead falls to resolving the declared constraints, which the report
+  labels as inferred.
+- **npm installs one package at several versions; this reports one.** The
+  hoisted copy — the shallowest `node_modules/` path, which is what the tree
+  resolves to unless something forced otherwise. A nested copy at a different
+  version is missing from the report, along with any advisory that applies only
+  to it.
+- **`peerDependencies` are not counted.** A peer is a requirement a package
+  makes of whoever installs it, not something it brings along.
+  `optionalDependencies` *are* counted, because they ship when they install.
 
 ## What a scan covers
 
@@ -227,11 +288,16 @@ cd frontend && flutter run -d chrome
 
 ### Vulnerability scanning
 
-Advisories come from pub.dev's `/advisories` endpoint, which serves **OSV
-documents sourced from the GitHub Advisory Database** — GHSA identifiers, CVE
-aliases, affected ranges and CVSS vectors. That is the same data a direct
-OSV/CVE integration would fetch, so there is deliberately only one source here
-rather than three overlapping ones.
+Advisories are **OSV documents** — GHSA identifiers, CVE aliases, affected
+ranges and CVSS vectors. Dart's come from pub.dev's `/advisories` endpoint,
+which is a view onto the GitHub Advisory Database; npm's come from OSV.dev
+directly, since npm publishes nothing comparable per package. Both are the same
+format, which is why everything downstream of the fetch is one code path.
+
+**An empty advisory list is not a clean bill of health.** Neither source
+distinguishes "nothing published" from "the database could not be reached", and
+a report presently reads both as no advisories. That is a real weakness of this
+design and it is stated here rather than papered over.
 
 What the report does with it:
 

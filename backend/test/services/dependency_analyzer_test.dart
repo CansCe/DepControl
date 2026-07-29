@@ -900,7 +900,7 @@ DependencyAnalyzer _stubAnalyzer(
   Map<String, List<String>> latestTags = const {},
 }) =>
     DependencyAnalyzer(
-      Ecosystems.standard(
+      Ecosystems.dartOnly(
         pub: _stubPub(
           latest,
           advisories: advisories,
