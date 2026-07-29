@@ -1,0 +1,7 @@
+# Cloudflare Pages equivalent of the firebase.json `rewrites` block: the app
+# routes client-side, so every path that is not a real file must serve
+# index.html with a 200 (not a redirect) or a deep link 404s on reload.
+#
+# Anything in frontend/web/ is copied verbatim into build/web/ by
+# `flutter build web`, which is how this reaches the deployed bundle.
+/*  /index.html  200

@@ -1,0 +1,28 @@
+# Cloudflare Pages equivalent of the firebase.json `headers` block.
+#
+# Rules are applied in order and later ones win for the same header, so the
+# blanket immutable rule comes first and the entry points override it below.
+#
+# Caching everything for a year is safe *because* of those overrides: Flutter's
+# service worker is the version check. It is fetched fresh, compares the asset
+# hashes in its manifest, and re-fetches anything stale with `cache: 'reload'`.
+# main.dart.js and the files under assets/ are not content-hashed, so if the
+# service worker itself were cached, a deploy would never reach anyone.
+
+/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/index.html
+  Cache-Control: no-cache
+
+/flutter_bootstrap.js
+  Cache-Control: no-cache
+
+/flutter_service_worker.js
+  Cache-Control: no-cache
+
+/version.json
+  Cache-Control: no-cache
+
+/manifest.json
+  Cache-Control: no-cache

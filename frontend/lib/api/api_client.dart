@@ -7,7 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 /// Where the API lives, baked in at build time:
 ///
 /// ```
-/// flutter build web --dart-define=API_BASE_URL=https://depcontrol-api-xxxx.run.app
+/// flutter build web --dart-define=API_BASE_URL=https://depcontrol-api.fly.dev
 /// ```
 ///
 /// A deployed frontend is served from a different origin than the API, so the

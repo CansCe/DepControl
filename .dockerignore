@@ -3,7 +3,8 @@
 #
 # Secrets first: `backend/.env` holds the real Postgres password, and
 # `dart_frog build` copies it into its output directory. Neither may ever reach
-# an image layer — Cloud Run gets these from Secret Manager instead.
+# an image layer — the deployed app gets these from Fly secrets instead. This
+# list also bounds what `fly deploy --remote-only` uploads to the builder.
 **/.env
 **/.env.*
 !**/.env.example

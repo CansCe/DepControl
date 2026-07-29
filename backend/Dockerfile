@@ -1,4 +1,4 @@
-# DepControl API -> Cloud Run.
+# DepControl API -> Fly.io.
 #
 # Build context is the REPO ROOT, not this directory:
 #     docker build -f backend/Dockerfile .
@@ -54,8 +54,8 @@ COPY --from=build /app/backend/build/bin/server /app/bin/server
 # Quiets the per-request dev logger and raises the default log level to info.
 ENV ENV=production
 
-# Cloud Run injects PORT; the generated server already reads it, defaulting to
-# 8080. EXPOSE is documentation only.
+# The generated server reads PORT, defaulting to 8080; fly.toml sets it
+# explicitly next to internal_port. EXPOSE is documentation only.
 EXPOSE 8080
 
 CMD ["/app/bin/server"]

@@ -1,4 +1,4 @@
-# Builds the Dart Frog API and deploys it to Cloud Run.
+# Builds the Dart Frog API and deploys it to Fly.io.
 name: deploy-backend
 
 on:
@@ -10,14 +10,9 @@ on:
       - 'pubspec.yaml'
       - 'pubspec.lock'
       - '.dockerignore'
+      - 'fly.toml'
       - '.github/workflows/deploy-backend.yml'
   workflow_dispatch:
-
-env:
-  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-  REGION: ${{ vars.GCP_REGION }}
-  SERVICE: depcontrol-api
-  REPOSITORY: depcontrol
 
 jobs:
   test:
@@ -40,51 +35,27 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Required for Workload Identity Federation: the job mints a short-lived
-      # OIDC token instead of holding a long-lived service account JSON key.
-      id-token: write
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
-      - id: auth
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      # Fly publishes no stable release tag for this action; @master is what
+      # their own documentation pins to.
+      - uses: superfly/flyctl-actions/setup-flyctl@master
 
-      - uses: google-github-actions/setup-gcloud@v2
-
-      - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
-
-      - name: Build and push
-        # Context is the repo root: the backend cannot resolve without
-        # `packages/shared`. Tagged with the commit SHA so a deploy is
-        # traceable and a rollback is a redeploy of an earlier tag.
-        run: |
-          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${SERVICE}"
-          docker build -f backend/Dockerfile -t "$IMAGE:${GITHUB_SHA}" -t "$IMAGE:latest" .
-          docker push "$IMAGE:${GITHUB_SHA}"
-          docker push "$IMAGE:latest"
-
-      - name: Deploy to Cloud Run
-        # DATABASE_URL and SUPABASE_URL come from Secret Manager, never from
-        # repo secrets or the image — see docs/DEPLOY.md.
-        run: |
-          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${SERVICE}"
-          gcloud run deploy "$SERVICE" \
-            --image "$IMAGE:${GITHUB_SHA}" \
-            --region "$REGION" \
-            --platform managed \
-            --allow-unauthenticated \
-            --port 8080 \
-            --cpu 1 \
-            --memory 512Mi \
-            --min-instances 0 \
-            --max-instances 4 \
-            --timeout 300 \
-            --set-env-vars "ENV=production" \
-            --set-secrets "DATABASE_URL=depcontrol-database-url:latest,SUPABASE_URL=depcontrol-supabase-url:latest"
+      - name: Deploy to Fly.io
+        # Build settings, machine size and the scale-to-zero policy live in
+        # fly.toml. DATABASE_URL and SUPABASE_URL are Fly secrets set once with
+        # `fly secrets set`, never repo secrets or image layers — see
+        # docs/DEPLOY.md.
+        #
+        # --remote-only builds on Fly's builder rather than needing a Docker
+        # daemon here (it is the default, stated so it stays true if that
+        # changes). --image-label replaces the default `deployment-{timestamp}`
+        # registry tag with the commit, so a release is traceable to a SHA and
+        # a rollback is `fly releases` + `fly deploy --image` of an earlier tag.
+        run: flyctl deploy --remote-only --image-label "${GITHUB_SHA}"
 
       - name: Show service URL
-        run: gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.url)'
+        run: flyctl status

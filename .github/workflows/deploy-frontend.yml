@@ -1,4 +1,4 @@
-# Builds the Flutter Web bundle and deploys it to Firebase Hosting.
+# Builds the Flutter Web bundle and deploys it to Cloudflare Pages.
 name: deploy-frontend
 
 on:
@@ -9,7 +9,6 @@ on:
       - 'packages/shared/**'
       - 'pubspec.yaml'
       - 'pubspec.lock'
-      - 'firebase.json'
       - '.github/workflows/deploy-frontend.yml'
   workflow_dispatch:
 
@@ -18,7 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -42,13 +40,16 @@ jobs:
             --dart-define=API_BASE_URL=${{ vars.API_BASE_URL }}
         working-directory: frontend
 
-      - id: auth
-        uses: google-github-actions/auth@v2
+      - name: Deploy to Cloudflare Pages
+        # The SPA rewrite and cache headers travel inside the bundle, as
+        # frontend/web/_redirects and frontend/web/_headers — `flutter build
+        # web` copies everything in web/ into the output. There is no
+        # deploy-time config for them the way firebase.json was.
+        uses: cloudflare/wrangler-action@v3
         with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-
-      - name: Deploy to Firebase Hosting
-        # firebase-tools picks up the credentials file that the auth step wrote
-        # and exported as GOOGLE_APPLICATION_CREDENTIALS.
-        run: npx --yes firebase-tools@13 deploy --only hosting --project "${{ vars.GCP_PROJECT_ID }}" --non-interactive
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # --branch must match the project's production branch, or this
+          # publishes as a preview deploy on its own URL and the live site
+          # never changes.
+          command: pages deploy frontend/build/web --project-name=depcontrol --branch=master
