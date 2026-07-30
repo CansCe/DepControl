@@ -55,3 +55,4 @@ frontend/build/
 # The api_differ tool resolves independently of the workspace
 tools/api_differ/.dart_tool/
 .vscode/
+.codegraph/
