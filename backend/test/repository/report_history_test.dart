@@ -225,7 +225,7 @@ void main() {
     test('a revision is read back in full by id', () async {
       final repo = InMemoryProjectRepository();
 
-      final first = await repo.saveReport(report([node('http')]));
+      final first = (await repo.saveReport(report([node('http')]))).revision;
       await repo.saveReport(
         report([node('http', version: '2.0.0')], at: DateTime.utc(2026, 2, 1)),
       );
@@ -236,7 +236,7 @@ void main() {
 
     test('another project cannot read this one by revision id', () async {
       final repo = InMemoryProjectRepository();
-      final revision = await repo.saveReport(report([node('http')]));
+      final revision = (await repo.saveReport(report([node('http')]))).revision;
 
       expect(await repo.reportAt('other-project', revision.id), isNull);
     });
@@ -244,7 +244,7 @@ void main() {
     test('revisions carry the counts a list needs', () async {
       final repo = InMemoryProjectRepository();
 
-      final revision = await repo.saveReport(
+      final revision = (await repo.saveReport(
         report([
           node('http', status: DepStatus.vulnerable, advisories: const [
             DepAdvisory(id: 'GHSA-1111-1111-1111'),
@@ -252,7 +252,7 @@ void main() {
           node('yaml', status: DepStatus.outdated),
           node('meta'),
         ]),
-      );
+      )).revision;
 
       expect(revision.total, 3);
       expect(revision.vulnerable, 1);
@@ -307,7 +307,7 @@ void main() {
       final repo = InMemoryProjectRepository();
 
       final revision =
-          await repo.saveReport(report([node('http')]), commitSha: 'abc123');
+          (await repo.saveReport(report([node('http')]), commitSha: 'abc123')).revision;
 
       expect(revision.commitSha, 'abc123');
     });
@@ -318,10 +318,10 @@ void main() {
       final repo = InMemoryProjectRepository();
 
       await repo.saveReport(report([node('http')]));
-      final seen = await repo.saveReport(
+      final seen = (await repo.saveReport(
         report([node('http')], at: DateTime.utc(2026, 2, 1)),
         commitSha: 'abc123',
-      );
+      )).revision;
 
       expect(await repo.revisionsFor(projectId), hasLength(1));
       expect(seen.commitSha, 'abc123');
@@ -333,10 +333,10 @@ void main() {
       final repo = InMemoryProjectRepository();
 
       await repo.saveReport(report([node('http')]), commitSha: 'first');
-      final seen = await repo.saveReport(
+      final seen = (await repo.saveReport(
         report([node('http')], at: DateTime.utc(2026, 2, 1)),
         commitSha: 'second',
-      );
+      )).revision;
 
       expect(seen.commitSha, 'first');
     });
@@ -348,9 +348,9 @@ void main() {
     final repo = InMemoryProjectRepository();
 
     await repo.saveReport(report([node('http')], at: DateTime.utc(2026, 6, 1)));
-    final seen = await repo.saveReport(
+    final seen = (await repo.saveReport(
       report([node('http')], at: DateTime.utc(2026, 3, 1)),
-    );
+    )).revision;
 
     expect(seen.lastSeenAt, DateTime.utc(2026, 6, 1));
   });

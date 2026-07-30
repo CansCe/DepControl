@@ -52,8 +52,8 @@ void main() {
   Future<Map<String, dynamic>> jsonOf(Response response) async =>
       jsonDecode(await response.body()) as Map<String, dynamic>;
 
-  Future<ReportRevision> store(String version, DateTime at) =>
-      repository.saveReport(
+  Future<ReportRevision> store(String version, DateTime at) async =>
+      (await repository.saveReport(
         DepReport(
           projectId: 'p-alice',
           generatedAt: at,
@@ -61,7 +61,8 @@ void main() {
             DepNode(name: 'http', kind: DepKind.direct, installed: version),
           ],
         ),
-      );
+      ))
+          .revision;
 
   setUp(() async {
     repository = InMemoryProjectRepository();

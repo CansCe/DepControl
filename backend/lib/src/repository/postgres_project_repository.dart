@@ -132,12 +132,28 @@ class PostgresProjectRepository implements ProjectRepository {
     return result.isNotEmpty;
   }
 
+  /// Every owner with at least one project that is not archived.
+  ///
+  /// The one read in this class that is *not* scoped to an owner, and it is
+  /// deliberately not on [ProjectRepository]. That interface takes an owner id
+  /// on every method so no route can serve somebody else's registry by
+  /// forgetting to filter; a scheduled sweep has to cut across all of them, and
+  /// putting the capability on the interface would put it within reach of a
+  /// request handler. Only `tool/rescan.dart` calls this, holding the database
+  /// credential rather than a JWT.
+  Future<List<String>> ownersWithActiveProjects() async {
+    final result = await _pool.execute(
+      'select distinct owner_id from projects where archived_at is null',
+    );
+    return [for (final row in result) row[0].toString()];
+  }
+
   /// The revision summary columns, in the order [_revisionFromRow] reads them.
   static const _revisionColumns = 'id, project_id, first_seen_at, last_seen_at, '
       'content_digest, commit_sha';
 
   @override
-  Future<ReportRevision> saveReport(
+  Future<SavedReport> saveReport(
     DepReport report, {
     String? commitSha,
   }) async {
@@ -191,7 +207,10 @@ class PostgresProjectRepository implements ProjectRepository {
 
     if (inserted.isNotEmpty) {
       await _pruneRevisions(report.projectId);
-      return _revisionFromRow(inserted.first.toColumnMap(), report: report);
+      return SavedReport(
+        revision: _revisionFromRow(inserted.first.toColumnMap(), report: report),
+        isNewRevision: true,
+      );
     }
 
     // Nothing was inserted, so the newest revision already says this. Mark it
@@ -219,7 +238,10 @@ class PostgresProjectRepository implements ProjectRepository {
       },
     );
 
-    return _revisionFromRow(seen.first.toColumnMap(), report: report);
+    return SavedReport(
+      revision: _revisionFromRow(seen.first.toColumnMap(), report: report),
+      isNewRevision: false,
+    );
   }
 
   /// Drops everything past [maxRevisionsPerProject] for one project, oldest

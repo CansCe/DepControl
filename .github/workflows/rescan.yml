@@ -1,0 +1,65 @@
+# Re-scans every tracked project and announces what changed.
+#
+# The API is deployed to Fly with `min_machines_running = 0` and stops between
+# requests, so a schedule inside the server would fire only while somebody
+# happened to be using the app — exactly when they do not need to be told. The
+# sweep runs here instead, against the same database the server writes.
+#
+# Needs two repository secrets:
+#   DATABASE_URL  — the Supabase session-pooler connection string, as in
+#                   backend/.env.example. This has full read/write access to
+#                   the registry; it is a secret, not a variable.
+#   APP_BASE_URL  — optional, and a repository *variable* rather than a secret
+#                   (it is the public address of the UI). Set it and the
+#                   notifications carry a link to the report; leave it and they
+#                   carry none rather than a guessed one.
+name: rescan
+
+on:
+  schedule:
+    # 06:00 UTC daily. Nothing here depends on the hour — a re-scan finds what
+    # it finds — but running before the working day means a new advisory is
+    # waiting rather than arriving mid-afternoon.
+    - cron: '0 6 * * *'
+  # So a sweep can be forced after changing a notification target, without
+  # waiting a day to find out whether it works.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'List what would be scanned, without scanning or sending'
+        type: boolean
+        default: false
+
+# One sweep at a time. Two overlapping runs would not double-send — a delivery
+# is claimed in the database before the request goes out — but they would
+# double the outbound traffic to pub.dev, npm and OSV for no benefit.
+concurrency:
+  group: rescan
+  cancel-in-progress: false
+
+jobs:
+  rescan:
+    runs-on: ubuntu-latest
+    # A sweep fetches every tracked repository and queries three registries for
+    # every dependency in them. The default 6h is far more rope than that needs.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.8
+
+      # Workspace members share the root lockfile, so this resolves everything.
+      # Flutter rather than plain Dart because `frontend` is a member too.
+      - run: flutter pub get
+
+      - name: Re-scan and announce
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+          ENV: production
+        run: |
+          dart run tool/rescan.dart --all \
+            ${{ inputs.dry_run && '--dry-run' || '' }}

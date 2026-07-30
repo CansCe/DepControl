@@ -173,8 +173,7 @@ void main() {
 
           await repo
               .saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 1, 2)));
-          final seen = await repo
-              .saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 2, 2)));
+          final seen = (await repo.saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 2, 2)))).revision;
 
           final history = await repo.revisionsFor(id);
           expect(history, hasLength(1));
@@ -250,8 +249,7 @@ void main() {
         test('a revision is read back in full by id', () async {
           await repo.add(fixture());
 
-          final first = await repo
-              .saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 1, 2)));
+          final first = (await repo.saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 1, 2)))).revision;
           await repo
               .saveReport(reportOf('1.3.0', at: DateTime.utc(2026, 2, 2)));
 
@@ -261,8 +259,7 @@ void main() {
 
         test('a revision is not readable through another project', () async {
           await repo.add(fixture());
-          final revision = await repo
-              .saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 1, 2)));
+          final revision = (await repo.saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 1, 2)))).revision;
 
           expect(
             await repo.reportAt(
@@ -279,10 +276,10 @@ void main() {
 
           await repo
               .saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 1, 2)));
-          final seen = await repo.saveReport(
+          final seen = (await repo.saveReport(
             reportOf('1.2.0', at: DateTime.utc(2026, 2, 2)),
             commitSha: 'abc123',
-          );
+          )).revision;
 
           expect(await repo.revisionsFor(id), hasLength(1));
           expect(seen.commitSha, 'abc123');
@@ -293,8 +290,7 @@ void main() {
 
           await repo
               .saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 6, 1)));
-          final seen = await repo
-              .saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 3, 1)));
+          final seen = (await repo.saveReport(reportOf('1.2.0', at: DateTime.utc(2026, 3, 1)))).revision;
 
           expect(seen.lastSeenAt, DateTime.utc(2026, 6, 1));
         });

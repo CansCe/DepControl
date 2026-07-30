@@ -25,7 +25,8 @@ abstract class ProjectRepository {
   /// The project with [id], but only if [ownerId] owns it; null otherwise.
   Future<Project?> byId(String id, {required String ownerId});
 
-  /// Records [report] and returns the revision it belongs to.
+  /// Records [report] and says which revision it landed in, and whether that
+  /// revision is new.
   ///
   /// Appends a revision when the report says something different from the
   /// project's newest one, and otherwise marks that one seen again. Which of
@@ -37,7 +38,12 @@ abstract class ProjectRepository {
   /// Passing it for a state already recorded fills the gap on the existing
   /// revision rather than creating a new one — learning the commit id of a
   /// state is not a change to that state.
-  Future<ReportRevision> saveReport(DepReport report, {String? commitSha});
+  /// [SavedReport.isNewRevision] is reported by the store rather than inferred
+  /// by the caller. It is tempting to deduce it from the timestamps — a
+  /// revision seen once has `firstSeenAt == lastSeenAt` — but two scans that
+  /// land in the same instant produce exactly that, and a scheduled sweep would
+  /// then treat "nothing changed" as a change and announce it.
+  Future<SavedReport> saveReport(DepReport report, {String? commitSha});
 
   /// The newest stored report for [projectId]. Callers must have already
   /// established ownership via [byId].
@@ -76,6 +82,18 @@ abstract class ProjectRepository {
   /// so a caller cannot tell the two apart — the same reason [byId] returns
   /// null instead of a 403.
   Future<bool> delete(String id, {required String ownerId});
+}
+
+/// The outcome of storing a report.
+class SavedReport {
+  const SavedReport({required this.revision, required this.isNewRevision});
+
+  final ReportRevision revision;
+
+  /// Whether this report described a state the project had not been in, and so
+  /// a revision was written — as opposed to the newest one being marked seen
+  /// again.
+  final bool isNewRevision;
 }
 
 /// How many revisions a project keeps.
@@ -147,7 +165,7 @@ class InMemoryProjectRepository implements ProjectRepository {
   }
 
   @override
-  Future<ReportRevision> saveReport(
+  Future<SavedReport> saveReport(
     DepReport report, {
     String? commitSha,
   }) async {
@@ -178,8 +196,12 @@ class InMemoryProjectRepository implements ProjectRepository {
         outdated: newest.summary.outdated,
         vulnerable: newest.summary.vulnerable,
       );
-      history[0] = _StoredRevision(summary: seen, report: newest.report);
-      return seen;
+      history[0] = _StoredRevision(
+        summary: seen,
+        report: newest.report,
+        sequence: newest.sequence,
+      );
+      return SavedReport(revision: seen, isNewRevision: false);
     }
 
     final revision = ReportRevision(
@@ -200,12 +222,21 @@ class InMemoryProjectRepository implements ProjectRepository {
     // Inserting at the front regardless would make the two stores disagree
     // about which revision `reportFor` returns.
     history
-      ..add(_StoredRevision(summary: revision, report: report))
-      ..sort((a, b) => b.summary.firstSeenAt.compareTo(a.summary.firstSeenAt));
+      ..add(
+        _StoredRevision(
+          summary: revision,
+          report: report,
+          sequence: _nextRevision,
+        ),
+      )
+      ..sort((a, b) {
+        final byTime = b.summary.firstSeenAt.compareTo(a.summary.firstSeenAt);
+        return byTime != 0 ? byTime : b.sequence.compareTo(a.sequence);
+      });
     if (history.length > maxRevisionsPerProject) {
       history.removeRange(maxRevisionsPerProject, history.length);
     }
-    return revision;
+    return SavedReport(revision: revision, isNewRevision: true);
   }
 
   @override
@@ -232,8 +263,22 @@ class InMemoryProjectRepository implements ProjectRepository {
 /// A revision and the report it holds, kept together so the in-memory store
 /// mirrors the single Postgres row rather than two collections that can drift.
 class _StoredRevision {
-  const _StoredRevision({required this.summary, required this.report});
+  const _StoredRevision({
+    required this.summary,
+    required this.report,
+    required this.sequence,
+  });
 
   final ReportRevision summary;
   final DepReport report;
+
+  /// Insertion order, which breaks ties in [ReportRevision.firstSeenAt].
+  ///
+  /// Two revisions can share a timestamp — not from a real clock, where
+  /// `generatedAt` is `DateTime.now()`, but readily from a fixture one. Dart's
+  /// sort is not stable, so without a tiebreak "the newest revision" becomes
+  /// whichever the sort happened to leave first, and the digest comparison
+  /// that decides whether a scan found something new compares against an
+  /// arbitrary row.
+  final int sequence;
 }

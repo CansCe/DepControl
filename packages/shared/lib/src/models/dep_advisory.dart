@@ -17,6 +17,21 @@ enum AdvisorySeverity {
   /// critical.
   unknown;
 
+  /// Whether this band clears [threshold] — "at least this bad".
+  ///
+  /// The bands are declared worst-first, so this is an index comparison that
+  /// reads backwards. It lives here rather than at each call site because
+  /// getting it the wrong way round silently drops critical alerts, which is a
+  /// bug nothing observable would report.
+  ///
+  /// [unknown] clears every threshold. An advisory that published neither a
+  /// vector nor a band is one nobody has assessed, and "we do not know how bad
+  /// this is" is not a reason to stay quiet. It still *sorts* last, so it never
+  /// displaces a known critical — but it is not filtered out, for the same
+  /// reason it is never reported as low.
+  bool atLeastAsBadAs(AdvisorySeverity threshold) =>
+      this == AdvisorySeverity.unknown || index <= threshold.index;
+
   /// Bands a CVSS base score, per the CVSS v3 qualitative severity scale.
   static AdvisorySeverity fromScore(double score) {
     if (score >= 9.0) return AdvisorySeverity.critical;

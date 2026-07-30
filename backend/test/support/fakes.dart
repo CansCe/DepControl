@@ -69,6 +69,12 @@ class FakeGitFetcher implements GitFetcher {
 class FakeAnalyzer implements DependencyAnalyzer {
   FakeAnalyzer({this.nodes = defaultNodes});
 
+  /// Advances on every report, because a real analyzer stamps `DateTime.now()`
+  /// and successive scans are therefore ordered. A fixed timestamp makes every
+  /// revision a tie, which is a situation production never reaches and which
+  /// tests should not be quietly exercising instead.
+  static var _tick = 0;
+
   static const defaultNodes = [
     DepNode(
       name: 'http',
@@ -91,7 +97,7 @@ class FakeAnalyzer implements DependencyAnalyzer {
   }) async =>
       DepReport(
         projectId: projectId,
-        generatedAt: DateTime.utc(2026, 1, 1),
+        generatedAt: DateTime.utc(2026, 1, 1).add(Duration(minutes: _tick++)),
         nodes: nodes,
       );
 

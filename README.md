@@ -256,6 +256,81 @@ The diff is derived, never stored: two reports and this endpoint always produce
 the same answer, so nothing has to be migrated when the comparison learns to
 notice something new.
 
+## Being told
+
+A change nobody reads is a change nobody acts on. `tool/rescan.dart` re-scans
+every tracked project, stores what it finds, compares it with the previous
+revision, and announces anything that clears a bar you set.
+
+```bash
+cd backend && dart run tool/rescan.dart --all
+```
+
+It is a CLI rather than a timer inside the server, because the API is deployed
+with `min_machines_running = 0` and stops between requests — an in-process
+schedule would fire only while somebody happened to be using the app, which is
+exactly when they do not need to be told. `.github/workflows/rescan.yml` runs it
+daily; cron or a Fly scheduled machine would do as well. It needs `DATABASE_URL`,
+the same string the server uses.
+
+### What gets announced
+
+`POST /notifications` registers a Slack or Teams incoming webhook, optionally
+scoped to one project. Two rules, both opt-in, either sufficient:
+
+- **A new advisory**, at or above `minSeverity`. Compared against the *worst*
+  new advisory in the change, so one critical among nine lows clears a
+  threshold of critical. An advisory nobody has rated clears every threshold —
+  "we do not know how bad this is" is not a reason to stay quiet, the same
+  rule that stops it being reported as low.
+- **A breaking version move**, in either direction, advisory or not.
+
+A target with both rules off is refused rather than saved: one that can never
+fire is indistinguishable from one that works, until the day it matters.
+
+### At most once
+
+A change is announced at most once per target. The claim is written to the
+database *before* the request goes out, keyed on the revision rather than on
+the run, so a sweep that fires twice — or a machine that dies mid-send — cannot
+produce a second alert. The cost is that a genuinely lost send is not retried,
+which is the right way round: an alert repeated days later, about a change
+already dealt with, does more damage to a channel's credibility than a missed
+one does. A failed send stays claimed for the same reason — retrying on a
+schedule is how a broken webhook becomes a loop.
+
+Archived projects are not swept. Re-analysis already refuses them with `409`,
+and a background job that quietly re-fetched them would be doing the one thing
+archiving exists to stop.
+
+### The webhook URL is a credential
+
+Anything holding an incoming-webhook URL can post to the channel, so:
+
+- **It is never returned.** A stored target reads back as its host and the last
+  few characters of its path — enough to tell two apart, not enough to use.
+  There is deliberately no "reveal" parameter.
+- **Only known hosts.** `hooks.slack.com`, `*.webhook.office.com` and
+  `*.logic.azure.com`. Everything else this application fetches is from a host
+  *it* chose; a notification target is a URL a user supplies that the server
+  then requests from inside its own network, which is a server-side request
+  forgery primitive unless it is constrained. The constraint is an allowlist,
+  because a denylist of private ranges loses to DNS rebinding, redirects, and
+  the several spellings of `127.0.0.1` that parse as something else.
+- **Re-validated on every send**, rather than trusted from storage: the
+  allowlist can narrow, and a row can be edited by something other than this
+  application.
+
+Nothing is ever delivered from a request — only `tool/rescan.dart` posts to a
+webhook — so no caller can use these endpoints to make the server reach an
+address on demand.
+
+**A Teams caveat.** Messages are sent as a MessageCard, which the Office 365
+connector renders. Microsoft is retiring that in favour of Power Automate
+workflows, which want an Adaptive Card; a workflow using the stock template
+will not render these properly. Email is not implemented — it needs a provider
+and credentials, and neither has been chosen.
+
 ## Public API diffs
 
 Semver says whether an author *considers* a release breaking. It cannot say

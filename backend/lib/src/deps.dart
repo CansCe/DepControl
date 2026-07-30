@@ -3,7 +3,10 @@ import 'env.dart';
 import 'repository/api_diff_store.dart';
 import 'repository/license_policy_store.dart';
 import 'repository/postgres_api_diff_store.dart';
+import 'notifications/notifier.dart';
+import 'repository/notification_store.dart';
 import 'repository/postgres_license_policy_store.dart';
+import 'repository/postgres_notification_store.dart';
 import 'repository/postgres_pool.dart';
 import 'repository/postgres_project_repository.dart';
 import 'repository/project_repository.dart';
@@ -30,6 +33,7 @@ class Deps {
       repository: stores.repository,
       apiDiffs: stores.apiDiffs,
       licensePolicies: stores.licensePolicies,
+      notifications: stores.notifications,
       ecosystems: ecosystems,
       gitFetcher: GitFetcher(ecosystems: ecosystems),
       pubApi: pubApi,
@@ -56,6 +60,7 @@ class Deps {
     Ecosystems? ecosystems,
     ApiDiffStore? apiDiffs,
     LicensePolicyStore? licensePolicies,
+    NotificationStore? notifications,
     PubApiClient? pubApi,
     Resolver? resolver,
     UpgradeInspector? inspector,
@@ -68,6 +73,7 @@ class Deps {
       repository: repository,
       apiDiffs: apiDiffs ?? InMemoryApiDiffStore(),
       licensePolicies: licensePolicies ?? InMemoryLicensePolicyStore(),
+      notifications: notifications ?? InMemoryNotificationStore(),
       ecosystems: eco,
       gitFetcher: gitFetcher,
       pubApi: api,
@@ -83,6 +89,7 @@ class Deps {
     required this.repository,
     required this.apiDiffs,
     required this.licensePolicies,
+    required this.notifications,
     required this.ecosystems,
     required this.gitFetcher,
     required this.pubApi,
@@ -102,6 +109,17 @@ class Deps {
   /// Each user's rules about which licenses their code may depend on. Scoped to
   /// the owner, because a license policy is a statement about one organisation.
   final LicensePolicyStore licensePolicies;
+
+  /// Where a project's changes get announced, and what has been sent already.
+  final NotificationStore notifications;
+
+  /// Delivers those announcements. Built per use rather than held, since it
+  /// owns an HTTP client and the request path never announces anything — only
+  /// `tool/rescan.dart` does.
+  Notifier notifier() => Notifier(
+        store: notifications,
+        appBaseUrl: readEnvironment()['APP_BASE_URL'],
+      );
 
   /// Every ecosystem this server can scan. Shared, because each holds a
   /// registry client with its own connection pool.
@@ -169,6 +187,7 @@ class Deps {
     ProjectRepository repository,
     ApiDiffStore apiDiffs,
     LicensePolicyStore licensePolicies,
+    NotificationStore notifications,
   }) _buildStores() {
     final db = log.tagged('db');
     final url = readEnvironment()['DATABASE_URL'];
@@ -180,6 +199,7 @@ class Deps {
           repository: PostgresProjectRepository(pool),
           apiDiffs: PostgresApiDiffStore(pool),
           licensePolicies: PostgresLicensePolicyStore(pool),
+          notifications: PostgresNotificationStore(pool),
         );
       } catch (e) {
         // A malformed DATABASE_URL used to blow up lazily on the first request,
@@ -227,10 +247,12 @@ class Deps {
     ProjectRepository repository,
     ApiDiffStore apiDiffs,
     LicensePolicyStore licensePolicies,
+    NotificationStore notifications,
   }) _inMemoryStores() => (
         repository: InMemoryProjectRepository(),
         apiDiffs: InMemoryApiDiffStore(),
         licensePolicies: InMemoryLicensePolicyStore(),
+        notifications: InMemoryNotificationStore(),
       );
 
   static String? _jwksFromSupabaseUrl(String? base) {

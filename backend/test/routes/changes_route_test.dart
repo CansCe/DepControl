@@ -57,10 +57,11 @@ void main() {
   Future<ReportRevision> store(
     List<DepNode> nodes,
     DateTime at,
-  ) =>
-      repository.saveReport(
+  ) async =>
+      (await repository.saveReport(
         DepReport(projectId: 'p-alice', generatedAt: at, nodes: nodes),
-      );
+      ))
+          .revision;
 
   DepNode node(
     String name, {
