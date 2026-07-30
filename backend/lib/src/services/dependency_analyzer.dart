@@ -5,6 +5,7 @@ import '../ecosystem/ecosystems.dart';
 import 'constraint_resolver.dart';
 import 'cvss.dart';
 import 'git_fetcher.dart';
+import 'scan_progress_store.dart';
 
 /// Turns fetched manifests into a [DepReport] enriched with registry data.
 ///
@@ -37,10 +38,18 @@ class DependencyAnalyzer {
   /// With more than one ecosystem in play the key carries the ecosystem too:
   /// npm and pub.dev both publish packages called `path` and `stack_trace`,
   /// and they are unrelated software.
+  /// [progress] is told what is happening as it happens, for a client watching
+  /// a scan it cannot otherwise see inside. Defaults to a sink that discards
+  /// everything, so nothing pays for it unless someone is looking.
   Future<DepReport> analyzeRepository(
     String projectId,
-    FetchedRepository repository,
-  ) async {
+    FetchedRepository repository, {
+    ScanProgressSink progress = ScanProgressSink.none,
+  }) async {
+    progress
+      ..manifestsTotal(repository.manifests.length)
+      ..phase(ScanPhase.analyzing);
+
     // One manifest is the common case, and merging machinery would only make
     // its result harder to read.
     if (repository.manifests.length == 1) {
@@ -49,6 +58,7 @@ class DependencyAnalyzer {
         repository.primary.files,
         ecosystem: repository.primary.ecosystem,
         imported: repository.primary.importedPackages,
+        progress: progress,
       );
       return DepReport(
         projectId: report.projectId,
@@ -69,6 +79,7 @@ class DependencyAnalyzer {
         manifest.files,
         ecosystem: manifest.ecosystem,
         imported: manifest.importedPackages,
+        progress: progress,
       );
       for (final node in report.nodes) {
         final where = origins.putIfAbsent(node.key, () => <String>[]);
@@ -151,6 +162,7 @@ class DependencyAnalyzer {
     ManifestFiles files, {
     String ecosystem = DepNode.defaultEcosystem,
     Set<String>? imported,
+    ScanProgressSink progress = ScanProgressSink.none,
   }) async {
     final eco = _ecosystems.require(ecosystem);
     final registry = eco.registry;
@@ -168,6 +180,12 @@ class DependencyAnalyzer {
     // A lockfile is authoritative. Without one, work out what an install would
     // choose by resolving the declared constraints, so a repository that does
     // not commit its lockfile still gets real versions instead of "unknown".
+    //
+    // Called out as its own phase because it is not free — resolving a
+    // constraint set means fetching every candidate version — and a client
+    // watching a repository with no lockfile would otherwise see the package
+    // count sit at zero for a while with nothing said about why.
+    if (!parsed.hasLock) progress.phase(ScanPhase.resolving);
     final resolved = parsed.hasLock
         ? const <String, ResolvedPackage>{}
         : (await resolver.resolve(
@@ -183,10 +201,17 @@ class DependencyAnalyzer {
       ...resolved.keys,
     };
 
+    // The denominator, at last: this manifest's share of the work is now known.
+    progress
+      ..phase(ScanPhase.analyzing)
+      ..manifestStarted(names.length);
+
     // Each package needs two or three registry requests. Done one at a time a
     // 50-package project takes tens of seconds, so run a bounded number in
     // parallel — bounded to stay a polite API client.
-    final nodes = await _mapConcurrently(names.toList(), (name) async {
+    final nodes = await _mapConcurrently(names.toList(), onDone: progress, (
+      name,
+    ) async {
       final resolvedPackage = resolved[name];
       final installed = locked[name]?.version ??
           resolvedPackage?.version.toString() ??
@@ -299,10 +324,15 @@ class DependencyAnalyzer {
 
   /// Applies [task] to every item, running at most [concurrency] at a time and
   /// preserving input order.
+  ///
+  /// [onDone] is told as each item lands. This loop is where a large scan spends
+  /// nearly all of its time — two or three registry round trips per package —
+  /// so it is the only place a progress count means anything.
   static Future<List<R>> _mapConcurrently<T, R>(
     List<T> items,
     Future<R> Function(T item) task, {
     int concurrency = 8,
+    ScanProgressSink onDone = ScanProgressSink.none,
   }) async {
     final results = List<R?>.filled(items.length, null);
     var next = 0;
@@ -312,6 +342,7 @@ class DependencyAnalyzer {
         final index = next++;
         if (index >= items.length) return;
         results[index] = await task(items[index]);
+        onDone.packageDone();
       }
     }
 

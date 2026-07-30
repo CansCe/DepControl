@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:shared/shared.dart';
 
 import '../api/api_client.dart';
 import '../auth/session_monitor.dart';
+import '../scans/scan_queue.dart';
 import '../theme.dart';
 import '../widgets/chrome.dart';
 import '../widgets/dep_status_chip.dart';
@@ -20,11 +23,16 @@ class ReportScreen extends StatefulWidget {
   const ReportScreen({
     required this.project,
     required this.api,
+    this.scans,
     super.key,
   });
 
   final Project project;
   final ApiClient api;
+
+  /// Where re-analysis runs. Defaults to the app-wide queue; injectable so a
+  /// test can drive one without the singleton leaking between cases.
+  final ScanQueue? scans;
 
   @override
   State<ReportScreen> createState() => _ReportScreenState();
@@ -33,49 +41,69 @@ class ReportScreen extends StatefulWidget {
 class _ReportScreenState extends State<ReportScreen> {
   late Future<DepReport?> _report;
   late Project _project;
-  bool _refreshing = false;
+
+  ScanQueue get _scans => widget.scans ?? ScanQueue.instance;
+  StreamSubscription<ScanTask>? _scanResults;
 
   @override
   void initState() {
     super.initState();
     _project = widget.project;
     _report = widget.api.report(_project.id);
+    _scans.addListener(_onScansChanged);
+    // Picks up a re-analysis of this project whoever started it and wherever
+    // they were standing — including one they started here, left, and came
+    // back to.
+    _scanResults = _scans.finished.listen(_onScanFinished);
   }
 
-  void _reload() {
-    setState(() => _report = widget.api.report(_project.id));
+  @override
+  void dispose() {
+    _scanResults?.cancel();
+    _scans.removeListener(_onScansChanged);
+    super.dispose();
   }
 
-  /// Re-fetches the repository and re-analyzes it, rather than re-reading the
-  /// stored report.
-  Future<void> _reanalyze() async {
-    setState(() => _refreshing = true);
-    try {
-      final (project, report) = await widget.api.refreshProject(_project.id);
-      if (!mounted) return;
+  /// Keeps the app bar in step with the queue, so the button is a spinner for
+  /// exactly as long as this project is being scanned.
+  void _onScansChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _onScanFinished(ScanTask task) {
+    if (!mounted || task.projectId != _project.id) return;
+
+    final project = task.project;
+    final report = task.report;
+    if (task.state == ScanState.done && project != null && report != null) {
       setState(() {
         _project = project;
         _report = Future.value(report);
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Re-analyzed ${report.total} dependencies.')),
-      );
-    } on ApiAuthException catch (e) {
-      // Not reported as a failed re-analysis: the analysis never ran. The gate
-      // explains what happened and asks before taking the screen away.
-      SessionMonitor.instance.reportExpired(e.message);
-    } on ApiException catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(e.message),
-          backgroundColor: Theme.of(context).colorScheme.error,
-        ),
-      );
-    } finally {
-      if (mounted) setState(() => _refreshing = false);
     }
+    // Failures are not announced here. The panel is already showing this scan,
+    // it carries the reason and a retry, and it is on screen whether or not the
+    // user is still standing on the report that started it — so repeating it in
+    // a snack bar would only be the half of the story that happens to be here.
   }
+
+  void _reload() {
+    // Assigned outside the callback: `setState(() => x = future)` hands the
+    // future back as the callback's return value, which Flutter asserts on.
+    // "Try again" threw here instead of re-reading the report.
+    final report = widget.api.report(_project.id);
+    setState(() {
+      _report = report;
+    });
+  }
+
+  /// Queues a re-fetch and re-analysis of the repository.
+  ///
+  /// Handing it to the queue rather than awaiting it here is what stops
+  /// pressing back from throwing the scan away: the request used to be owned by
+  /// this state object, so disposing it left the server working on a report
+  /// nothing would ever read.
+  void _reanalyze() => _scans.reanalyze(widget.api, _project);
 
   /// Shows how a package ends up in the project.
   void _explain(DepNode node, DepReport report) {
@@ -122,7 +150,10 @@ class _ReportScreenState extends State<ReportScreen> {
             // re-analyze it, so offering the button would be a dead end.
             if (_project.isArchived)
               const SizedBox.shrink()
-            else if (_refreshing)
+            // Scanning is now the queue's fact rather than this screen's, so
+            // coming back to a report mid-scan finds the spinner still turning
+            // instead of a button that would start a second one.
+            else if (_scans.isScanning(_project.id))
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 16),
                 child: Center(

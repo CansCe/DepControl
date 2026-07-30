@@ -76,11 +76,25 @@ class ApiClient {
   }
 
   /// Ingests a project by git URL and returns its first report.
-  Future<(Project, DepReport)> addProject(String gitUrl, {String? ref}) async {
+  ///
+  /// [scanId] is a name the caller invents for this scan so it can watch it
+  /// with [scanProgress] while this request is still open. Naming it here
+  /// rather than having the server hand one back keeps this a single
+  /// request-response: there is nothing to wait for before the watching can
+  /// start.
+  Future<(Project, DepReport)> addProject(
+    String gitUrl, {
+    String? ref,
+    String? scanId,
+  }) async {
     final json = await _send(() async => _client.post(
           Uri.parse('$baseUrl/projects'),
           headers: await _headers(json: true),
-          body: jsonEncode({'gitUrl': gitUrl, if (ref != null) 'ref': ref}),
+          body: jsonEncode({
+            'gitUrl': gitUrl,
+            if (ref != null) 'ref': ref,
+            if (scanId != null) 'scanId': scanId,
+          }),
         ));
     return (
       Project.fromJson(json['project'] as Map<String, dynamic>),
@@ -88,14 +102,42 @@ class ApiClient {
     );
   }
 
+  /// How far the scan named [scanId] has got, or null when the server cannot
+  /// say.
+  ///
+  /// Null is an ordinary answer. Progress is held in the serving process's
+  /// memory, so a scan whose progress has aged out — or one being run by
+  /// another instance — has none to report, and the caller should fall back to
+  /// showing that it is still working rather than treating it as a failure.
+  /// Network trouble is swallowed for the same reason: a poll that fails says
+  /// nothing about the scan, which is a separate request.
+  Future<ScanProgress?> scanProgress(String scanId) async {
+    try {
+      final res = await _client.get(
+        Uri.parse('$baseUrl/scans/$scanId'),
+        headers: await _headers(),
+      );
+      if (res.statusCode != 200) return null;
+      final decoded = jsonDecode(res.body);
+      if (decoded is! Map<String, dynamic>) return null;
+      return ScanProgress.fromJson(decoded);
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Re-fetches the repository and re-analyzes it, replacing the stored report.
   ///
   /// Distinct from [report], which only reads what was already stored: a report
   /// goes stale as soon as a dependency publishes a new version or advisory.
-  Future<(Project, DepReport)> refreshProject(String projectId) async {
+  Future<(Project, DepReport)> refreshProject(
+    String projectId, {
+    String? scanId,
+  }) async {
     final json = await _send(() async => _client.post(
           Uri.parse('$baseUrl/projects/$projectId/refresh'),
           headers: await _headers(json: true),
+          body: jsonEncode({if (scanId != null) 'scanId': scanId}),
         ));
     return (
       Project.fromJson(json['project'] as Map<String, dynamic>),

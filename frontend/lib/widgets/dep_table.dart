@@ -36,19 +36,80 @@ class DepTable extends StatefulWidget {
 }
 
 class _DepTableState extends State<DepTable> {
+  /// How many rows are on screen before the reader asks for more.
+  ///
+  /// The table sits inside the report's one scroll view, so nothing about it is
+  /// lazy — every row it holds is a built widget whether or not it is anywhere
+  /// near the viewport. At a few dozen packages that is free; on a monorepo
+  /// resolving fourteen hundred it is several thousand widgets rebuilt on every
+  /// frame of every scroll, which is what makes a large project feel broken.
+  ///
+  /// A hundred is more than fits on any screen this runs on, so the first page
+  /// is never visibly short, and the filter above means someone looking for one
+  /// package never has to page at all.
+  static const _pageSize = 100;
+
   int _sortColumn = 0;
   bool _ascending = true;
 
-  late List<DepNode> _rows = [...widget.nodes];
+  final _searchController = TextEditingController();
+  String _query = '';
+  int _shown = _pageSize;
+
+  /// [DepTable.nodes], filtered and sorted. Held rather than recomputed,
+  /// because sorting a few thousand nodes per build is its own tax.
+  late List<DepNode> _rows;
+
+  @override
+  void initState() {
+    super.initState();
+    _rebuildRows();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   @override
   void didUpdateWidget(covariant DepTable old) {
     super.didUpdateWidget(old);
     if (old.nodes != widget.nodes) {
-      _rows = [...widget.nodes];
-      _applySort();
+      _rebuildRows();
+      _shown = _pageSize;
     }
   }
+
+  void _rebuildRows() {
+    final query = _query.trim().toLowerCase();
+    _rows = query.isEmpty
+        ? [...widget.nodes]
+        : widget.nodes
+            .where((n) => n.name.toLowerCase().contains(query))
+            .toList();
+    _applySort();
+  }
+
+  void _search(String value) {
+    setState(() {
+      _query = value;
+      // Back to the first page: the point of narrowing the list is to see the
+      // top of the narrowed one.
+      _shown = _pageSize;
+      _rebuildRows();
+    });
+  }
+
+  void _showMore() => setState(() => _shown += _pageSize);
+
+  void _showAll() => setState(() => _shown = _rows.length);
+
+  /// The rows actually built this frame.
+  List<DepNode> get _page =>
+      _rows.length <= _shown ? _rows : _rows.sublist(0, _shown);
+
+  int get _remaining => _rows.length - _page.length;
 
   void _sortBy(int column, Comparable Function(DepNode) key) {
     setState(() {
@@ -104,20 +165,15 @@ class _DepTableState extends State<DepTable> {
   // --- narrow ---------------------------------------------------------------
 
   Widget _buildCompact(BuildContext context) {
-    final theme = Theme.of(context);
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        _SearchField(controller: _searchController, onChanged: _search),
+        const SizedBox(height: 8),
         // Sorting still has to be reachable without column headers to tap.
         Row(
           children: [
-            Expanded(
-              child: Text(
-                '${_rows.length} packages',
-                style: theme.textTheme.bodySmall,
-              ),
-            ),
+            Expanded(child: _CountLine(shown: _page.length, total: _rows.length)),
             TextButton.icon(
               onPressed: () => _pickSort(context),
               icon: Icon(
@@ -129,14 +185,23 @@ class _DepTableState extends State<DepTable> {
           ],
         ),
         const Divider(height: 1),
-        for (final node in _rows) ...[
-          _CompactRow(
-            node: node,
-            onTap: widget.onSelect,
-            showCurrency: widget.showCurrency,
-          ),
-          const Divider(height: 1),
-        ],
+        if (_rows.isEmpty)
+          const _NoMatches()
+        else
+          for (final node in _page) ...[
+            _CompactRow(
+              node: node,
+              onTap: widget.onSelect,
+              showCurrency: widget.showCurrency,
+            ),
+            const Divider(height: 1),
+          ],
+        _MoreRows(
+          remaining: _remaining,
+          pageSize: _pageSize,
+          onMore: _showMore,
+          onAll: _showAll,
+        ),
       ],
     );
   }
@@ -168,6 +233,37 @@ class _DepTableState extends State<DepTable> {
   Widget _buildTable(BuildContext context) {
     final theme = Theme.of(context);
 
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: _SearchField(
+                controller: _searchController,
+                onChanged: _search,
+              ),
+            ),
+            const SizedBox(width: 14),
+            _CountLine(shown: _page.length, total: _rows.length),
+          ],
+        ),
+        const SizedBox(height: 6),
+        if (_rows.isEmpty)
+          const _NoMatches()
+        else
+          _table(context, theme),
+        _MoreRows(
+          remaining: _remaining,
+          pageSize: _pageSize,
+          onMore: _showMore,
+          onAll: _showAll,
+        ),
+      ],
+    );
+  }
+
+  Widget _table(BuildContext context, ThemeData theme) {
     return SingleChildScrollView(
       scrollDirection: Axis.vertical,
       child: SizedBox(
@@ -183,7 +279,7 @@ class _DepTableState extends State<DepTable> {
               ),
           ],
           rows: [
-            for (final n in _rows)
+            for (final n in _page)
               DataRow(
                 // Per-cell onTap rather than onSelectChanged: the latter turns
                 // DataTable into a selectable one, adding a checkbox column and
@@ -227,6 +323,126 @@ class _DepTableState extends State<DepTable> {
               ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Narrows the table by package name.
+///
+/// Earns its room on a list this long: a reader who came to check one package
+/// would otherwise be paging through fourteen hundred rows to reach it, and
+/// sorting only moves the haystack.
+class _SearchField extends StatelessWidget {
+  const _SearchField({required this.controller, required this.onChanged});
+
+  final TextEditingController controller;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return TextField(
+      controller: controller,
+      onChanged: onChanged,
+      style: mono(theme.textTheme.bodySmall),
+      decoration: InputDecoration(
+        isDense: true,
+        hintText: 'Filter packages',
+        hintStyle: theme.textTheme.bodySmall?.copyWith(color: Palette.slate),
+        prefixIcon: const Icon(Icons.search, size: 18),
+        prefixIconConstraints: const BoxConstraints(minWidth: 36),
+        contentPadding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+        suffixIcon: controller.text.isEmpty
+            ? null
+            : IconButton(
+                icon: const Icon(Icons.close, size: 16),
+                tooltip: 'Clear filter',
+                onPressed: () {
+                  controller.clear();
+                  onChanged('');
+                },
+              ),
+      ),
+    );
+  }
+}
+
+/// `100 of 1444 packages` — or just the total when they are the same.
+class _CountLine extends StatelessWidget {
+  const _CountLine({required this.shown, required this.total});
+
+  final int shown;
+  final int total;
+
+  @override
+  Widget build(BuildContext context) {
+    final noun = total == 1 ? 'package' : 'packages';
+    return Text(
+      shown == total ? '$total $noun' : '$shown of $total $noun',
+      style: Theme.of(context).textTheme.bodySmall,
+    );
+  }
+}
+
+class _NoMatches extends StatelessWidget {
+  const _NoMatches();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 22),
+      child: Text(
+        'No package here matches that.',
+        textAlign: TextAlign.center,
+        style: Theme.of(context)
+            .textTheme
+            .bodySmall
+            ?.copyWith(color: Palette.slate),
+      ),
+    );
+  }
+}
+
+/// The footer that admits the list is longer than what is on screen.
+///
+/// Says how many are being held back rather than only offering a button: a
+/// truncated list that does not say it is truncated is a list that has quietly
+/// answered "is this package here?" with the wrong answer.
+class _MoreRows extends StatelessWidget {
+  const _MoreRows({
+    required this.remaining,
+    required this.pageSize,
+    required this.onMore,
+    required this.onAll,
+  });
+
+  final int remaining;
+  final int pageSize;
+  final VoidCallback onMore;
+  final VoidCallback onAll;
+
+  @override
+  Widget build(BuildContext context) {
+    if (remaining <= 0) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    final next = remaining < pageSize ? remaining : pageSize;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 10, bottom: 4),
+      child: Wrap(
+        alignment: WrapAlignment.center,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: 10,
+        children: [
+          Text(
+            '$remaining more not shown',
+            style: theme.textTheme.bodySmall?.copyWith(color: Palette.slate),
+          ),
+          TextButton(onPressed: onMore, child: Text('Show $next more')),
+          TextButton(onPressed: onAll, child: const Text('Show all')),
+        ],
       ),
     );
   }

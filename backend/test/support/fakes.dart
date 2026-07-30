@@ -1,6 +1,7 @@
 import 'package:backend/src/ecosystem/ecosystems.dart';
 import 'package:backend/src/services/git_fetcher.dart';
 import 'package:backend/src/services/dependency_analyzer.dart';
+import 'package:backend/src/services/scan_progress_store.dart';
 import 'package:shared/shared.dart';
 
 const samplePubspecYaml = '''
@@ -94,6 +95,7 @@ class FakeAnalyzer implements DependencyAnalyzer {
     ManifestFiles files, {
     String ecosystem = DepNode.defaultEcosystem,
     Set<String>? imported,
+    ScanProgressSink progress = ScanProgressSink.none,
   }) async =>
       DepReport(
         projectId: projectId,
@@ -104,8 +106,18 @@ class FakeAnalyzer implements DependencyAnalyzer {
   @override
   Future<DepReport> analyzeRepository(
     String projectId,
-    FetchedRepository repository,
-  ) async {
+    FetchedRepository repository, {
+    ScanProgressSink progress = ScanProgressSink.none,
+  }) async {
+    // Reported so route tests can assert what a client watching would have
+    // seen, without a real analysis behind it.
+    progress
+      ..manifestsTotal(repository.manifests.length)
+      ..phase(ScanPhase.analyzing)
+      ..manifestStarted(nodes.length);
+    for (var i = 0; i < nodes.length; i++) {
+      progress.packageDone();
+    }
     final report = await analyze(projectId, repository.primary.files);
     return DepReport(
       projectId: report.projectId,

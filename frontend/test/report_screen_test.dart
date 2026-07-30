@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:frontend/api/api_client.dart';
+import 'package:frontend/scans/scan_overlay.dart';
+import 'package:frontend/scans/scan_queue.dart';
 import 'package:frontend/screens/report_screen.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -96,6 +99,25 @@ void main() {
               )),
         );
 
+    /// The screen with the floating scan panel above it, exactly as
+    /// `MaterialApp.builder` mounts it in the app.
+    ///
+    /// Re-analysis is reported there rather than by the screen now, because the
+    /// scan outlives the screen — so a test that wants to see what a scan said
+    /// has to have the panel on stage.
+    Widget screenWith(ApiClient api, ScanQueue scans, Project project) =>
+        MaterialApp(
+          builder: (context, child) =>
+              ScanOverlay(queue: scans, child: child ?? const SizedBox()),
+          home: ReportScreen(project: project, api: api, scans: scans),
+        );
+
+    /// A queue of its own per test, so one case's scans cannot show up in the
+    /// next. Successes clear immediately: a lingering one would leave a pending
+    /// timer behind and fail the test on teardown rather than on its assertion.
+    ScanQueue freshQueue() =>
+        ScanQueue(successLinger: Duration.zero);
+
     final project = Project(
       id: 'p1',
       gitUrl: 'https://github.com/acme/demo.git',
@@ -171,9 +193,7 @@ void main() {
         }),
       );
 
-      await tester.pumpWidget(
-        MaterialApp(home: ReportScreen(project: project, api: api)),
-      );
+      await tester.pumpWidget(screenWith(api, freshQueue(), project));
       await tester.pumpAndSettle();
 
       await tester.tap(find.text('Re-analyze'));
@@ -185,7 +205,86 @@ void main() {
         contains('POST /projects/p1/refresh'),
         reason: 'must re-analyze, not just re-read the stored report',
       );
-      expect(find.textContaining('Re-analyzed'), findsOneWidget);
+      // The new report is on screen: `lonely` is in the refreshed set and in
+      // no part of the large one it replaced. It shows up in both the tree and
+      // the table, hence `findsWidgets`.
+      expect(find.text('lonely'), findsWidgets);
+    });
+
+    // Regression: re-analysis used to be awaited by this screen's state, so
+    // pressing back disposed the only thing waiting on the response. The server
+    // finished the work and the report went nowhere.
+    testWidgets('re-analyze survives leaving the screen', (tester) async {
+      final scans = freshQueue();
+      final completed = Completer<http.Response>();
+      final api = ApiClient(
+        accessToken: () async => 'token',
+        client: MockClient((request) async {
+          if (request.url.path.endsWith('/refresh')) return completed.future;
+          return http.Response(
+            jsonEncode({
+              'project': project.toJson(),
+              'report': report.toJson(),
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          builder: (context, child) =>
+              ScanOverlay(queue: scans, child: child ?? const SizedBox()),
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: ElevatedButton(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) =>
+                        ReportScreen(project: project, api: api, scans: scans),
+                  ),
+                ),
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Re-analyze'));
+      await tester.pump();
+
+      await tester.pageBack();
+      await tester.pump();
+
+      expect(
+        scans.isScanning('p1'),
+        isTrue,
+        reason: 'leaving the screen must not abandon the scan',
+      );
+
+      // And it lands after the screen that asked for it is gone.
+      completed.complete(
+        http.Response(
+          jsonEncode({
+            'project': project.toJson(),
+            'report': DepReport(
+              projectId: 'p1',
+              generatedAt: DateTime.utc(2026, 2, 1),
+              nodes: _nodes,
+            ).toJson(),
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(scans.isScanning('p1'), isFalse);
+      expect(tester.takeException(), isNull);
     });
 
     testWidgets('a failed re-analyze surfaces the error', (tester) async {
@@ -210,15 +309,15 @@ void main() {
         }),
       );
 
-      await tester.pumpWidget(
-        MaterialApp(home: ReportScreen(project: project, api: api)),
-      );
+      await tester.pumpWidget(screenWith(api, freshQueue(), project));
       await tester.pumpAndSettle();
 
       await tester.tap(find.text('Re-analyze'));
       await tester.pumpAndSettle();
 
       expect(tester.takeException(), isNull);
+      // Said by the scan panel, which is on screen wherever the user has got
+      // to by the time the scan fails.
       expect(find.text('repository not found'), findsOneWidget);
     });
 

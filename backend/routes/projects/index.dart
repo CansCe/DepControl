@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:backend/src/auth/auth_user.dart';
 import 'package:backend/src/deps.dart';
+import 'package:backend/src/services/scan_watch.dart';
 import 'package:dart_frog/dart_frog.dart';
 import 'package:shared/shared.dart';
 import 'package:uuid/uuid.dart';
@@ -66,12 +67,22 @@ Future<Response> _add(
   }
   final ref = (body['ref'] as String?) ?? 'HEAD';
 
+  // The caller names its own scan so it can watch it. Optional: a client that
+  // does not care — the rescan tool, an integration test — passes nothing and
+  // the analysis reports to a sink that discards everything.
+  final progress = scanSinkFor(deps, body['scanId']);
+
   try {
+    progress.phase(ScanPhase.fetching);
     // Every pubspec in the repository, not just the one at its root: a
     // monorepo's other packages are dependencies of the project too.
     final files = await deps.gitFetcher.fetchAll(gitUrl, ref: ref);
     final id = const Uuid().v4();
-    final report = await deps.analyzer.analyzeRepository(id, files);
+    final report = await deps.analyzer.analyzeRepository(
+      id,
+      files,
+      progress: progress,
+    );
 
     final project = Project(
       id: id,
@@ -82,19 +93,23 @@ Future<Response> _add(
       addedAt: DateTime.now().toUtc(),
     );
 
+    progress.phase(ScanPhase.saving);
     await deps.repository.add(project);
     await deps.repository.saveReport(report);
+    progress.phase(ScanPhase.done);
 
     return Response.json(
       statusCode: HttpStatus.created,
       body: {'project': project.toJson(), 'report': report.toJson()},
     );
   } on StateError catch (e) {
+    progress.failed(e.message);
     return Response.json(
       statusCode: HttpStatus.badRequest,
       body: {'error': e.message},
     );
   } on UnsupportedError catch (e) {
+    progress.failed('${e.message}');
     return Response.json(
       statusCode: HttpStatus.badRequest,
       body: {'error': e.message},

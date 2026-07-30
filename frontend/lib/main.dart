@@ -1,10 +1,16 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared/shared.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'api/api_client.dart';
 import 'auth/auth_gate.dart';
 import 'auth/session_monitor.dart';
+import 'scans/scan_overlay.dart';
+import 'scans/scan_queue.dart';
 import 'screens/report_screen.dart';
 import 'screens/settings_screen.dart';
 import 'security/pin_gate.dart';
@@ -17,6 +23,7 @@ SupabaseClient get supabase => Supabase.instance.client;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  _goFullscreen();
   await Supabase.initialize(
     url: 'https://ogsnkqlamfvftdgvvtje.supabase.co',
     // Publishable key — public by design; safe in client code.
@@ -24,6 +31,36 @@ Future<void> main() async {
     publishableKey: 'sb_publishable_1hxQQb522Ukayaq9TzPvpg_oiu7KkK6',
   );
   runApp(const DepControlApp());
+}
+
+/// Hands the whole screen to the app on Android and iOS.
+///
+/// `immersiveSticky` rather than `edgeToEdge`: the ask is for the phone's
+/// navigation bar to *go away*, not to be drawn behind. Sticky is the variant
+/// that puts it back on a swipe from the edge and then hides it again on its
+/// own — the bar stays reachable without permanently taking a strip of a screen
+/// that is mostly a long scrolling table.
+///
+/// Skipped on web and desktop, where there are no system bars to hide and the
+/// call is a no-op that would only be misleading to read here.
+void _goFullscreen() {
+  if (kIsWeb) return;
+  if (defaultTargetPlatform != TargetPlatform.android &&
+      defaultTargetPlatform != TargetPlatform.iOS) {
+    return;
+  }
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+  // While the bars are briefly on show, they have to be legible against the
+  // ink band the app opens every screen with.
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.light,
+      statusBarBrightness: Brightness.dark,
+      systemNavigationBarColor: Palette.ink,
+      systemNavigationBarIconBrightness: Brightness.light,
+    ),
+  );
 }
 
 class DepControlApp extends StatelessWidget {
@@ -34,6 +71,10 @@ class DepControlApp extends StatelessWidget {
     return MaterialApp(
       title: 'DepControl',
       theme: buildTheme(),
+      // Above the Navigator, so a scan reports itself across route changes.
+      // Inside a screen it would be disposed by the very navigation the panel
+      // exists to survive.
+      builder: (context, child) => ScanOverlay(child: child ?? const SizedBox()),
       // Projects are owned by the signed-in user, so the registry is only
       // reachable with a session — and, when one is set, past the device PIN.
       // The PIN sits inside the auth gate because it guards a session that
@@ -45,55 +86,99 @@ class DepControlApp extends StatelessWidget {
 
 /// Phase 3 entry point: the multi-project registry + an "add by git URL" form.
 class RegistryScreen extends StatefulWidget {
-  const RegistryScreen({super.key});
+  const RegistryScreen({this.api, this.scans, super.key});
+
+  /// Both default to the app-wide instances. Injectable so the screen can be
+  /// tested without standing up Supabase and without one test's scans leaking
+  /// into the next.
+  final ApiClient? api;
+  final ScanQueue? scans;
 
   @override
   State<RegistryScreen> createState() => _RegistryScreenState();
 }
 
 class _RegistryScreenState extends State<RegistryScreen> {
-  final _api = ApiClient();
+  late final ApiClient _api = widget.api ?? ApiClient();
   final _urlController = TextEditingController();
   late Future<List<Project>> _projects;
-  bool _adding = false;
 
   /// Archived projects are a separate view: putting one out of the way should
   /// take it out of the way.
   bool _showArchived = false;
   String? _error;
 
+  ScanQueue get _scans => widget.scans ?? ScanQueue.instance;
+
+  /// The value of [ScanQueue.completions] this list is up to date with.
+  ///
+  /// Compared rather than reacting to an event, because the list has to be
+  /// right whenever this screen is on show — including after a scan that
+  /// finished while it was being rebuilt, or before it existed at all. An event
+  /// only reaches whoever happened to be listening; a number says whether
+  /// anything was missed.
+  late int _seenCompletions = _scans.completions;
+
   @override
   void initState() {
     super.initState();
     _projects = _api.listProjects();
+    _scans.addListener(_onScansChanged);
+  }
+
+  @override
+  void dispose() {
+    _scans.removeListener(_onScansChanged);
+    _urlController.dispose();
+    super.dispose();
+  }
+
+  void _onScansChanged() {
+    if (!mounted) return;
+    if (_scans.completions == _seenCompletions) return;
+    _seenCompletions = _scans.completions;
+    _reload();
   }
 
   void _reload() {
-    setState(() => _projects = _api.listProjects(archived: _showArchived));
+    // Whatever has landed by now is in this response, so the list is current as
+    // of this moment rather than as of the scan that triggered it.
+    _seenCompletions = _scans.completions;
+    // A statement body, not an expression one. `setState(() => x = future)`
+    // returns that future from the callback, and Flutter asserts on a callback
+    // that returns a Future — so in a debug build this method threw and the
+    // list was never rebuilt. It looked like the reload had not been asked for;
+    // it had, and it was blowing up on the way out.
+    final projects = _api.listProjects(archived: _showArchived);
+    setState(() {
+      _projects = projects;
+    });
   }
 
-  Future<void> _add() async {
+  /// Hands the repository to the background queue and clears the field.
+  ///
+  /// Deliberately does not await the scan. Analyzing a repository takes tens of
+  /// seconds, and holding the form for that long meant a second project could
+  /// not even be typed, let alone queued — with nothing on screen saying how
+  /// much longer it would be. The scan announces itself in the floating panel
+  /// instead, and this screen reloads when it lands.
+  void _add() {
     final url = _urlController.text.trim();
     if (url.isEmpty) return;
-    setState(() {
-      _adding = true;
-      _error = null;
-    });
-    try {
-      await _api.addProject(url);
-      _urlController.clear();
-      // A newly added project is active, so show that view.
-      setState(() => _showArchived = false);
-      _reload();
-    } on ApiAuthException catch (e) {
-      // The session died mid-use. Reporting it rather than signing out here is
-      // the point: AuthGate asks before it takes the screen away.
-      SessionMonitor.instance.reportExpired(e.message);
-    } on ApiException catch (e) {
-      setState(() => _error = e.message);
-    } finally {
-      if (mounted) setState(() => _adding = false);
+
+    final parsed = Uri.tryParse(url);
+    if (parsed == null || !parsed.hasScheme || parsed.pathSegments.isEmpty) {
+      setState(() => _error = 'That does not look like a Git URL.');
+      return;
     }
+
+    _scans.addProject(_api, url);
+    _urlController.clear();
+    setState(() {
+      _error = null;
+      // A newly added project is active, so show that view.
+      _showArchived = false;
+    });
   }
 
   /// Bumped when settings closes, so the PIN prompt is rebuilt from scratch.
@@ -112,9 +197,31 @@ class _RegistryScreenState extends State<RegistryScreen> {
     if (mounted) setState(() => _promptRevision++);
   }
 
+  /// The signed-in address, or null where there is no Supabase to ask.
+  ///
+  /// Guarded the same way [PinGate] guards its own lookup: reaching for
+  /// `Supabase.instance` before `main` has initialized it throws, which makes
+  /// this screen unmountable in a widget test for the sake of one line of
+  /// chrome.
+  String? get _email {
+    try {
+      return supabase.auth.currentUser?.email;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String? get _userId {
+    try {
+      return supabase.auth.currentUser?.id;
+    } catch (_) {
+      return null;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final email = supabase.auth.currentUser?.email;
+    final email = _email;
 
     final theme = Theme.of(context);
 
@@ -183,7 +290,6 @@ class _RegistryScreenState extends State<RegistryScreen> {
                   const SizedBox(height: 18),
                   _AddForm(
                     controller: _urlController,
-                    adding: _adding,
                     onSubmit: _add,
                   ),
                 ],
@@ -200,9 +306,9 @@ class _RegistryScreenState extends State<RegistryScreen> {
           ),
           PinPrompt(
             key: ValueKey(
-              'pin-prompt-${supabase.auth.currentUser?.id}-$_promptRevision',
+              'pin-prompt-$_userId-$_promptRevision',
             ),
-            userId: supabase.auth.currentUser?.id,
+            userId: _userId,
             onSetUp: _openSettings,
           ),
           Expanded(
@@ -221,15 +327,18 @@ class _RegistryScreenState extends State<RegistryScreen> {
   }
 }
 
+/// The Git URL field and its button.
+///
+/// Has no busy state any more: the button queues a scan and returns, so there
+/// is never a moment where it is unavailable. Where the scan has got to is the
+/// floating panel's job, and saying it in two places would let them disagree.
 class _AddForm extends StatelessWidget {
   const _AddForm({
     required this.controller,
-    required this.adding,
     required this.onSubmit,
   });
 
   final TextEditingController controller;
-  final bool adding;
   final VoidCallback onSubmit;
 
   @override
@@ -255,17 +364,8 @@ class _AddForm extends StatelessWidget {
         ),
         const SizedBox(width: 12),
         FilledButton(
-          onPressed: adding ? null : onSubmit,
-          child: adding
-              ? const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: Colors.white,
-                  ),
-                )
-              : const Text('Add project'),
+          onPressed: onSubmit,
+          child: const Text('Add project'),
         ),
       ],
     );

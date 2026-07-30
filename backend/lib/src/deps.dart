@@ -17,6 +17,7 @@ import 'services/pub_api_client.dart';
 import 'services/dependency_analyzer.dart';
 import 'services/rate_limiter.dart';
 import 'services/remediation_planner.dart';
+import 'services/scan_progress_store.dart';
 import 'services/resolver.dart';
 import 'services/upgrade_inspector.dart';
 
@@ -136,6 +137,13 @@ class Deps {
   final UpgradeInspector inspector;
   final JwtVerifier authVerifier;
   final DependencyAnalyzer analyzer;
+
+  /// What the scans currently running are doing, for a client that has a
+  /// request open and no other way to see inside it.
+  ///
+  /// Process-wide and in memory, like [limiter]: it describes work happening on
+  /// this machine right now, and it is worthless the moment that work ends.
+  final ScanProgressStore scanProgress = ScanProgressStore();
 
   /// Per-user limit on the endpoints that fetch repositories and query pub.dev.
   /// Null when limiting is switched off, which tests and local dev do.

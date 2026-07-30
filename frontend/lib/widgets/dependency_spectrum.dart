@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared/shared.dart';
 
@@ -59,7 +60,16 @@ enum DepBand {
 ///
 /// Ticks stay legible by having a floor width and wrapping if they run out of
 /// room, so a tree of eight and a tree of eight hundred both read.
-class DependencySpectrum extends StatelessWidget {
+///
+/// Painted rather than built. Every tick used to be a `Tooltip` wrapping a
+/// `Container`, which is two widgets, an element, a render object and a gesture
+/// recognizer each — on a 1,400-package monorepo that is the single most
+/// expensive thing on the screen, and it was rebuilt on every scroll frame and
+/// every `setState` above it. The band each tick belongs to is also worked out
+/// once here rather than per build: [DepBand.of] runs [assessUpgrade], which
+/// parses two versions and a constraint, so recomputing it meant several
+/// thousand semver parses per frame.
+class DependencySpectrum extends StatefulWidget {
   const DependencySpectrum({
     required this.nodes,
     this.showCurrency = true,
@@ -73,26 +83,50 @@ class DependencySpectrum extends StatelessWidget {
   /// what is a fact about the snapshot: which packages carry advisories.
   final bool showCurrency;
 
+  @override
+  State<DependencySpectrum> createState() => _DependencySpectrumState();
+}
+
+class _DependencySpectrumState extends State<DependencySpectrum> {
   static const _tickWidth = 5.0;
   static const _tickGap = 2.0;
   static const _rowHeight = 22.0;
 
-  @override
-  Widget build(BuildContext context) {
-    if (nodes.isEmpty) return const SizedBox.shrink();
+  late List<DepBand> _bands;
+  late Map<DepBand, int> _counts;
 
-    final bands = <DepBand>[
-      for (final node in nodes)
-        if (!showCurrency)
+  @override
+  void initState() {
+    super.initState();
+    _classify();
+  }
+
+  @override
+  void didUpdateWidget(covariant DependencySpectrum old) {
+    super.didUpdateWidget(old);
+    if (old.nodes != widget.nodes || old.showCurrency != widget.showCurrency) {
+      _classify();
+    }
+  }
+
+  void _classify() {
+    _bands = <DepBand>[
+      for (final node in widget.nodes)
+        if (!widget.showCurrency)
           node.advisories.isNotEmpty ? DepBand.vulnerable : DepBand.unread
         else
           DepBand.of(node),
     ]..sort((a, b) => a.index.compareTo(b.index));
 
-    final counts = <DepBand, int>{};
-    for (final band in bands) {
-      counts.update(band, (n) => n + 1, ifAbsent: () => 1);
+    _counts = <DepBand, int>{};
+    for (final band in _bands) {
+      _counts.update(band, (n) => n + 1, ifAbsent: () => 1);
     }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.nodes.isEmpty) return const SizedBox.shrink();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -101,28 +135,27 @@ class DependencySpectrum extends StatelessWidget {
           builder: (context, constraints) {
             final perRow =
                 (constraints.maxWidth / (_tickWidth + _tickGap)).floor();
-            final rows = perRow < 1 ? 1 : (bands.length / perRow).ceil();
+            final columns = perRow < 1 ? 1 : perRow;
+            final rows = (_bands.length / columns).ceil();
 
-            return SizedBox(
-              height: rows * _rowHeight,
-              width: double.infinity,
-              child: Wrap(
-                spacing: _tickGap,
-                runSpacing: _tickGap,
-                children: [
-                  for (final band in bands)
-                    Tooltip(
-                      message: band.label,
-                      child: Container(
-                        width: _tickWidth,
-                        height: _rowHeight - _tickGap,
-                        decoration: BoxDecoration(
-                          color: band.color,
-                          borderRadius: BorderRadius.circular(1.5),
-                        ),
-                      ),
-                    ),
-                ],
+            return Semantics(
+              // The ticks carry no text, so the shape has to be sayable. One
+              // label for the block rather than 1,400 tooltips nobody on a
+              // touch screen could have hovered anyway — the legend underneath
+              // is what a sighted reader actually decodes them with.
+              label: _spokenSummary(_counts),
+              child: SizedBox(
+                height: rows * _rowHeight,
+                width: double.infinity,
+                child: CustomPaint(
+                  painter: _SpectrumPainter(
+                    bands: _bands,
+                    columns: columns,
+                    tickWidth: _tickWidth,
+                    tickGap: _tickGap,
+                    rowHeight: _rowHeight,
+                  ),
+                ),
               ),
             );
           },
@@ -132,13 +165,73 @@ class DependencySpectrum extends StatelessWidget {
           spacing: 18,
           runSpacing: 6,
           children: [
-            for (final entry in counts.entries)
+            for (final entry in _counts.entries)
               _Key(band: entry.key, count: entry.value),
           ],
         ),
       ],
     );
   }
+}
+
+String _spokenSummary(Map<DepBand, int> counts) {
+  final parts = [
+    for (final entry in counts.entries) '${entry.value} ${entry.key.label}',
+  ];
+  return 'Dependency spectrum: ${parts.join(', ')}.';
+}
+
+/// Draws the ticks directly.
+///
+/// A few thousand `drawRRect` calls into one layer, against a widget, element
+/// and render object per tick — the same picture for a fraction of the frame,
+/// and no rebuild cost at all when something above merely changes state.
+class _SpectrumPainter extends CustomPainter {
+  const _SpectrumPainter({
+    required this.bands,
+    required this.columns,
+    required this.tickWidth,
+    required this.tickGap,
+    required this.rowHeight,
+  });
+
+  final List<DepBand> bands;
+  final int columns;
+  final double tickWidth;
+  final double tickGap;
+  final double rowHeight;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paints = <DepBand, Paint>{
+      for (final band in DepBand.values) band: Paint()..color = band.color,
+    };
+    final height = rowHeight - tickGap;
+    const radius = Radius.circular(1.5);
+
+    for (var i = 0; i < bands.length; i++) {
+      final row = i ~/ columns;
+      final column = i % columns;
+      final rect = Rect.fromLTWH(
+        column * (tickWidth + tickGap),
+        row * rowHeight,
+        tickWidth,
+        height,
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect, radius),
+        paints[bands[i]]!,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_SpectrumPainter old) =>
+      old.columns != columns ||
+      old.tickWidth != tickWidth ||
+      old.tickGap != tickGap ||
+      old.rowHeight != rowHeight ||
+      !listEquals(old.bands, bands);
 }
 
 /// `18 routine`, with the swatch that says which ticks those are.
