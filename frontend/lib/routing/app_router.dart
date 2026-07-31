@@ -75,37 +75,9 @@ class AppRouterDelegate extends RouterDelegate<AppRoute>
     notifyListeners();
   }
 
-  /// Swaps the top route rather than stacking on it.
-  ///
-  /// What tab switching and project switching both want. Pushing instead would
-  /// make the back button walk every tab somebody glanced at, and four clicks
-  /// around a report would take four presses to leave.
-  void replaceTop(AppRoute route) {
-    if (_stack.last == route) return;
-    _stack[_stack.length - 1] = route;
-    notifyListeners();
-  }
-
-  /// Opens [project]'s report, replacing any report already open.
-  ///
-  /// Replacing rather than pushing because the rail makes projects *siblings*:
-  /// clicking three projects in a row is browsing, not descending, and back
-  /// should return to wherever the browsing started.
   void openReport(Project project) {
     remember(project);
-    final route = AppRoute.report(project.id);
-    if (_stack.last is ReportRoute) {
-      replaceTop(route);
-    } else {
-      go(route);
-    }
-  }
-
-  /// Shows a different panel of the report already open.
-  void showTab(ReportTab tab) {
-    if (_stack.last case final ReportRoute open) {
-      replaceTop(AppRoute.report(open.projectId, tab: tab));
-    }
+    go(AppRoute.report(project.id));
   }
 
   bool pop() {
@@ -154,17 +126,13 @@ class AppRouterDelegate extends RouterDelegate<AppRoute>
             key: ValueKey(route.location),
             child: const SettingsScreen(),
           ),
-        ReportRoute(:final projectId, :final tab) => MaterialPage(
-            // Keyed by the project, *not* by the location — the location
-            // carries the tab, and keying on it would tear the page down and
-            // re-fetch the report every time somebody looked at another panel.
-            key: ValueKey('/projects/$projectId'),
+        ReportRoute(:final projectId) => MaterialPage(
+            key: ValueKey(route.location),
             // Known when a row was tapped; unknown on a deep link, which is the
             // only case that costs a round trip.
             child: switch (_known[projectId]) {
-              final project? =>
-                ReportScreen(project: project, api: api, tab: tab),
-              null => ReportLoader(projectId: projectId, api: api, tab: tab),
+              final project? => ReportScreen(project: project, api: api),
+              null => ReportLoader(projectId: projectId, api: api),
             },
           ),
       };
@@ -178,16 +146,10 @@ class AppRouterDelegate extends RouterDelegate<AppRoute>
 /// project everywhere else, and making its `project` nullable would push this
 /// one case into every line that reads it.
 class ReportLoader extends StatefulWidget {
-  const ReportLoader({
-    required this.projectId,
-    required this.api,
-    this.tab = ReportTab.packages,
-    super.key,
-  });
+  const ReportLoader({required this.projectId, required this.api, super.key});
 
   final String projectId;
   final ApiClient api;
-  final ReportTab tab;
 
   @override
   State<ReportLoader> createState() => _ReportLoaderState();
@@ -245,11 +207,7 @@ class _ReportLoaderState extends State<ReportLoader> {
           );
         }
 
-        return ReportScreen(
-          project: snap.data!.project,
-          api: widget.api,
-          tab: widget.tab,
-        );
+        return ReportScreen(project: snap.data!.project, api: widget.api);
       },
     );
   }

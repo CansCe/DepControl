@@ -7,9 +7,7 @@ import '../api/api_client.dart';
 import '../auth/session_monitor.dart';
 import '../export/file_download.dart';
 import '../export/report_export.dart';
-import '../main.dart' show routerOf;
 import '../platform/breakpoints.dart';
-import '../routing/app_route.dart';
 import '../scans/scan_queue.dart';
 import '../theme.dart';
 import '../widgets/chrome.dart';
@@ -28,16 +26,12 @@ class ReportScreen extends StatefulWidget {
   const ReportScreen({
     required this.project,
     required this.api,
-    this.tab = ReportTab.packages,
     this.scans,
     super.key,
   });
 
   final Project project;
   final ApiClient api;
-
-  /// Which panel is open. Comes from the URL, so a link can name one.
-  final ReportTab tab;
 
   /// Where re-analysis runs. Defaults to the app-wide queue; injectable so a
   /// test can drive one without the singleton leaking between cases.
@@ -51,6 +45,28 @@ class _ReportScreenState extends State<ReportScreen> {
   late Future<DepReport?> _report;
   late Project _project;
 
+  /// The report once it has landed, so the app bar can offer to export it.
+  ///
+  /// Held beside the future rather than read out of the [FutureBuilder]: the
+  /// export lives in the app bar, which is built outside the builder and
+  /// cannot see its snapshot.
+  DepReport? _loaded;
+
+  /// Watches [_report] so [_loaded] follows it, including after a re-analysis
+  /// replaces the future.
+  void _trackReport() {
+    final pending = _report;
+    pending.then((report) {
+      // A second re-analysis can land while the first is in flight; only the
+      // newest future is allowed to set what the app bar exports.
+      if (!mounted || !identical(pending, _report)) return;
+      setState(() => _loaded = report);
+    }).catchError((Object _) {
+      if (!mounted || !identical(pending, _report)) return;
+      setState(() => _loaded = null);
+    });
+  }
+
   ScanQueue get _scans => widget.scans ?? ScanQueue.instance;
   StreamSubscription<ScanTask>? _scanResults;
 
@@ -59,6 +75,7 @@ class _ReportScreenState extends State<ReportScreen> {
     super.initState();
     _project = widget.project;
     _report = widget.api.report(_project.id);
+    _trackReport();
     _scans.addListener(_onScansChanged);
     // Picks up a re-analysis of this project whoever started it and wherever
     // they were standing — including one they started here, left, and came
@@ -88,6 +105,9 @@ class _ReportScreenState extends State<ReportScreen> {
       setState(() {
         _project = project;
         _report = Future.value(report);
+        // Already in hand, so the export follows the re-analysis immediately
+        // rather than waiting for a future that is already complete.
+        _loaded = report;
       });
     }
     // Failures are not announced here. The panel is already showing this scan,
@@ -103,7 +123,9 @@ class _ReportScreenState extends State<ReportScreen> {
     final report = widget.api.report(_project.id);
     setState(() {
       _report = report;
+      _loaded = null;
     });
+    _trackReport();
   }
 
   /// Queues a re-fetch and re-analysis of the repository.
@@ -190,314 +212,212 @@ class _ReportScreenState extends State<ReportScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<DepReport?>(
-      future: _report,
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (snap.hasError) {
-          if (snap.error case final ApiAuthException auth) {
-            WidgetsBinding.instance.addPostFrameCallback(
-              (_) => SessionMonitor.instance.reportExpired(auth.message),
-            );
-          }
-          return _Message(
-            icon: Icons.error_outline,
-            text: snap.error is ApiException
-                ? (snap.error! as ApiException).message
-                : 'Could not load the report.',
-            isError: true,
-            onRetry: _reload,
-          );
-        }
-
-        final report = snap.data;
-        if (report == null || report.nodes.isEmpty) {
-          return const _Message(
-            icon: Icons.inbox_outlined,
-            text: 'No dependency report for this project yet.',
-          );
-        }
-
-        // Header, tabs, panel — the shape of a page rather than of a phone
-        // screen. What used to be one column three thousand pixels tall is now
-        // four peer views of the same report, and only the panel scrolls: the
-        // summary a reader is checking against no longer scrolls away from the
-        // table they are checking it with.
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _Summary(
-              project: _project,
-              report: report,
-              actions: _actions(report),
-            ),
-            _ReportTabs(
-              current: widget.tab,
-              advisories: report.vulnerable,
-              onSelect: (tab) => routerOf(context).showTab(tab),
-            ),
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-                child: BoundedWidth(max: 1280, child: _panel(report)),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  /// What the header offers: re-analysis, and the export.
-  List<Widget> _actions(DepReport report) => [
-        // An archived project is a snapshot; the server refuses to re-analyze
-        // it, so offering the button would be a dead end.
-        if (!_project.isArchived)
-          if (_scans.isScanning(_project.id))
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 12),
-              child: SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            )
-          else
-            TextButton.icon(
-              onPressed: _reanalyze,
-              style: TextButton.styleFrom(foregroundColor: Colors.white),
-              icon: const Icon(Icons.sync, size: 16),
-              label: const Text('Re-analyze'),
-            ),
-        // An archived project exports too: a snapshot is a thing people want to
-        // take away precisely because it will not change.
-        if (canDownload)
-          PopupMenuButton<String>(
-            icon: const Icon(
-              Icons.download_outlined,
-              color: Colors.white,
-              size: 18,
-            ),
-            tooltip: 'Export',
-            onSelected: (choice) => _export(report, asCsv: choice == 'csv'),
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'csv', child: Text('Download CSV')),
-              PopupMenuItem(value: 'json', child: Text('Download JSON')),
-            ],
-          ),
-      ];
-
-  /// The open panel.
-  Widget _panel(DepReport report) => switch (widget.tab) {
-        ReportTab.packages => _PanelCard(
-            title: 'Every package',
-            note: _project.isArchived
-                ? 'Select a package to see why it is here.'
-                : 'Select a package to see why it is here and what upgrading '
-                    'it involves.',
-            child: DepTable(
-              nodes: report.nodes,
-              showCurrency: !_project.isArchived,
-              onSelect: (node) => _explain(node, report),
-            ),
-          ),
-        // Advisories are facts about the versions in the snapshot, so they stay
-        // for an archived project. Planning a fix is not — it re-fetches the
-        // repository, which archiving opted out of.
-        ReportTab.advisories => report.vulnerable == 0
-            ? const _Message(
-                icon: Icons.verified_outlined,
-                text: 'No advisory applies to any installed version.',
-              )
-            : _Advisories(
-                report: report,
-                onLoadRemediation: _project.isArchived
-                    ? null
-                    : () => widget.api.remediation(_project.id),
-              ),
-        ReportTab.licenses => LicensePanel(
-            key: ValueKey('licenses-${_project.id}'),
-            load: () => widget.api.licenseReport(_project.id),
-            onLoadManifest: () => widget.api.licenseManifest(_project.id),
-            onSavePolicy: widget.api.saveLicensePolicy,
-            onResetPolicy: widget.api.resetLicensePolicy,
-          ),
-        ReportTab.tree => _PanelCard(
-            title: 'The tree',
-            child: DependencyTree(
-              report: report,
-              showCurrency: !_project.isArchived,
-              onSelect: (node) => _explain(node, report),
-            ),
-          ),
-      };
-}
-
-/// The row of panel names under the summary.
-///
-/// Tabs rather than four stacked sections: they are peers, a reader wants one
-/// at a time, and the URL carries which — so "the advisories on widget-factory"
-/// is a link somebody can paste into a ticket.
-class _ReportTabs extends StatelessWidget {
-  const _ReportTabs({
-    required this.current,
-    required this.advisories,
-    required this.onSelect,
-  });
-
-  final ReportTab current;
-
-  /// How many packages carry an advisory, for the count on that tab.
-  final int advisories;
-  final void Function(ReportTab tab) onSelect;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        color: Palette.paper,
-        border: Border(
-          bottom: BorderSide(color: Color(0x1A151B2E), width: 0.5),
-        ),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      // Scrollable, so the narrow layout keeps tabs rather than reverting to a
-      // long column. Four short words fit a phone; scrolling is the escape
-      // hatch rather than the normal case.
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            for (final tab in ReportTab.values)
-              _TabButton(
-                label: tab.label,
-                selected: tab == current,
-                badge: tab == ReportTab.advisories && advisories > 0
-                    ? advisories
-                    : null,
-                onTap: () => onSelect(tab),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _TabButton extends StatefulWidget {
-  const _TabButton({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-    this.badge,
-  });
-
-  final String label;
-  final bool selected;
-  final int? badge;
-  final VoidCallback onTap;
-
-  @override
-  State<_TabButton> createState() => _TabButtonState();
-}
-
-class _TabButtonState extends State<_TabButton> {
-  bool _hovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: Container(
-          padding: const EdgeInsets.only(top: 12),
-          margin: const EdgeInsets.only(right: 18),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(
-                width: 2,
-                color: widget.selected
-                    ? Palette.ink
-                    : _hovered
-                        ? Palette.slate.withValues(alpha: 0.4)
-                        : Colors.transparent,
-              ),
-            ),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.only(bottom: 9),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  widget.label,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: widget.selected ? Palette.ink : Palette.slate,
-                    fontWeight:
-                        widget.selected ? FontWeight.w600 : FontWeight.w400,
+    return Builder(
+      builder: (context) => Scaffold(
+        // The body does *not* run behind the app bar, now that the summary
+        // scrolls away with everything else. It used to: the summary was
+        // pinned, its ink band filled that region, and a transparent app bar
+        // sat over it. Once the page scrolls as one, the same arrangement
+        // slides the table underneath the bar — where rows are both obscured
+        // and, because the viewport still counts that region as visible, not
+        // reliably tappable.
+        //
+        // The bar takes the band's colour instead, so the top of the screen
+        // reads as one ink surface exactly as before, and the summary
+        // continues it seamlessly until it scrolls out.
+        appBar: AppBar(
+          backgroundColor: Palette.ink,
+          title: Text(_project.name),
+          actions: [
+            // An archived project is a snapshot; the server refuses to
+            // re-analyze it, so offering the button would be a dead end.
+            if (_project.isArchived)
+              const SizedBox.shrink()
+            // Scanning is now the queue's fact rather than this screen's, so
+            // coming back to a report mid-scan finds the spinner still turning
+            // instead of a button that would start a second one.
+            else if (_scans.isScanning(_project.id))
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16),
+                child: Center(
+                  child: SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                 ),
-                if (widget.badge case final count?) ...[
-                  const SizedBox(width: 6),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 1,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Palette.major,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      '$count',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
+              )
+            else
+              TextButton.icon(
+                onPressed: _reanalyze,
+                style: TextButton.styleFrom(foregroundColor: Colors.white),
+                icon: const Icon(Icons.sync, size: 18),
+                label: const Text('Re-analyze'),
+              ),
+            // Only where a file can actually go somewhere, and only once there
+            // is a report to write. An archived project exports too: a
+            // snapshot is a thing people want to take away precisely because
+            // it will not change.
+            if (canDownload && _loaded != null)
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.download_outlined, color: Colors.white),
+                tooltip: 'Export',
+                onSelected: (choice) =>
+                    _export(_loaded!, asCsv: choice == 'csv'),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: 'csv',
+                    child: Text('Download CSV'),
+                  ),
+                  PopupMenuItem(
+                    value: 'json',
+                    child: Text('Download JSON'),
+                  ),
+                ],
+              ),
+            const SizedBox(width: 8),
+          ],
+        ),
+        body: FutureBuilder<DepReport?>(
+          future: _report,
+          builder: (context, snap) {
+            if (snap.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (snap.hasError) {
+              if (snap.error case final ApiAuthException auth) {
+                WidgetsBinding.instance.addPostFrameCallback(
+                  (_) => SessionMonitor.instance.reportExpired(auth.message),
+                );
+              }
+              return _Message(
+                icon: Icons.error_outline,
+                text: snap.error is ApiException
+                    ? (snap.error! as ApiException).message
+                    : 'Could not load the report.',
+                isError: true,
+                onRetry: _reload,
+              );
+            }
+
+            final report = snap.data;
+            if (report == null || report.nodes.isEmpty) {
+              return const _Message(
+                icon: Icons.inbox_outlined,
+                text: 'No dependency report for this project yet.',
+              );
+            }
+
+            // The summary scrolls away with everything else rather than being
+            // pinned above it. It is a tall band — repository, ref, when it was
+            // analyzed, and the counts — and holding all of that on screen
+            // costs more room than it is worth once the reader has moved on to
+            // the advisories and the table.
+            //
+            // It keeps its own full-bleed padding, so the scroll view has none
+            // and the content below carries the page inset instead.
+            return SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Its own padding, because [InkBand] defaults to leaving room
+                  // for an app bar drawn over it and nothing is drawn over it
+                  // here any more.
+                  _Summary(project: _project, report: report),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
+                    // Bounded rather than full-bleed. This page is mostly
+                    // prose-width cards — advisories, licenses, notes — and a
+                    // card stretched across a wide monitor sets a line of text
+                    // the eye cannot track back from. The allowance is generous
+                    // because one of the children is a table: columns want the
+                    // room that sentences do not.
+                    child: BoundedWidth(
+                      max: 1280,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          // Advisories are facts about the versions in the
+                          // snapshot, so they stay. Planning a fix is not — it
+                          // re-fetches the repository, which archiving opted out
+                          // of — so an archived project gets no remediation.
+                          if (report.vulnerable > 0) ...[
+                            _Advisories(
+                              report: report,
+                              onLoadRemediation: _project.isArchived
+                                  ? null
+                                  : () => widget.api.remediation(_project.id),
+                            ),
+                            const SizedBox(height: 16),
+                          ],
+                          // Shown for an archived project too: a license is a
+                          // fact about the versions in the snapshot, the same way
+                          // an advisory is, and judging it costs the server no
+                          // outbound work.
+                          LicensePanel(
+                            key: ValueKey('licenses-${_project.id}'),
+                            load: () => widget.api.licenseReport(_project.id),
+                            onLoadManifest: () =>
+                                widget.api.licenseManifest(_project.id),
+                            onSavePolicy: widget.api.saveLicensePolicy,
+                            onResetPolicy: widget.api.resetLicensePolicy,
+                          ),
+                          const SizedBox(height: 16),
+                          Card(
+                            child: Padding(
+                              padding:
+                                  const EdgeInsets.fromLTRB(18, 16, 18, 16),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  const Eyebrow('The tree'),
+                                  const SizedBox(height: 6),
+                                  DependencyTree(
+                                    report: report,
+                                    showCurrency: !_project.isArchived,
+                                    onSelect: (node) => _explain(node, report),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          Card(
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  const Eyebrow('Every package'),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    _project.isArchived
+                                        ? 'Select a package to see why it is '
+                                            'here.'
+                                        : 'Select a package to see why it is '
+                                            'here and what upgrading it '
+                                            'involves.',
+                                    style:
+                                        Theme.of(context).textTheme.bodySmall,
+                                  ),
+                                  const SizedBox(height: 6),
+                                  DepTable(
+                                    nodes: report.nodes,
+                                    showCurrency: !_project.isArchived,
+                                    onSelect: (node) => _explain(node, report),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
                 ],
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// A titled card around one panel's content.
-class _PanelCard extends StatelessWidget {
-  const _PanelCard({required this.title, required this.child, this.note});
-
-  final String title;
-  final String? note;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Eyebrow(title),
-            if (note case final text?) ...[
-              const SizedBox(height: 5),
-              Text(text, style: Theme.of(context).textTheme.bodySmall),
-            ],
-            const SizedBox(height: 8),
-            child,
-          ],
+              ),
+            );
+          },
         ),
       ),
     );
@@ -505,20 +425,10 @@ class _PanelCard extends StatelessWidget {
 }
 
 class _Summary extends StatelessWidget {
-  const _Summary({
-    required this.project,
-    required this.report,
-    this.actions = const [],
-  });
+  const _Summary({required this.project, required this.report});
 
   final Project project;
   final DepReport report;
-
-  /// Re-analyze and export. They sit on this band rather than in the header:
-  /// the header belongs to the app and these belong to the project on screen,
-  /// and putting them there would leave the header changing its mind about what
-  /// it is every time somebody opened a report.
-  final List<Widget> actions;
 
   @override
   Widget build(BuildContext context) {
@@ -544,34 +454,13 @@ class _Summary extends StatelessWidget {
         : graph.reclaimableFrom([for (final n in unimported) n.name]);
 
     return InkBand(
-      // Tighter than it was. The band sits below a header that already carries
-      // the product's name, so it no longer has to be a screen's whole title
-      // block — and every pixel it gives back is one the table gets.
-      padding: const EdgeInsets.fromLTRB(20, 14, 12, 16),
+      // The default leaves a toolbar's height of room at the top for an app bar
+      // drawn over the band. This one sits below the bar rather than under it,
+      // so that room would be an empty gap.
+      padding: const EdgeInsets.fromLTRB(24, 18, 24, 22),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // The project's name, which used to be the app bar's title. It moves
-          // here with the actions, so the band names what it describes rather
-          // than relying on chrome that is now shared with every other screen.
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              Expanded(
-                child: Text(
-                  project.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: display(
-                    theme.textTheme.titleLarge,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
-              ...actions,
-            ],
-          ),
-          const SizedBox(height: 2),
           Text(
             '${project.gitUrl} @ ${project.ref}',
             style: mono(

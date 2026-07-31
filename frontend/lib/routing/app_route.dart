@@ -15,9 +15,8 @@ sealed class AppRoute {
   /// The registry: every project, and the form that adds one.
   const factory AppRoute.registry() = RegistryRoute;
 
-  /// One project's dependency report, open at one of its panels.
-  const factory AppRoute.report(String projectId, {ReportTab tab}) =
-      ReportRoute;
+  /// One project's dependency report.
+  const factory AppRoute.report(String projectId) = ReportRoute;
 
   /// Account, session, and — on the app build — the device PIN.
   const factory AppRoute.settings() = SettingsRoute;
@@ -34,45 +33,11 @@ sealed class AppRoute {
     final path = Uri.tryParse(location ?? '/')?.pathSegments ?? const [];
 
     return switch (path) {
-      ['projects', final id, final tab, ...] when id.isNotEmpty =>
-        ReportRoute(id, tab: ReportTab.parse(tab)),
-      ['projects', final id] when id.isNotEmpty => ReportRoute(id),
+      ['projects', final id, ...] when id.isNotEmpty => ReportRoute(id),
       ['settings', ...] => const SettingsRoute(),
       _ => const RegistryRoute(),
     };
   }
-}
-
-/// The panels a report is split across.
-///
-/// Four peer views of one report rather than one column three thousand pixels
-/// tall. They are in the URL because a tab that is not is a tab nobody can
-/// link to: "the advisories on widget-factory" is exactly the thing somebody
-/// pastes into a ticket, and it would otherwise always open on the packages.
-enum ReportTab {
-  /// Every package. The default, because it is what people came for.
-  packages,
-  advisories,
-  licenses,
-  tree;
-
-  /// What the tab is called in the URL. [packages] contributes nothing, so the
-  /// ordinary report link stays `/projects/<id>`.
-  String get slug => this == ReportTab.packages ? '' : name;
-
-  String get label => switch (this) {
-        ReportTab.packages => 'Packages',
-        ReportTab.advisories => 'Advisories',
-        ReportTab.licenses => 'Licenses',
-        ReportTab.tree => 'Tree',
-      };
-
-  /// Reads a path segment, falling back to [packages] for anything else — an
-  /// unrecognised tab is a link that nearly worked, and the report is more use
-  /// than a 404.
-  static ReportTab parse(String? slug) =>
-      ReportTab.values.where((t) => t.name == slug).firstOrNull ??
-      ReportTab.packages;
 }
 
 class RegistryRoute extends AppRoute {
@@ -89,27 +54,21 @@ class RegistryRoute extends AppRoute {
 }
 
 class ReportRoute extends AppRoute {
-  const ReportRoute(this.projectId, {this.tab = ReportTab.packages});
+  const ReportRoute(this.projectId);
 
   final String projectId;
-  final ReportTab tab;
 
   /// Encoded, because the id lands in a URL. Project ids are uuids today and
   /// this does not depend on that staying true.
   @override
-  String get location {
-    final base = '/projects/${Uri.encodeComponent(projectId)}';
-    return tab.slug.isEmpty ? base : '$base/${tab.slug}';
-  }
+  String get location => '/projects/${Uri.encodeComponent(projectId)}';
 
-  /// Identity is the project *and* the panel, so switching tabs is a route
-  /// change the address bar follows.
   @override
   bool operator ==(Object other) =>
-      other is ReportRoute && other.projectId == projectId && other.tab == tab;
+      other is ReportRoute && other.projectId == projectId;
 
   @override
-  int get hashCode => Object.hash(ReportRoute, projectId, tab);
+  int get hashCode => Object.hash(ReportRoute, projectId);
 }
 
 class SettingsRoute extends AppRoute {
