@@ -331,6 +331,64 @@ workflows, which want an Adaptive Card; a workflow using the stock template
 will not render these properly. Email is not implemented — it needs a provider
 and credentials, and neither has been chosen.
 
+## Release notes
+
+A version moved; what did its author say about it? `GET
+/projects/<id>/changes?changelogs=true` answers that for every package in a
+diff, with the sections covering `(from, to]` — the ones the move actually
+crosses, rather than a link to twelve releases' worth of notes and the job of
+working out which apply.
+
+The notes are kept **verbatim**. They are the author's account of their own
+release, and paraphrasing them would be this application making claims about
+somebody else's software.
+
+Nothing is fetched in a request. A lookup that misses records what it wanted
+and the backlog is drained out of process, exactly as the API diffs are:
+
+```bash
+cd backend && dart run tool/fill_changelogs.dart
+```
+
+**One archive answers many questions.** A changelog is cumulative, so reading
+`foo 3.0.0` stores the sections for 2.x and 1.x too — and the aggregator checks
+what is stored *before* asking whether a particular archive was read, so a
+project moving to 2.0.0 is served from an archive somebody else's upgrade
+already pulled.
+
+**Empty is two different answers**, and they are not shown alike: nobody has
+read the archive yet (queued — check back), or it was read and nothing covers
+this range (the package ships no changelog, or did not write about these
+versions). A changelog nobody has read must never render as a release that
+said nothing.
+
+### What it reads, and what it will not
+
+The archive is fetched from a **constructed** URL — never from the registry's
+own metadata, since npm publishes a `dist.tarball` field and following it would
+let a package's publisher choose which host this server contacts. It is
+decompressed in memory, so a crafted entry path has nowhere to escape to; the
+compressed size, expanded size, file count and the changelog's own size are all
+capped; and only the changelog is decoded.
+
+Only a changelog at the archive root counts. One under `example/` or
+`test/fixtures/` belongs to something else, and npm packages ship other
+projects' files more often than one would like.
+
+There is no changelog *format*, only a convention, so the heading parser is
+permissive — `## 1.2.3`, `# [1.2.3]`, `## v1.2.3 (2024-05-01)` all read. Two
+things it deliberately refuses: a heading that merely mentions a version
+(`## Upgrading to 2.0.0` is prose in somebody's notes, and treating it as a
+release boundary splits that release in half), and anything inside a fenced
+code block (migration instructions routinely paste a manifest containing what
+looks exactly like a heading).
+
+**npm coverage is thinner than pub's**, and not because of this code: many npm
+packages ship no `CHANGELOG.md` in their tarball at all. `lodash` publishes to
+GitHub Releases instead, and `@babel/core` keeps one changelog at its monorepo
+root rather than per package. Both read successfully and yield nothing, which
+is reported as what it is.
+
 ## Public API diffs
 
 Semver says whether an author *considers* a release breaking. It cannot say

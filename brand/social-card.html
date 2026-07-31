@@ -1,0 +1,130 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>DepControl — social preview card</title>
+
+<!--
+  Source for brand/depcontrol-social-card.png — the image GitHub shows when the
+  repo is linked anywhere (Settings -> General -> Social preview).
+
+  Render it with:
+
+    chrome --headless --screenshot=depcontrol-social-card.png \
+           --window-size=1280,640 --virtual-time-budget=8000 social-card.html
+
+  1280x640 is GitHub's recommended size. The `--virtual-time-budget` is not
+  optional: the type comes from Google Fonts, and without it the screenshot can
+  fire before the faces arrive and bake Segoe UI into the card instead. Check the
+  output before committing it — Archivo's flat terminals on the D and the R are
+  the tell that the real face loaded.
+
+  Everything that carries meaning sits inside a 40pt border, per GitHub's
+  template, because social embeds elsewhere crop this to other aspect ratios.
+  The bleeding semver bar at the bottom is the only thing outside it, and it is
+  decorative — losing it costs nothing.
+
+  Type and palette are the app's own (frontend/lib/theme.dart), not a separate
+  set chosen for marketing: someone who clicks through from this card should
+  arrive somewhere that looks like the card.
+-->
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700&family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400&display=block">
+
+<style>
+  /* Palette lifted from `abstract final class Palette`. The `-on-ink` variants
+     exist for the same reason they do in the app: a hue tuned for white paper
+     goes muddy on navy. */
+  :root {
+    --ink: #151B2E;
+    --ink-soft: #27314D;
+    --major: #D6336C;      /* breaking — work, not danger */
+    --minor: #F2A93B;      /* additive (minorOnInk) */
+    --patch: #0E8A6A;      /* safe */
+    --wordmark-soft: #C3CBDD;
+    --body: #9BA5BE;
+    --mono: #8A94AE;
+  }
+
+  html, body { margin: 0; padding: 0; }
+  body {
+    width: 1280px; height: 640px; overflow: hidden;
+    background: var(--ink);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    /* The 40pt safe border, as real padding rather than a thing to remember. */
+    padding: 40px; box-sizing: border-box;
+  }
+
+  /* Proportions from depcontrol-logo.svg — a 48px mark box and a 20px gap
+     against 27px text — so this is the same lockup, just larger: the mark's box
+     is 1.78x the font size and the gap 0.74x it. Sizing the mark to look right
+     against the type instead gets it wrong, because two thirds of its box is
+     padding; matching the box to the cap height leaves the mark visibly small.
+
+     The viewBox is cropped to the mark's ink rather than kept at the icon's full
+     0 0 64 64. That padding is not symmetric (12.5 left, 10.5 right), so a
+     centred flex row centres the box and leaves the mark 12.5px right of where
+     the tagline below it is centred — measurably, not arguably. Cropping makes
+     the box the ink, after which centring is just centring. The width is
+     1.78 * 86 * 41/64, i.e. the same rendered size as the uncropped box. */
+  .lockup { display: flex; align-items: center; gap: 63px; }
+  .lockup svg { width: 98px; height: auto; display: block; }
+  .wordmark {
+    font-family: Archivo, 'Segoe UI', sans-serif;
+    font-size: 86px; line-height: 1; letter-spacing: -0.025em;
+    white-space: nowrap;
+  }
+  .wordmark b { font-weight: 700; color: #FFFFFF; }
+  .wordmark span { font-weight: 500; color: var(--wordmark-soft); }
+
+  .tagline {
+    margin-top: 34px;
+    font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+    font-weight: 400; font-size: 31px; line-height: 1.35;
+    color: var(--body); text-align: center; max-width: 1000px;
+  }
+
+  /* Manifest names are machine-assigned, so they are monospaced — the same rule
+     the app applies to versions, GHSA ids and git URLs. Naming the two files is
+     also the shortest honest way to say which ecosystems are supported. */
+  .manifests { margin-top: 40px; display: flex; gap: 16px; }
+  .manifests code {
+    font-family: 'IBM Plex Mono', Consolas, monospace;
+    font-weight: 500; font-size: 23px; color: var(--mono);
+    background: var(--ink-soft); border-radius: 8px;
+    padding: 11px 20px 12px;
+  }
+
+  /* MAJOR / MINOR / PATCH, in the order the fields appear in a version string.
+     Full-bleed and unlabelled: at the size a social embed actually gets seen,
+     three colours read and three captions do not. */
+  .spine { position: absolute; left: 0; right: 0; bottom: 0; height: 12px; display: flex; }
+  .spine i { flex: 1; }
+</style>
+
+<div class="lockup">
+  <!-- Same geometry as depcontrol-icon.svg. White on ink, with the flagged node
+       solid amber and unringed, matching depcontrol-logo-dark.svg. -->
+  <svg viewBox="12.5 14 41 37.5" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="DepControl">
+    <g stroke="#FFFFFF" stroke-width="4.5" stroke-linecap="round">
+      <line x1="32" y1="20" x2="18" y2="44"/>
+      <line x1="32" y1="20" x2="46" y2="44"/>
+    </g>
+    <circle cx="32" cy="20" r="6" fill="#FFFFFF"/>
+    <circle cx="18" cy="44" r="5.5" fill="#FFFFFF"/>
+    <circle cx="46" cy="44" r="6.5" fill="#F2A93B"/>
+  </svg>
+  <div class="wordmark"><b>Dep</b><span>Control</span></div>
+</div>
+
+<p class="tagline">
+  Inspect, report, and simulate dependency changes — from a Git URL.
+</p>
+
+<div class="manifests">
+  <code>pubspec.yaml</code>
+  <code>package.json</code>
+</div>
+
+<div class="spine"><i style="background:var(--major)"></i><i style="background:var(--minor)"></i><i style="background:var(--patch)"></i></div>

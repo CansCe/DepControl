@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:backend/src/auth/auth_user.dart';
 import 'package:backend/src/deps.dart';
+import 'package:backend/src/services/changelog_aggregator.dart';
 import 'package:dart_frog/dart_frog.dart';
 import 'package:shared/shared.dart';
 
@@ -101,5 +102,18 @@ Future<Response> onRequest(RequestContext context, String id) async {
     }
   }
 
-  return Response.json(body: ReportDiff.between(from, to).toJson());
+  final diff = ReportDiff.between(from, to);
+  final body = diff.toJson();
+
+  // `?changelogs=true` adds what each moved package's author wrote about the
+  // move. Opt-in because it is a second read per moved package, and because a
+  // first request for an unread package queues a fetch — a caller that only
+  // wants the version numbers should not be filling a backlog.
+  if (context.request.uri.queryParameters['changelogs'] == 'true') {
+    final changelogs =
+        await ChangelogAggregator(deps.changelogs).forDiff(diff);
+    body['changelogs'] = [for (final each in changelogs) each.toJson()];
+  }
+
+  return Response.json(body: body);
 }

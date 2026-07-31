@@ -4,8 +4,10 @@ import 'repository/api_diff_store.dart';
 import 'repository/license_policy_store.dart';
 import 'repository/postgres_api_diff_store.dart';
 import 'notifications/notifier.dart';
+import 'repository/changelog_store.dart';
 import 'repository/notification_store.dart';
 import 'repository/postgres_license_policy_store.dart';
+import 'repository/postgres_changelog_store.dart';
 import 'repository/postgres_notification_store.dart';
 import 'repository/postgres_pool.dart';
 import 'repository/postgres_project_repository.dart';
@@ -35,6 +37,7 @@ class Deps {
       apiDiffs: stores.apiDiffs,
       licensePolicies: stores.licensePolicies,
       notifications: stores.notifications,
+      changelogs: stores.changelogs,
       ecosystems: ecosystems,
       gitFetcher: GitFetcher(ecosystems: ecosystems),
       pubApi: pubApi,
@@ -62,6 +65,7 @@ class Deps {
     ApiDiffStore? apiDiffs,
     LicensePolicyStore? licensePolicies,
     NotificationStore? notifications,
+    ChangelogStore? changelogs,
     PubApiClient? pubApi,
     Resolver? resolver,
     UpgradeInspector? inspector,
@@ -75,6 +79,7 @@ class Deps {
       apiDiffs: apiDiffs ?? InMemoryApiDiffStore(),
       licensePolicies: licensePolicies ?? InMemoryLicensePolicyStore(),
       notifications: notifications ?? InMemoryNotificationStore(),
+      changelogs: changelogs ?? InMemoryChangelogStore(),
       ecosystems: eco,
       gitFetcher: gitFetcher,
       pubApi: api,
@@ -91,6 +96,7 @@ class Deps {
     required this.apiDiffs,
     required this.licensePolicies,
     required this.notifications,
+    required this.changelogs,
     required this.ecosystems,
     required this.gitFetcher,
     required this.pubApi,
@@ -113,6 +119,10 @@ class Deps {
 
   /// Where a project's changes get announced, and what has been sent already.
   final NotificationStore notifications;
+
+  /// Release notes read out of published archives by `tool/fill_changelogs.dart`.
+  /// The API only ever reads from here and records what it could not find.
+  final ChangelogStore changelogs;
 
   /// Delivers those announcements. Built per use rather than held, since it
   /// owns an HTTP client and the request path never announces anything — only
@@ -196,6 +206,7 @@ class Deps {
     ApiDiffStore apiDiffs,
     LicensePolicyStore licensePolicies,
     NotificationStore notifications,
+    ChangelogStore changelogs,
   }) _buildStores() {
     final db = log.tagged('db');
     final url = readEnvironment()['DATABASE_URL'];
@@ -208,6 +219,7 @@ class Deps {
           apiDiffs: PostgresApiDiffStore(pool),
           licensePolicies: PostgresLicensePolicyStore(pool),
           notifications: PostgresNotificationStore(pool),
+          changelogs: PostgresChangelogStore(pool),
         );
       } catch (e) {
         // A malformed DATABASE_URL used to blow up lazily on the first request,
@@ -256,11 +268,13 @@ class Deps {
     ApiDiffStore apiDiffs,
     LicensePolicyStore licensePolicies,
     NotificationStore notifications,
+    ChangelogStore changelogs,
   }) _inMemoryStores() => (
         repository: InMemoryProjectRepository(),
         apiDiffs: InMemoryApiDiffStore(),
         licensePolicies: InMemoryLicensePolicyStore(),
         notifications: InMemoryNotificationStore(),
+        changelogs: InMemoryChangelogStore(),
       );
 
   static String? _jwksFromSupabaseUrl(String? base) {

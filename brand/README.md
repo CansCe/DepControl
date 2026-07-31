@@ -17,6 +17,8 @@ shrunk, which a detailed graph does not.
 | `depcontrol-mark.svg` | Mark alone on light backgrounds: docs, README, app bar. |
 | `depcontrol-logo.svg` | Horizontal lockup for light backgrounds. |
 | `depcontrol-logo-dark.svg` | Lockup for dark backgrounds. The mark goes white — `#0553B1` on dark is below a readable contrast ratio. |
+| `depcontrol-social-card.png` | **Upload this as the repo's social preview.** 1280×640. |
+| `social-card.html` | Source for the card above. A generator, not an asset — see below. |
 | `export-png.html` | Re-export PNGs at any size after changing the artwork. Runs offline in a browser. |
 
 ## Already wired into the app
@@ -68,6 +70,44 @@ oversight.
 
 The amber echoes the severity language in the report without being any one
 severity colour, so the logo does not accidentally claim a finding is "medium".
+
+## The social preview card
+
+`depcontrol-social-card.png` is what GitHub renders when the repo is linked in a
+tweet, a Slack message or a search result. Set it under **Settings → General →
+Social preview → Upload an image**. GitHub wants 1280×640 and under 1MB; the card
+is 1280×640 and about 33KB.
+
+It does not use the brand palette above. It uses the *app's* — `Palette` and the
+type scale in [`frontend/lib/theme.dart`](../frontend/lib/theme.dart): the ink
+background, Archivo for the wordmark, IBM Plex Sans and Mono for everything else,
+and the MAJOR/MINOR/PATCH hues in the bar along the bottom. That is deliberate.
+The card is the last thing someone sees before they click, and the first thing
+they see after should not look like a different product.
+
+The manifest names are set in the mono face because the app's own rule is that
+anything a machine assigned is monospaced. They also happen to be the shortest
+honest way to say which ecosystems are supported — a claim that stays true by
+construction, since adding an ecosystem means adding a manifest name here.
+
+### Regenerating it
+
+`social-card.html` is the source. It is a generator that happens to be checked
+in, like `export-png.html` — not an asset anyone links to.
+
+```bash
+chrome --headless --screenshot=depcontrol-social-card.png --window-size=1280,640 --virtual-time-budget=8000 social-card.html
+```
+
+The type comes from Google Fonts, so this step needs a network connection, and
+`--virtual-time-budget` is what stops the screenshot firing before the faces
+arrive. **Look at the output before committing it.** A card that silently fell
+back to Segoe UI looks fine in isolation and wrong next to the app; Archivo's
+flat, squared-off terminals on the `D` and the `l` are the tell.
+
+Everything that carries meaning sits inside a 40pt border, which is GitHub's own
+recommendation — embeds elsewhere re-crop the image to other aspect ratios. The
+semver bar bleeds past it on purpose, because losing it costs nothing.
 
 ## Setting the GitHub OAuth app logo
 
