@@ -27,6 +27,22 @@ jobs:
       # this needs the Flutter SDK rather than plain Dart.
       - run: flutter pub get
       - run: dart analyze backend packages/shared
+      # Turns one broken connection string into one line, instead of into the
+      # twenty-five integration tests that all fail on it. Every one of them
+      # reports the same problem in the terms of whatever query it reached
+      # first, so the suite says "the database layer is broken" when what is
+      # broken is the secret — and the two are fixed in very different places.
+      #
+      # Does not gate the tests: it exits non-zero and fails the job, because a
+      # run that cannot reach the database is a run with no coverage of it.
+      # With no DATABASE_URL configured it prints that and passes, matching the
+      # tests, which skip.
+      - name: Check the database is reachable and current
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: dart run tool/check_database.dart
+
       - name: Test
         working-directory: backend
         # A secret is not an environment variable until it is mapped to one, and

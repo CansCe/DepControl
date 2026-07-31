@@ -1,23 +1,25 @@
-import 'dart:io';
-
 import 'package:backend/src/repository/postgres_api_diff_store.dart';
 import 'package:backend/src/repository/postgres_pool.dart';
 import 'package:postgres/postgres.dart';
 import 'package:shared/shared.dart';
 import 'package:test/test.dart';
 
+import '../support/test_env.dart';
+
 /// Integration test against a real Postgres. Skipped unless `DATABASE_URL` is
-/// set, so `dart test` stays green in environments without a database.
+/// available, so `dart test` stays green without a database.
+///
+/// Read from the environment *or* `backend/.env` — see [TestEnv], and the note
+/// on the sibling repository test for why the tests look in both places when
+/// the server does not.
 ///
 ///   $env:DATABASE_URL="postgresql://...:5432/postgres?sslmode=require"; dart test
 void main() {
-  final url = Platform.environment['DATABASE_URL'];
+  final url = TestEnv.read('DATABASE_URL');
 
   group(
     'PostgresApiDiffStore (integration)',
-    skip: url == null || url.isEmpty
-        ? 'set DATABASE_URL to run Postgres integration tests'
-        : null,
+    skip: TestEnv.skipReasonFor('DATABASE_URL'),
     () {
       late Pool<void> pool;
       late PostgresApiDiffStore store;
