@@ -145,6 +145,13 @@ class ApiClient {
     );
   }
 
+  /// Just the report half of `GET /projects/<id>`.
+  ///
+  /// Deliberately does *not* go through [projectWithReport]. Reading the
+  /// project too would make this throw on a response whose project half is
+  /// missing or malformed — and a caller that asked for a report and holds the
+  /// project already should not lose the report over the copy it did not ask
+  /// for.
   Future<DepReport?> report(String projectId) async {
     final json = await _send(() async => _client.get(
           Uri.parse('$baseUrl/projects/$projectId'),
@@ -154,6 +161,35 @@ class ApiClient {
     return report == null
         ? null
         : DepReport.fromJson(report as Map<String, dynamic>);
+  }
+
+  /// The project *and* its report, which is what `GET /projects/<id>` has
+  /// always returned — [report] simply reads the other half.
+  ///
+  /// Needed by a deep link. Arriving at `/projects/<id>` from a bookmark or a
+  /// pasted URL means holding an id and nothing else: there is no row that was
+  /// tapped to carry the project along, and the screen cannot render its own
+  /// title without one. Listing every project and searching for the id would
+  /// work and would fetch the whole registry to answer a question about one of
+  /// them.
+  ///
+  /// A project owned by somebody else answers 404 exactly as an id that does
+  /// not exist does, so a guessed link cannot confirm anything.
+  Future<({Project project, DepReport? report})> projectWithReport(
+    String projectId,
+  ) async {
+    final json = await _send(() async => _client.get(
+          Uri.parse('$baseUrl/projects/$projectId'),
+          headers: await _headers(),
+        ));
+
+    final report = json['report'];
+    return (
+      project: Project.fromJson(json['project'] as Map<String, dynamic>),
+      report: report == null
+          ? null
+          : DepReport.fromJson(report as Map<String, dynamic>),
+    );
   }
 
   /// What changes if [package] moves to its newest published version.

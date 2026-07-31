@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:frontend/api/api_client.dart';
 import 'package:frontend/main.dart';
+import 'package:frontend/platform/app_surface.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared/shared.dart';
@@ -77,6 +78,9 @@ Future<void> pumpList(
   ApiClient api, {
   bool archived = false,
   List<Project>? projects,
+  // The app build, where the swipe exists. A test that wants the browser says
+  // so; see the `on the browser build` group.
+  AppSurface surface = AppSurface.app,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -85,6 +89,7 @@ Future<void> pumpList(
           future: Future.value(projects ?? _projects),
           api: api,
           archived: archived,
+          surface: surface,
         ),
       ),
     ),
@@ -224,7 +229,60 @@ void main() {
     });
   });
 
-  // A swipe is invisible with a mouse, and this app runs on the web.
+  group('on the browser build', () {
+    testWidgets('rows cannot be swiped', (tester) async {
+      final recorder = _Recorder();
+      await pumpList(
+        tester,
+        recorder.client(projects: _projects),
+        surface: AppSurface.browser,
+      );
+
+      expect(find.byType(Dismissible), findsNothing);
+    });
+
+    testWidgets('a drag across a row deletes nothing', (tester) async {
+      // The gesture is not merely hidden — it must not fire. A mouse drag
+      // across a list is an ordinary thing to do by accident, and on the old
+      // build a rightward one deleted a project.
+      final recorder = _Recorder();
+      await pumpList(
+        tester,
+        recorder.client(projects: _projects),
+        surface: AppSurface.browser,
+      );
+
+      await swipe(tester, 'one', right: true);
+
+      expect(find.text('one'), findsOneWidget);
+      expect(recorder.calls, isNot(contains('DELETE /projects/p1')));
+    });
+
+    testWidgets('the menu still carries both actions', (tester) async {
+      // Removing the gesture removes nothing, because this was always the
+      // discoverable path to the same two actions.
+      final recorder = _Recorder();
+      await pumpList(
+        tester,
+        recorder.client(projects: _projects),
+        surface: AppSurface.browser,
+      );
+
+      await tester.tap(find.byType(PopupMenuButton<String>).first);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Archive'), findsOneWidget);
+      expect(find.text('Delete'), findsOneWidget);
+    });
+
+    testWidgets('the app build keeps its swipe', (tester) async {
+      final recorder = _Recorder();
+      await pumpList(tester, recorder.client(projects: _projects));
+
+      expect(find.byType(Dismissible), findsWidgets);
+    });
+  });
+
   testWidgets('the same actions are reachable from a menu', (tester) async {
     final recorder = _Recorder();
     await pumpList(tester, recorder.client(projects: _projects));
@@ -239,5 +297,42 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(recorder.calls, contains('PATCH /projects/p1'));
+  });
+
+  group('on a wide screen', () {
+    testWidgets('lays projects out in columns instead of one long list',
+        (tester) async {
+      tester.view.physicalSize = const Size(1600, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+
+      final recorder = _Recorder();
+      await pumpList(
+        tester,
+        recorder.client(projects: _projects),
+        surface: AppSurface.browser,
+      );
+
+      expect(find.byType(GridView), findsOneWidget);
+      expect(find.byType(ListView), findsNothing);
+    });
+
+    testWidgets('a narrow window keeps the single-column list', (tester) async {
+      tester.view.physicalSize = const Size(420, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+
+      final recorder = _Recorder();
+      await pumpList(
+        tester,
+        recorder.client(projects: _projects),
+        surface: AppSurface.browser,
+      );
+
+      // A grid forces every cell to one height; a single column of rows should
+      // keep sizing to its content.
+      expect(find.byType(ListView), findsOneWidget);
+      expect(find.byType(GridView), findsNothing);
+    });
   });
 }

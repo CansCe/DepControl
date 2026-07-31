@@ -24,6 +24,22 @@ enum SessionStatus {
   ended,
 }
 
+/// Why a session is over, when it is over for a reason worth naming.
+///
+/// The sign-in screen is the same screen either way, and the sentence above it
+/// is not. "Your session expired" after a deliberate sign-out is untrue, and
+/// after an inactivity sign-out it is misleading in a way that matters: it
+/// suggests a token aged out on its own when in fact this app ended the session
+/// on purpose, and the user can stop that happening by not walking away.
+enum SessionEnding {
+  /// A token was refused and nobody could renew it.
+  expired,
+
+  /// The browser build signed out after a stretch of no interaction. Never
+  /// reached on the installed app, which does not do this.
+  inactivity,
+}
+
 /// Tracks *why* a session ended, so the app can tell the user before the ground
 /// moves under them.
 ///
@@ -47,7 +63,7 @@ class SessionMonitor extends ChangeNotifier {
 
   SessionStatus _status = SessionStatus.live;
   String? _reason;
-  bool _byExpiry = false;
+  SessionEnding? _endedBy;
 
   SessionStatus get status => _status;
 
@@ -55,7 +71,12 @@ class SessionMonitor extends ChangeNotifier {
   /// rather than because someone signed out. The two want different words on
   /// arrival, and "your session expired" after pressing *Sign out* is simply
   /// untrue.
-  bool get endedByExpiry => _status == SessionStatus.ended && _byExpiry;
+  bool get endedByExpiry => endedBy == SessionEnding.expired;
+
+  /// Why the sign-in screen is showing, or null after a deliberate sign-out —
+  /// which needs no explanation, because the user just asked for it.
+  SessionEnding? get endedBy =>
+      _status == SessionStatus.ended ? _endedBy : null;
 
   /// What the server said, when it said anything. Carried through to the
   /// dialog: "Token expired" and "Authentication unavailable" send someone to
@@ -78,7 +99,7 @@ class SessionMonitor extends ChangeNotifier {
     if (_status != SessionStatus.live) return;
     _status = SessionStatus.expiredUnannounced;
     _reason = reason;
-    _byExpiry = true;
+    _endedBy = SessionEnding.expired;
     notifyListeners();
   }
 
@@ -101,17 +122,42 @@ class SessionMonitor extends ChangeNotifier {
   Future<void> signOutRequested() async {
     _status = SessionStatus.ended;
     _reason = null;
-    _byExpiry = false;
+    _endedBy = null;
     notifyListeners();
     await _signOut();
   }
+
+  /// The browser build signed out because nobody had touched it for [idle].
+  ///
+  /// Signs out immediately rather than announcing and waiting, which is the
+  /// opposite of [reportExpired] and deliberately so: the entire point is that
+  /// the token stops being in this browser, and a dialog sitting unanswered on
+  /// an unattended screen would leave it exactly where it was. The notice is
+  /// read afterwards, by whoever comes back.
+  Future<void> signedOutForInactivity(Duration idle) async {
+    if (_status == SessionStatus.ended) return;
+    _status = SessionStatus.ended;
+    _reason = null;
+    _endedBy = SessionEnding.inactivity;
+    _idleFor = idle;
+    notifyListeners();
+    await _signOut();
+  }
+
+  /// How long the browser sat untouched before it signed out, for the sentence
+  /// that says so. Null when the session did not end that way.
+  Duration? get idleFor =>
+      endedBy == SessionEnding.inactivity ? _idleFor : null;
+
+  Duration? _idleFor;
 
   /// A session exists again — forget everything about the last one.
   void reset() {
     if (_status == SessionStatus.live) return;
     _status = SessionStatus.live;
     _reason = null;
-    _byExpiry = false;
+    _endedBy = null;
+    _idleFor = null;
     notifyListeners();
   }
 }

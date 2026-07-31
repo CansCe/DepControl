@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../platform/app_surface.dart';
 import '../theme.dart';
+import 'pin_gate.dart';
 import 'pin_scope.dart';
 import 'pin_store.dart';
 
@@ -17,6 +19,7 @@ class PinPrompt extends StatefulWidget {
     this.store,
     this.userId,
     this.scope,
+    this.surface,
     super.key,
   });
 
@@ -33,12 +36,18 @@ class PinPrompt extends StatefulWidget {
   /// are left open in different ways and the offer says so.
   final PinScope? scope;
 
+  /// Which build this is. The browser has no PIN to offer — see [PinGate] —
+  /// so the offer is not made there. Defaults to the real one; tests pass a
+  /// value.
+  final AppSurface? surface;
+
   @override
   State<PinPrompt> createState() => _PinPromptState();
 }
 
 class _PinPromptState extends State<PinPrompt> {
   late final PinStore _store = widget.store ?? PinStore();
+  late final AppSurface _surface = widget.surface ?? AppSurface.current();
 
   bool _show = false;
 
@@ -49,6 +58,10 @@ class _PinPromptState extends State<PinPrompt> {
   }
 
   Future<void> _decide() async {
+    // Nothing to offer on the browser build: settings there has no PIN card to
+    // send anybody to, so this would be a prompt whose button goes nowhere.
+    if (_surface.isBrowser) return;
+
     final state = await _store.read();
     if (!mounted) return;
     setState(() {

@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../auth/session_monitor.dart';
+import '../platform/app_surface.dart';
 import '../security/app_lock.dart';
 import '../security/pin_field.dart';
 import '../security/pin_scope.dart';
 import '../security/pin_store.dart';
+import '../security/web_session_timeout.dart';
 import '../theme.dart';
 import '../widgets/chrome.dart';
 
@@ -23,6 +25,8 @@ class SettingsScreen extends StatefulWidget {
     this.lock,
     this.store,
     this.scope,
+    this.surface,
+    this.idleLimit = WebSessionTimeout.defaultIdleLimit,
     this.onSignOut,
     super.key,
   });
@@ -38,6 +42,14 @@ class SettingsScreen extends StatefulWidget {
   /// Defaults to whichever build this is; passed explicitly by tests, which
   /// need to read both wordings without being compiled twice.
   final PinScope? scope;
+
+  /// Which build this is — it decides whether a PIN is offered at all.
+  /// Defaults to the real one; tests pass a value.
+  final AppSurface? surface;
+
+  /// How long the browser may idle before signing out. Only read on the
+  /// browser build, where it is what replaced the PIN.
+  final Duration idleLimit;
 
   final Future<void> Function()? onSignOut;
 
@@ -135,6 +147,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final surface = widget.surface ?? AppSurface.current();
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -169,7 +182,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     children: [
                       _SessionCard(expiresAt: _expiresAt),
                       const SizedBox(height: 16),
-                      if (_loading)
+                      // The browser has no PIN to offer: it is not built,
+                      // cannot be set, and would not have locked anything the
+                      // developer console could not reach anyway. What guards
+                      // an unattended tab there is the idle sign-out, so that
+                      // is what this card describes instead.
+                      if (surface.isBrowser)
+                        _IdleSignOutCard(idleLimit: widget.idleLimit)
+                      else if (_loading)
                         const Card(
                           child: Padding(
                             padding: EdgeInsets.all(28),
@@ -251,6 +271,66 @@ class _SessionCard extends StatelessWidget {
 }
 
 /// The PIN section: what is set, what to do about it, and what it is worth.
+/// What guards an unattended tab on the browser build, in place of the PIN.
+///
+/// Not presented as a setting, because it is not one: there is no control here.
+/// It is stated rather than offered so that somebody who goes looking for the
+/// PIN they had on their phone finds out what replaced it and why, instead of
+/// concluding the web build simply has no protection.
+class _IdleSignOutCard extends StatelessWidget {
+  const _IdleSignOutCard({required this.idleLimit});
+
+  final Duration idleLimit;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final minutes = idleLimit.inMinutes;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.timer_outlined, size: 20),
+                const SizedBox(width: 10),
+                Text('Idle sign-out', style: theme.textTheme.titleMedium),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'This browser signs out after $minutes minutes with no '
+              'activity, so a tab left open on a shared machine does not stay '
+              'signed in. You get a warning first.',
+              style: theme.textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 14),
+            Text(PinScope.heading, style: theme.textTheme.titleSmall),
+            const SizedBox(height: 6),
+            Text(
+              // The same honesty the PIN's own explanation was written with:
+              // say what the measure reaches and what it does not, because the
+              // gap is where somebody makes a bad assumption.
+              'It ends the session in this browser, which is more than a '
+              'screen lock did — the old PIN sat in front of a token that was '
+              'still readable from the developer console.\n\n'
+              'It does not reach a token somebody has already copied. Signing '
+              'out clears this browser\'s copy; it does not tell the API to '
+              'refuse one taken earlier, and that stays usable until it '
+              'expires on its own. If a machine is lost rather than merely '
+              'left open, treat the session as compromised.',
+              style: theme.textTheme.bodySmall?.copyWith(color: Palette.slate),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _PinCard extends StatelessWidget {
   const _PinCard({
     required this.pin,

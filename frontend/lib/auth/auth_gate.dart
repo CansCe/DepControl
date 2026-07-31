@@ -203,13 +203,25 @@ class _SessionGateState extends State<SessionGate> {
 
   /// What to say on the sign-in screen when the user did not choose to be
   /// there. Null after a deliberate sign-out, which needs no explanation.
-  String? get _arrivalNotice {
-    if (!widget.monitor.endedByExpiry) return null;
-    final reason = widget.monitor.reason;
-    return reason == null
-        ? 'Your session expired, so you were signed out.'
-        : 'Your session expired, so you were signed out. The server said: '
-            '$reason';
+  String? get _arrivalNotice => switch (widget.monitor.endedBy) {
+        null => null,
+        SessionEnding.expired => switch (widget.monitor.reason) {
+            null => 'Your session expired, so you were signed out.',
+            final reason =>
+              'Your session expired, so you were signed out. The server '
+                  'said: $reason',
+          },
+        // Says what happened *and* why, because unlike an expiry this was a
+        // decision this app made and the reader is entitled to know the rule.
+        SessionEnding.inactivity => 'Signed out after '
+            '${_minutes(widget.monitor.idleFor)} with no activity, so no '
+            'session was left open in this browser.',
+      };
+
+  static String _minutes(Duration? idle) {
+    final minutes = idle?.inMinutes ?? 0;
+    if (minutes <= 0) return 'a period';
+    return minutes == 1 ? '1 minute' : '$minutes minutes';
   }
 
   @override

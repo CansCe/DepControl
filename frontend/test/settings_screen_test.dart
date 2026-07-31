@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:frontend/platform/app_surface.dart';
 import 'package:frontend/screens/settings_screen.dart';
 import 'package:frontend/security/app_lock.dart';
 import 'package:frontend/security/pin_scope.dart';
@@ -17,6 +18,9 @@ Future<void> pumpSettings(
   AppLock? lock,
   DateTime? expiresAt,
   PinScope? scope,
+  // The installed app, where the PIN exists. A test that wants the browser
+  // says so.
+  AppSurface surface = AppSurface.app,
   Future<void> Function()? onSignOut,
 }) async {
   await tester.pumpWidget(
@@ -28,6 +32,7 @@ Future<void> pumpSettings(
         store: store,
         lock: lock ?? AppLock(store: store),
         scope: scope,
+        surface: surface,
         onSignOut: onSignOut ?? () async {},
       ),
     ),
@@ -217,5 +222,59 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(signOuts, 1);
+  });
+
+  group('on the browser build', () {
+    testWidgets('offers no PIN at all', (tester) async {
+      await pumpSettings(
+        tester,
+        store: await emptyStore(),
+        surface: AppSurface.browser,
+      );
+
+      // Nothing to set, change or remove: PinGate does not lock a browser, so
+      // a control here would arm something that never fires.
+      //
+      // Controls, not mentions — the card that replaced this one names the PIN
+      // on purpose, to tell somebody who had one on their phone what happened
+      // to it here.
+      expect(find.text('Set a PIN'), findsNothing);
+      expect(find.text('Change PIN'), findsNothing);
+      expect(find.text('Remove PIN'), findsNothing);
+    });
+
+    testWidgets('says what guards an unattended tab instead', (tester) async {
+      await pumpSettings(
+        tester,
+        store: await emptyStore(),
+        surface: AppSurface.browser,
+      );
+
+      expect(find.text('Idle sign-out'), findsOneWidget);
+      expect(find.textContaining('30 minutes with no activity'), findsOneWidget);
+    });
+
+    testWidgets('is honest about what it does not reach', (tester) async {
+      // The same standard the PIN's own explanation was held to: name the gap,
+      // because the gap is where somebody makes a bad assumption.
+      await pumpSettings(
+        tester,
+        store: await emptyStore(),
+        surface: AppSurface.browser,
+      );
+
+      expect(
+        find.textContaining('does not reach a token somebody has already '
+            'copied'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('the installed app still gets its PIN card', (tester) async {
+      await pumpSettings(tester, store: await emptyStore());
+
+      expect(find.textContaining('PIN'), findsWidgets);
+      expect(find.text('Idle sign-out'), findsNothing);
+    });
   });
 }

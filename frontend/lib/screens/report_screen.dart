@@ -5,6 +5,9 @@ import 'package:shared/shared.dart';
 
 import '../api/api_client.dart';
 import '../auth/session_monitor.dart';
+import '../export/file_download.dart';
+import '../export/report_export.dart';
+import '../platform/breakpoints.dart';
 import '../scans/scan_queue.dart';
 import '../theme.dart';
 import '../widgets/chrome.dart';
@@ -42,6 +45,28 @@ class _ReportScreenState extends State<ReportScreen> {
   late Future<DepReport?> _report;
   late Project _project;
 
+  /// The report once it has landed, so the app bar can offer to export it.
+  ///
+  /// Held beside the future rather than read out of the [FutureBuilder]: the
+  /// export lives in the app bar, which is built outside the builder and
+  /// cannot see its snapshot.
+  DepReport? _loaded;
+
+  /// Watches [_report] so [_loaded] follows it, including after a re-analysis
+  /// replaces the future.
+  void _trackReport() {
+    final pending = _report;
+    pending.then((report) {
+      // A second re-analysis can land while the first is in flight; only the
+      // newest future is allowed to set what the app bar exports.
+      if (!mounted || !identical(pending, _report)) return;
+      setState(() => _loaded = report);
+    }).catchError((Object _) {
+      if (!mounted || !identical(pending, _report)) return;
+      setState(() => _loaded = null);
+    });
+  }
+
   ScanQueue get _scans => widget.scans ?? ScanQueue.instance;
   StreamSubscription<ScanTask>? _scanResults;
 
@@ -50,6 +75,7 @@ class _ReportScreenState extends State<ReportScreen> {
     super.initState();
     _project = widget.project;
     _report = widget.api.report(_project.id);
+    _trackReport();
     _scans.addListener(_onScansChanged);
     // Picks up a re-analysis of this project whoever started it and wherever
     // they were standing — including one they started here, left, and came
@@ -79,6 +105,9 @@ class _ReportScreenState extends State<ReportScreen> {
       setState(() {
         _project = project;
         _report = Future.value(report);
+        // Already in hand, so the export follows the re-analysis immediately
+        // rather than waiting for a future that is already complete.
+        _loaded = report;
       });
     }
     // Failures are not announced here. The panel is already showing this scan,
@@ -94,7 +123,9 @@ class _ReportScreenState extends State<ReportScreen> {
     final report = widget.api.report(_project.id);
     setState(() {
       _report = report;
+      _loaded = null;
     });
+    _trackReport();
   }
 
   /// Queues a re-fetch and re-analysis of the repository.
@@ -105,25 +136,77 @@ class _ReportScreenState extends State<ReportScreen> {
   /// nothing would ever read.
   void _reanalyze() => _scans.reanalyze(widget.api, _project);
 
+  /// Writes the report out as a file.
+  ///
+  /// CSV for a spreadsheet, JSON for a script. Failures are announced rather
+  /// than swallowed: a download that does nothing looks identical to a browser
+  /// that saved it somewhere unexpected, and the two want different responses.
+  Future<void> _export(DepReport report, {required bool asCsv}) async {
+    try {
+      await downloadText(
+        ReportExport.filename(
+          _project,
+          report,
+          extension: asCsv ? 'csv' : 'json',
+        ),
+        asCsv ? ReportExport.toCsv(report) : ReportExport.toJson(report),
+        mimeType: asCsv ? 'text/csv' : 'application/json',
+      );
+    } on Object catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text('Could not export: $error')));
+    }
+  }
+
   /// Shows how a package ends up in the project.
+  ///
+  /// A bottom sheet on a phone and a side panel on a desktop, which is a real
+  /// difference rather than a stylistic one. A sheet rising from the bottom of
+  /// a 1440-pixel-tall window either covers the table it is explaining or
+  /// leaves most of itself empty, and the reader loses the row they clicked.
+  /// A panel down the side keeps both on screen, which is the whole reason to
+  /// have the width.
   void _explain(DepNode node, DepReport report) {
+    final detail = PackageDetailView(
+      package: node.name,
+      nodes: report.nodes,
+      selected: node,
+      showCurrency: !_project.isArchived,
+      // No loader for an archived project: the sheet then explains why the
+      // package is present without asking what upgrading it would involve.
+      onLoadDetails: _project.isArchived
+          ? null
+          : () => widget.api.upgradeDetails(_project.id, node.name),
+    );
+
+    if (Layout.of(context) == Layout.expanded) {
+      showGeneralDialog<void>(
+        context: context,
+        barrierDismissible: true,
+        barrierLabel: 'Close ${node.name}',
+        barrierColor: Colors.black54,
+        transitionDuration: const Duration(milliseconds: 180),
+        pageBuilder: (_, __, ___) => _SidePanel(child: detail),
+        transitionBuilder: (_, animation, __, child) => SlideTransition(
+          position: Tween(
+            begin: const Offset(1, 0),
+            end: Offset.zero,
+          ).animate(
+            CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+          ),
+          child: child,
+        ),
+      );
+      return;
+    }
+
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
-      builder: (_) => SingleChildScrollView(
-        child: PackageDetailView(
-          package: node.name,
-          nodes: report.nodes,
-          selected: node,
-          showCurrency: !_project.isArchived,
-          // No loader for an archived project: the sheet then explains why the
-          // package is present without asking what upgrading it would involve.
-          onLoadDetails: _project.isArchived
-              ? null
-              : () => widget.api.upgradeDetails(_project.id, node.name),
-        ),
-      ),
+      builder: (_) => SingleChildScrollView(child: detail),
     );
   }
 
@@ -170,6 +253,27 @@ class _ReportScreenState extends State<ReportScreen> {
                 style: TextButton.styleFrom(foregroundColor: Colors.white),
                 icon: const Icon(Icons.sync, size: 18),
                 label: const Text('Re-analyze'),
+              ),
+            // Only where a file can actually go somewhere, and only once there
+            // is a report to write. An archived project exports too: a
+            // snapshot is a thing people want to take away precisely because
+            // it will not change.
+            if (canDownload && _loaded != null)
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.download_outlined, color: Colors.white),
+                tooltip: 'Export',
+                onSelected: (choice) =>
+                    _export(_loaded!, asCsv: choice == 'csv'),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: 'csv',
+                    child: Text('Download CSV'),
+                  ),
+                  PopupMenuItem(
+                    value: 'json',
+                    child: Text('Download JSON'),
+                  ),
+                ],
               ),
             const SizedBox(width: 8),
           ],
@@ -222,81 +326,92 @@ class _ReportScreenState extends State<ReportScreen> {
                   _Summary(project: _project, report: report),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        // Advisories are facts about the versions in the
-                        // snapshot, so they stay. Planning a fix is not — it
-                        // re-fetches the repository, which archiving opted out
-                        // of — so an archived project gets no remediation.
-                        if (report.vulnerable > 0) ...[
-                          _Advisories(
-                            report: report,
-                            onLoadRemediation: _project.isArchived
-                                ? null
-                                : () => widget.api.remediation(_project.id),
+                    // Bounded rather than full-bleed. This page is mostly
+                    // prose-width cards — advisories, licenses, notes — and a
+                    // card stretched across a wide monitor sets a line of text
+                    // the eye cannot track back from. The allowance is generous
+                    // because one of the children is a table: columns want the
+                    // room that sentences do not.
+                    child: BoundedWidth(
+                      max: 1280,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          // Advisories are facts about the versions in the
+                          // snapshot, so they stay. Planning a fix is not — it
+                          // re-fetches the repository, which archiving opted out
+                          // of — so an archived project gets no remediation.
+                          if (report.vulnerable > 0) ...[
+                            _Advisories(
+                              report: report,
+                              onLoadRemediation: _project.isArchived
+                                  ? null
+                                  : () => widget.api.remediation(_project.id),
+                            ),
+                            const SizedBox(height: 16),
+                          ],
+                          // Shown for an archived project too: a license is a
+                          // fact about the versions in the snapshot, the same way
+                          // an advisory is, and judging it costs the server no
+                          // outbound work.
+                          LicensePanel(
+                            key: ValueKey('licenses-${_project.id}'),
+                            load: () => widget.api.licenseReport(_project.id),
+                            onLoadManifest: () =>
+                                widget.api.licenseManifest(_project.id),
+                            onSavePolicy: widget.api.saveLicensePolicy,
+                            onResetPolicy: widget.api.resetLicensePolicy,
                           ),
                           const SizedBox(height: 16),
+                          Card(
+                            child: Padding(
+                              padding:
+                                  const EdgeInsets.fromLTRB(18, 16, 18, 16),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  const Eyebrow('The tree'),
+                                  const SizedBox(height: 6),
+                                  DependencyTree(
+                                    report: report,
+                                    showCurrency: !_project.isArchived,
+                                    onSelect: (node) => _explain(node, report),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          Card(
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  const Eyebrow('Every package'),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    _project.isArchived
+                                        ? 'Select a package to see why it is '
+                                            'here.'
+                                        : 'Select a package to see why it is '
+                                            'here and what upgrading it '
+                                            'involves.',
+                                    style:
+                                        Theme.of(context).textTheme.bodySmall,
+                                  ),
+                                  const SizedBox(height: 6),
+                                  DepTable(
+                                    nodes: report.nodes,
+                                    showCurrency: !_project.isArchived,
+                                    onSelect: (node) => _explain(node, report),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
                         ],
-                        // Shown for an archived project too: a license is a
-                        // fact about the versions in the snapshot, the same way
-                        // an advisory is, and judging it costs the server no
-                        // outbound work.
-                        LicensePanel(
-                          key: ValueKey('licenses-${_project.id}'),
-                          load: () => widget.api.licenseReport(_project.id),
-                          onLoadManifest: () =>
-                              widget.api.licenseManifest(_project.id),
-                          onSavePolicy: widget.api.saveLicensePolicy,
-                          onResetPolicy: widget.api.resetLicensePolicy,
-                        ),
-                        const SizedBox(height: 16),
-                        Card(
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                const Eyebrow('The tree'),
-                                const SizedBox(height: 6),
-                                DependencyTree(
-                                  report: report,
-                                  showCurrency: !_project.isArchived,
-                                  onSelect: (node) => _explain(node, report),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        Card(
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                const Eyebrow('Every package'),
-                                const SizedBox(height: 6),
-                                Text(
-                                  _project.isArchived
-                                      ? 'Select a package to see why it is '
-                                          'here.'
-                                      : 'Select a package to see why it is '
-                                          'here and what upgrading it '
-                                          'involves.',
-                                  style: Theme.of(context).textTheme.bodySmall,
-                                ),
-                                const SizedBox(height: 6),
-                                DepTable(
-                                  nodes: report.nodes,
-                                  showCurrency: !_project.isArchived,
-                                  onSelect: (node) => _explain(node, report),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
                   ),
                 ],
@@ -460,7 +575,8 @@ class _Summary extends StatelessWidget {
               // Deliberately not "no Dart source": this report covers npm too,
               // and naming the wrong language is how a true finding gets read
               // as a bug in the scanner.
-              text: 'Nothing in this repository imports ${_names(unimported)} — '
+              text:
+                  'Nothing in this repository imports ${_names(unimported)} — '
                   '${_count(unimported.length, 'declared dependency', plural: 'declared dependencies')} '
                   'to consider dropping. Build tooling and lint sets are '
                   'already excluded.'
@@ -480,6 +596,55 @@ class _Summary extends StatelessWidget {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+/// A panel down the right-hand edge, full height.
+///
+/// Built from [showGeneralDialog] rather than an `endDrawer`, because the
+/// Scaffold's drawer is one per screen and this has to be able to show a
+/// different package each time without the screen owning which.
+class _SidePanel extends StatelessWidget {
+  const _SidePanel({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final width = MediaQuery.sizeOf(context).width;
+
+    return Align(
+      alignment: Alignment.centerRight,
+      child: SizedBox(
+        // Wide enough for the version tables inside, and never more than a
+        // third of a very wide monitor — a panel that took half of a 4K screen
+        // would be a second page rather than an aside.
+        width: (width * 0.34).clamp(420.0, 620.0),
+        height: double.infinity,
+        child: Material(
+          color: Theme.of(context).colorScheme.surface,
+          elevation: 16,
+          child: SafeArea(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: IconButton(
+                    tooltip: 'Close',
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ),
+                Expanded(
+                  child: SingleChildScrollView(child: child),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

@@ -21,6 +21,11 @@ dependencies:
   # screen, not on the token.
   shared_preferences: ^2.3.0
   supabase_flutter: ^2.16.0
+  # Browser interop for the report export's download, behind a conditional
+  # import so the app build never sees it. Declared rather than relied on
+  # transitively — Flutter already resolves it, so this adds no package to the
+  # tree, only a name to the file that says which ones we meant to have.
+  web: ^1.1.0
 
 dev_dependencies:
   flutter_lints: ^6.0.0

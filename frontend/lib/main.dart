@@ -9,12 +9,15 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'api/api_client.dart';
 import 'auth/auth_gate.dart';
 import 'auth/session_monitor.dart';
+import 'platform/app_surface.dart';
+import 'platform/breakpoints.dart';
+import 'routing/app_route.dart';
+import 'routing/app_router.dart';
 import 'scans/scan_overlay.dart';
 import 'scans/scan_queue.dart';
-import 'screens/report_screen.dart';
-import 'screens/settings_screen.dart';
 import 'security/pin_gate.dart';
 import 'security/pin_prompt.dart';
+import 'security/web_session_timeout.dart';
 import 'theme.dart';
 import 'widgets/chrome.dart';
 
@@ -63,26 +66,55 @@ void _goFullscreen() {
   );
 }
 
-class DepControlApp extends StatelessWidget {
+class DepControlApp extends StatefulWidget {
   const DepControlApp({super.key});
 
   @override
+  State<DepControlApp> createState() => _DepControlAppState();
+}
+
+class _DepControlAppState extends State<DepControlApp> {
+  // Held rather than rebuilt: the delegate *is* the navigation state, and a
+  // fresh one every build would put the app back on the registry on any
+  // rebuild of the root.
+  late final AppRouterDelegate _delegate = AppRouterDelegate(api: ApiClient());
+  final _parser = const AppRouteParser();
+
+  @override
   Widget build(BuildContext context) {
-    return MaterialApp(
+    return MaterialApp.router(
       title: 'DepControl',
       theme: buildTheme(),
-      // Above the Navigator, so a scan reports itself across route changes.
-      // Inside a screen it would be disposed by the very navigation the panel
-      // exists to survive.
-      builder: (context, child) => ScanOverlay(child: child ?? const SizedBox()),
-      // Projects are owned by the signed-in user, so the registry is only
-      // reachable with a session — and, when one is set, past the device PIN.
-      // The PIN sits inside the auth gate because it guards a session that
-      // already exists; there is nothing to lock without one.
-      home: const AuthGate(child: PinGate(child: RegistryScreen())),
+      routerDelegate: _delegate,
+      routeInformationParser: _parser,
+      // Everything that has to outlive a route change wraps the Navigator
+      // rather than sitting inside a screen, where the very navigation it
+      // exists to survive would dispose it.
+      //
+      // Order is deliberate. The auth gate is outermost because a URL is not a
+      // way past it: opening /projects/<id> while signed out shows sign-in, and
+      // the router keeps the route so the report is what appears afterwards.
+      // The session timeout and the PIN sit inside it because both act on a
+      // session that already exists — there is nothing to lock, and nothing to
+      // time out, when nobody is signed in.
+      builder: (context, child) => ScanOverlay(
+        child: AuthGate(
+          child: WebSessionTimeout(
+            child: PinGate(child: child ?? const SizedBox()),
+          ),
+        ),
+      ),
     );
   }
 }
+
+/// Reaches the router from anywhere below it.
+///
+/// A plain lookup rather than an inherited widget: the delegate is created once
+/// in [_DepControlAppState] and never swapped, so there is nothing for
+/// dependents to be notified about.
+AppRouterDelegate routerOf(BuildContext context) =>
+    (Router.of(context).routerDelegate as AppRouterDelegate);
 
 /// Phase 3 entry point: the multi-project registry + an "add by git URL" form.
 class RegistryScreen extends StatefulWidget {
@@ -126,8 +158,38 @@ class _RegistryScreenState extends State<RegistryScreen> {
     _scans.addListener(_onScansChanged);
   }
 
+  /// Watches the router so returning here re-decides the PIN offer.
+  ///
+  /// This used to be the tail of `await Navigator.push(settings)` — settings
+  /// closed, and the line after it bumped the revision. With the address bar
+  /// participating there is no such line: the browser's back button reaches
+  /// this screen without anything here having pushed anything. Listening
+  /// catches that route too, which the old arrangement never did.
+  AppRouterDelegate? _router;
+  bool _wasOnRegistry = true;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final router = Router.maybeOf(context)?.routerDelegate;
+    if (router is! AppRouterDelegate || identical(router, _router)) return;
+    _router?.removeListener(_onRouteChanged);
+    _router = router..addListener(_onRouteChanged);
+  }
+
+  void _onRouteChanged() {
+    if (!mounted) return;
+    final onRegistry = _router?.currentConfiguration is RegistryRoute;
+    // Only the arrival, not every notification while sitting here.
+    if (onRegistry && !_wasOnRegistry) {
+      setState(() => _promptRevision++);
+    }
+    _wasOnRegistry = onRegistry;
+  }
+
   @override
   void dispose() {
+    _router?.removeListener(_onRouteChanged);
     _scans.removeListener(_onScansChanged);
     _urlController.dispose();
     super.dispose();
@@ -190,12 +252,7 @@ class _RegistryScreenState extends State<RegistryScreen> {
   /// Where the account, the session and the device PIN are managed. Signing out
   /// lives there too, so the app bar spends its width on the registry rather
   /// than on account plumbing.
-  Future<void> _openSettings() async {
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
-    );
-    if (mounted) setState(() => _promptRevision++);
-  }
+  void _openSettings() => routerOf(context).go(const AppRoute.settings());
 
   /// The signed-in address, or null where there is no Supabase to ask.
   ///
@@ -269,39 +326,44 @@ class _RegistryScreenState extends State<RegistryScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           InkBand(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Eyebrow(
-                  _showArchived ? 'Archived' : 'Registry',
-                  color: Palette.pub,
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  _showArchived
-                      ? 'Projects you have put out of the way.'
-                      : 'Every project you track, and what it depends on.',
-                  style: display(
-                    theme.textTheme.headlineSmall,
-                    color: Colors.white,
+            // Bounded to the same measure as the list below it, so the heading
+            // and the rows it introduces share a left edge on a wide screen.
+            child: BoundedWidth(
+              max: 1180,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Eyebrow(
+                    _showArchived ? 'Archived' : 'Registry',
+                    color: Palette.pub,
                   ),
-                ),
-                if (!_showArchived) ...[
-                  const SizedBox(height: 18),
-                  _AddForm(
-                    controller: _urlController,
-                    onSubmit: _add,
-                  ),
-                ],
-                if (_error != null) ...[
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 6),
                   Text(
-                    _error!,
-                    style: theme.textTheme.bodySmall
-                        ?.copyWith(color: const Color(0xFFFF9CA8)),
+                    _showArchived
+                        ? 'Projects you have put out of the way.'
+                        : 'Every project you track, and what it depends on.',
+                    style: display(
+                      theme.textTheme.headlineSmall,
+                      color: Colors.white,
+                    ),
                   ),
+                  if (!_showArchived) ...[
+                    const SizedBox(height: 18),
+                    _AddForm(
+                      controller: _urlController,
+                      onSubmit: _add,
+                    ),
+                  ],
+                  if (_error != null) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      _error!,
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: const Color(0xFFFF9CA8)),
+                    ),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
           PinPrompt(
@@ -314,10 +376,16 @@ class _RegistryScreenState extends State<RegistryScreen> {
           Expanded(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
-              child: ProjectList(
-                future: _projects,
-                api: _api,
-                archived: _showArchived,
+              // Bounded, so a wide monitor gives more columns rather than
+              // wider rows — a project name and its menu at opposite ends of a
+              // 2560-pixel row is a head-turn to read.
+              child: BoundedWidth(
+                max: 1180,
+                child: ProjectList(
+                  future: _projects,
+                  api: _api,
+                  archived: _showArchived,
+                ),
               ),
             ),
           ),
@@ -381,12 +449,17 @@ class ProjectList extends StatelessWidget {
     required this.future,
     required this.api,
     this.archived = false,
+    this.surface,
     super.key,
   });
 
   final Future<List<Project>> future;
   final ApiClient api;
   final bool archived;
+
+  /// Which build this is — it decides whether rows can be swiped. Defaults to
+  /// the real one; a widget test runs on neither platform and passes a value.
+  final AppSurface? surface;
 
   @override
   Widget build(BuildContext context) {
@@ -410,7 +483,9 @@ class ProjectList extends StatelessWidget {
           }
           return Center(
             child: Text(
-              error is ApiException ? error.message : 'Could not load projects.',
+              error is ApiException
+                  ? error.message
+                  : 'Could not load projects.',
               style: TextStyle(color: Theme.of(context).colorScheme.error),
               textAlign: TextAlign.center,
             ),
@@ -432,6 +507,7 @@ class ProjectList extends StatelessWidget {
           projects: projects,
           api: api,
           archived: archived,
+          surface: surface,
         );
       },
     );
@@ -445,6 +521,7 @@ class _ProjectRows extends StatefulWidget {
     required this.projects,
     required this.api,
     required this.archived,
+    this.surface,
     super.key,
   });
 
@@ -453,6 +530,10 @@ class _ProjectRows extends StatefulWidget {
 
   /// Whether this is the archived view, which swaps archiving for restoring.
   final bool archived;
+
+  /// Which build this is. Defaults to the real one; injectable so a widget
+  /// test can drive both without running on either platform.
+  final AppSurface? surface;
 
   @override
   State<_ProjectRows> createState() => _ProjectRowsState();
@@ -572,100 +653,136 @@ class _ProjectRowsState extends State<_ProjectRows> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final surface = widget.surface ?? AppSurface.current();
+
+    final columns = Layout.of(context).registryColumns;
+
+    // One column is a list; more is a grid. Not the same widget with a
+    // different count, because a grid forces every cell to one height and a
+    // single-column list of rows should keep sizing to its content.
+    if (columns > 1) {
+      return GridView.builder(
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: columns,
+          mainAxisSpacing: 10,
+          crossAxisSpacing: 10,
+          // Wide and short: a project row is a name over a URL, and a squarer
+          // cell would be mostly empty.
+          mainAxisExtent: 88,
+        ),
+        itemCount: _projects.length,
+        itemBuilder: (context, i) => _row(context, theme, surface, i),
+      );
+    }
 
     return ListView.separated(
       itemCount: _projects.length,
       separatorBuilder: (_, __) => const SizedBox(height: 10),
-      itemBuilder: (context, i) {
-        final project = _projects[i];
+      itemBuilder: (context, i) => _row(context, theme, surface, i),
+    );
+  }
 
-        return Dismissible(
-          key: _keyFor(project),
-          // Swipe right deletes; swipe left archives (or restores).
-          background: _SwipeBackground(
-            alignment: Alignment.centerLeft,
-            color: theme.colorScheme.error,
-            icon: Icons.delete_outline,
-            label: 'Delete',
+  /// One project, with or without the swipe wrapper.
+  Widget _row(
+    BuildContext context,
+    ThemeData theme,
+    AppSurface surface,
+    int i,
+  ) {
+    final project = _projects[i];
+
+    // Opaque, so that on the app build the row slides *over* the action
+    // rather than letting its colour through. A bare ListTile has no
+    // background of its own, which tinted the icon, text and menu the
+    // colour of whichever action was being revealed.
+    final row = Material(
+      color: Palette.paper,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Palette.ink.withValues(alpha: 0.10)),
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.fromLTRB(14, 8, 10, 8),
+        leading: Container(
+          padding: const EdgeInsets.all(9),
+          decoration: BoxDecoration(
+            color: (widget.archived ? Palette.slate : Palette.pub)
+                .withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(10),
           ),
-          secondaryBackground: _SwipeBackground(
-            alignment: Alignment.centerRight,
-            color: widget.archived ? Colors.green.shade700 : Colors.blueGrey,
-            icon: widget.archived
-                ? Icons.unarchive_outlined
-                : Icons.archive_outlined,
-            label: widget.archived ? 'Restore' : 'Archive',
+          child: Icon(
+            widget.archived
+                ? Icons.inventory_2_outlined
+                : Icons.folder_outlined,
+            size: 20,
+            color: widget.archived ? Palette.slate : Palette.pub,
           ),
-          confirmDismiss: (direction) async {
-            if (direction == DismissDirection.startToEnd) {
-              return _confirmDelete(project);
-            }
-            return true;
+        ),
+        title: Text(
+          project.name,
+          style: theme.textTheme.titleSmall,
+        ),
+        subtitle: Text(
+          '${project.gitUrl} @ ${project.ref}',
+          style: mono(theme.textTheme.bodySmall, color: Palette.slate),
+        ),
+        // The only way to reach these on the browser build, where there
+        // is no swipe — and the way most people reach them on the app
+        // build too, since a swipe is not discoverable.
+        trailing: _RowActions(
+          archived: widget.archived,
+          onArchive: () => _archive(project, i, archive: !widget.archived),
+          onDelete: () async {
+            if (await _confirmDelete(project)) await _delete(project, i);
           },
-          onDismissed: (direction) {
-            if (direction == DismissDirection.startToEnd) {
-              _delete(project, i);
-            } else {
-              _archive(project, i, archive: !widget.archived);
-            }
-          },
-          // Opaque, so the row slides *over* the action rather than letting its
-          // colour through. A bare ListTile has no background of its own, which
-          // tinted the icon, text and menu the colour of whichever action was
-          // being revealed.
-          child: Material(
-            color: Palette.paper,
-            clipBehavior: Clip.antiAlias,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: BorderSide(color: Palette.ink.withValues(alpha: 0.10)),
-            ),
-            child: ListTile(
-              contentPadding: const EdgeInsets.fromLTRB(14, 8, 10, 8),
-              leading: Container(
-                padding: const EdgeInsets.all(9),
-                decoration: BoxDecoration(
-                  color: (widget.archived ? Palette.slate : Palette.pub)
-                      .withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(
-                  widget.archived
-                      ? Icons.inventory_2_outlined
-                      : Icons.folder_outlined,
-                  size: 20,
-                  color: widget.archived ? Palette.slate : Palette.pub,
-                ),
-              ),
-              title: Text(
-                project.name,
-                style: theme.textTheme.titleSmall,
-              ),
-              subtitle: Text(
-                '${project.gitUrl} @ ${project.ref}',
-                style: mono(theme.textTheme.bodySmall, color: Palette.slate),
-              ),
-              // A swipe is invisible with a mouse, and this runs on the web.
-              trailing: _RowActions(
-                archived: widget.archived,
-                onArchive: () =>
-                    _archive(project, i, archive: !widget.archived),
-                onDelete: () async {
-                  if (await _confirmDelete(project)) await _delete(project, i);
-                },
-              ),
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (_) => ReportScreen(
-                    project: project,
-                    api: widget.api,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        );
+        ),
+        // Through the router, so the address bar follows and the report
+        // can be linked to. The project goes with it, so the screen it
+        // opens needs no round trip — that cost falls only on a deep
+        // link, which has an id and nothing else.
+        onTap: () => routerOf(context).openReport(project),
+      ),
+    );
+
+    // No swipe in a browser. A drag across a row is a gesture people make
+    // on a phone and one nobody makes with a mouse: it is invisible until
+    // it is discovered by accident, and when it *is* discovered by accident
+    // it deletes something. The row menu carries both actions on both
+    // builds, so nothing is lost by leaving the gesture off the surface it
+    // never suited.
+    if (surface.isBrowser) return row;
+
+    return Dismissible(
+      key: _keyFor(project),
+      // Swipe right deletes; swipe left archives (or restores).
+      background: _SwipeBackground(
+        alignment: Alignment.centerLeft,
+        color: theme.colorScheme.error,
+        icon: Icons.delete_outline,
+        label: 'Delete',
+      ),
+      secondaryBackground: _SwipeBackground(
+        alignment: Alignment.centerRight,
+        color: widget.archived ? Colors.green.shade700 : Colors.blueGrey,
+        icon:
+            widget.archived ? Icons.unarchive_outlined : Icons.archive_outlined,
+        label: widget.archived ? 'Restore' : 'Archive',
+      ),
+      confirmDismiss: (direction) async {
+        if (direction == DismissDirection.startToEnd) {
+          return _confirmDelete(project);
+        }
+        return true;
       },
+      onDismissed: (direction) {
+        if (direction == DismissDirection.startToEnd) {
+          _delete(project, i);
+        } else {
+          _archive(project, i, archive: !widget.archived);
+        }
+      },
+      child: row,
     );
   }
 }
