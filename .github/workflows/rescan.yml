@@ -54,11 +54,35 @@ jobs:
       # Flutter rather than plain Dart because `frontend` is a member too.
       - run: flutter pub get
 
+      # Fails with the actual cause rather than leaving the CLI to report a
+      # missing variable and leaving you to work out why it is missing.
+      #
+      # The trap this exists for: a secret added under an *environment* is
+      # invisible to a job that does not declare `environment:`. Both spellings
+      # look identical on the settings page, and the symptom is an empty string
+      # rather than an error.
+      - name: Check the database secret is visible
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::DATABASE_URL is empty in this job."
+            echo "Set it as a *repository* secret (Settings -> Secrets and"
+            echo "variables -> Actions -> Repository secrets)."
+            echo "A secret scoped to an environment is not visible here, because"
+            echo "this job does not declare 'environment:'."
+            exit 1
+          fi
+          echo "DATABASE_URL is set (${#DATABASE_URL} characters)."
+
       - name: Re-scan and announce
         working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+          # Read from either. It is the public address of the front end, so a
+          # variable is the right home for it — but a secret works and is where
+          # it is easy to put it by mistake, and an empty link is a silent loss.
+          APP_BASE_URL: ${{ vars.APP_BASE_URL || secrets.APP_BASE_URL }}
           ENV: production
         run: |
           dart run tool/rescan.dart --all \

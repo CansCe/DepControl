@@ -27,8 +27,19 @@ jobs:
       # this needs the Flutter SDK rather than plain Dart.
       - run: flutter pub get
       - run: dart analyze backend packages/shared
-      - run: dart test
+      - name: Test
         working-directory: backend
+        # A secret is not an environment variable until it is mapped to one, and
+        # the Postgres integration tests read DATABASE_URL straight from the
+        # process environment. Without this they do not fail — they *skip*, and
+        # a suite that silently stops covering the database layer is worse than
+        # one that goes red.
+        #
+        # Empty when the secret is not configured, which the tests read as "no
+        # database" and skip on, exactly as they do locally.
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: dart test
 
   deploy:
     needs: test

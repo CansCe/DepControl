@@ -165,6 +165,11 @@ class PostgresProjectRepository implements ProjectRepository {
     // folding the second A into the first would stretch that row's window
     // across the period when B held.
     //
+    // "Newest" is ordered by (first_seen_at, seq) rather than the timestamp
+    // alone. The timestamp is unique in practice and not by construction, and a
+    // tie would make this compare against an arbitrary revision — see
+    // backend/sql/report_revision_order.sql.
+    //
     // The check is inside the statement rather than a read followed by a write,
     // so the common case costs one round trip. Two scans of one project
     // finishing at the same moment can still both insert; the result is a
@@ -184,7 +189,7 @@ class PostgresProjectRepository implements ProjectRepository {
           select 1 from (
             select content_digest from dep_report_revisions
             where project_id = @projectId:uuid
-            order by first_seen_at desc
+            order by first_seen_at desc, seq desc
             limit 1
           ) newest
           where newest.content_digest = @digest:text
@@ -226,7 +231,7 @@ class PostgresProjectRepository implements ProjectRepository {
         where id = (
           select id from dep_report_revisions
           where project_id = @projectId:uuid
-          order by first_seen_at desc
+          order by first_seen_at desc, seq desc
           limit 1
         )
         returning $_revisionColumns
@@ -258,7 +263,7 @@ class PostgresProjectRepository implements ProjectRepository {
           and id not in (
             select id from dep_report_revisions
             where project_id = @projectId:uuid
-            order by first_seen_at desc
+            order by first_seen_at desc, seq desc
             limit @keep:int8
           )
       '''),
@@ -273,7 +278,7 @@ class PostgresProjectRepository implements ProjectRepository {
         select project_id, first_seen_at, nodes, manifests, coverage_note
         from dep_report_revisions
         where project_id = @id:uuid
-        order by first_seen_at desc
+        order by first_seen_at desc, seq desc
         limit 1
       '''),
       parameters: {'id': projectId},
@@ -301,7 +306,7 @@ class PostgresProjectRepository implements ProjectRepository {
                  where e.value ->> 'status' = 'vulnerable') as vulnerable
         from dep_report_revisions
         where project_id = @id:uuid
-        order by first_seen_at desc
+        order by first_seen_at desc, seq desc
         limit @limit:int8
       '''),
       parameters: {'id': projectId, 'limit': limit},
