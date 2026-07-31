@@ -1,28 +1,40 @@
-# Cloudflare Pages equivalent of the firebase.json `headers` block.
+# Cache headers for the deployed bundle.
 #
-# Rules are applied in order and later ones win for the same header, so the
-# blanket immutable rule comes first and the entry points override it below.
+# **Cloudflare Pages appends the values of every rule that matches a request.**
+# It does not let a later, more specific rule replace an earlier one. The
+# previous version of this file assumed the opposite — a blanket `immutable`
+# rule first, then `no-cache` overrides for the entry points — and the result
+# was measurable on the live site:
 #
-# Caching everything for a year is safe *because* of those overrides: Flutter's
-# service worker is the version check. It is fetched fresh, compares the asset
-# hashes in its manifest, and re-fetches anything stale with `cache: 'reload'`.
-# main.dart.js and the files under assets/ are not content-hashed, so if the
-# service worker itself were cached, a deploy would never reach anyone.
+#     /index.html   ->  public, max-age=31536000, immutable, no-cache
+#     /             ->  public, max-age=31536000, immutable
+#
+# Both rules concatenated on the first, which is a contradiction browsers are
+# free to resolve either way. The second line is the one that did the damage:
+# `/` never matched the `/index.html` rule at all, so the bare URL everybody
+# actually visits was cached as immutable for a year. The browser stopped
+# asking for the document, never learned a new build existed, and went on
+# serving the first deploy indefinitely — while every per-deployment URL
+# (`<id>.depcontrol.pages.dev`) looked correct, because a new origin has an
+# empty cache.
+#
+# So: **one rule, no overlaps.** Nothing here can contradict anything else,
+# and there is no path that falls through the gap `/` fell through.
+#
+# `no-cache` is not `no-store`. The browser still keeps every asset; it just
+# asks whether its copy is current before using it, and gets a 304 with no body
+# when it is. That costs one conditional request per asset per load and buys
+# deploys that actually reach people — which the year-long `immutable` did not,
+# for anyone who had loaded the site once.
+#
+# Nothing in a Flutter web bundle is content-hashed — `main.dart.js`,
+# `flutter_bootstrap.js` and everything under `assets/` keep their names across
+# builds — so there is no file here that `immutable` would be honest about.
+# `canvaskit/` is the one arguable exception, and one rule that cannot go wrong
+# is worth more than a few saved 304s on it.
+#
+# Anything in frontend/web/ is copied verbatim into build/web/ by
+# `flutter build web`, which is how this reaches the deployed bundle.
 
 /*
-  Cache-Control: public, max-age=31536000, immutable
-
-/index.html
-  Cache-Control: no-cache
-
-/flutter_bootstrap.js
-  Cache-Control: no-cache
-
-/flutter_service_worker.js
-  Cache-Control: no-cache
-
-/version.json
-  Cache-Control: no-cache
-
-/manifest.json
   Cache-Control: no-cache

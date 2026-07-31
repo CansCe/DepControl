@@ -97,6 +97,28 @@ The SPA rewrite and cache headers that used to live in `firebase.json` are now
 copies into the bundle. They are versioned with the app rather than configured
 at the host.
 
+### Two URLs, and why deploys can look like they are not landing
+
+Every deploy gets its **own permanent address** — `https://<id>.depcontrol.pages.dev`
+— and that is the link the workflow log and the Cloudflare dashboard hand you.
+It is for inspecting one build. The site is `https://depcontrol.pages.dev`,
+which always serves the newest production deploy.
+
+If the per-deployment URL shows the new version and the main one does not, the
+deploy landed and the *browser* is the thing that is behind. That was a real
+bug here, and it is worth knowing the shape of it: `_headers` was written
+assuming a later rule replaces an earlier one for the same header. **Cloudflare
+Pages appends them instead**, and — worse — a rule for `/index.html` does not
+match a request for `/`. So the bare URL was served `immutable, max-age=1 year`
+with nothing overriding it, browsers stopped asking for the document, and the
+first deploy stayed on screen for good while every fresh per-deployment origin
+looked fine. `_headers` is now one non-overlapping rule for that reason.
+
+**A browser that already cached the bad response will not pick up the fix on its
+own** — it will not re-request the file it was told to keep for a year. Once,
+per browser: hard reload (`Ctrl`/`Cmd` + `Shift` + `R`). Purging the Cloudflare
+cache does not help with this; the stale copy is on the client, not the edge.
+
 ## 5. Configure the GitHub repository
 
 In **Settings → Secrets and variables → Actions**:
