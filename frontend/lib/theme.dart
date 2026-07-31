@@ -198,7 +198,19 @@ ThemeData buildTheme() {
       ),
       dataTextStyle: text.bodyMedium,
       dividerThickness: 1,
-      headingRowColor: WidgetStatePropertyAll(Palette.mist.withValues(alpha: 0.7)),
+      headingRowColor:
+          WidgetStatePropertyAll(Palette.mist.withValues(alpha: 0.7)),
+      // Tighter than Material's default 48/56. Those heights are sized for a
+      // thumb, and this table is read with a mouse on a screen that shows
+      // fourteen hundred rows: at the default a reader sees eleven of them at
+      // once, and at 38 they see sixteen. The cursor does not need 48 pixels
+      // to hit a row, and the extra five rows are the difference between
+      // scanning a report and scrolling one.
+      dataRowMinHeight: 34,
+      dataRowMaxHeight: 38,
+      headingRowHeight: 38,
+      columnSpacing: 26,
+      horizontalMargin: 14,
     ),
     snackBarTheme: SnackBarThemeData(
       backgroundColor: Palette.ink,

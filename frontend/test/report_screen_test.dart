@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:frontend/api/api_client.dart';
 import 'package:frontend/scans/scan_overlay.dart';
 import 'package:frontend/scans/scan_queue.dart';
+import 'package:frontend/routing/app_route.dart';
 import 'package:frontend/screens/report_screen.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -85,6 +86,16 @@ List<DepNode> largeReport() {
   ];
 }
 
+/// Leaves the top route the way the shell and the browser do.
+///
+/// Pumps one frame rather than settling: a caller that left mid-scan has a
+/// progress indicator on screen which by design never comes to rest, so each
+/// test decides for itself how far to pump afterwards.
+Future<void> goBack(WidgetTester tester) async {
+  tester.state<NavigatorState>(find.byType(Navigator).last).pop();
+  await tester.pump();
+}
+
 void main() {
   group('ReportScreen', () {
     ApiClient apiReturning(DepReport report) => ApiClient(
@@ -109,7 +120,9 @@ void main() {
         MaterialApp(
           builder: (context, child) =>
               ScanOverlay(queue: scans, child: child ?? const SizedBox()),
-          home: ReportScreen(project: project, api: api, scans: scans),
+          home: Scaffold(
+            body: ReportScreen(project: project, api: api, scans: scans),
+          ),
         );
 
     /// A queue of its own per test, so one case's scans cannot show up in the
@@ -159,7 +172,10 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('demo'), findsOneWidget);
 
-      await tester.pageBack();
+      // Popped rather than tapping a back button: the report has no app bar
+      // of its own any more. AppShell carries the navigation, and in a browser
+      // the way back is the browser's own control.
+      await goBack(tester);
       await tester.pumpAndSettle();
 
       expect(tester.takeException(), isNull);
@@ -257,7 +273,10 @@ void main() {
       await tester.tap(find.text('Re-analyze'));
       await tester.pump();
 
-      await tester.pageBack();
+      // Popped rather than tapping a back button: the report has no app bar
+      // of its own any more. AppShell carries the navigation, and in a browser
+      // the way back is the browser's own control.
+      await goBack(tester);
       await tester.pump();
 
       expect(
@@ -324,7 +343,9 @@ void main() {
     testWidgets('selecting a package explains why it is there', (tester) async {
       await tester.pumpWidget(
         MaterialApp(
-          home: ReportScreen(project: project, api: apiReturning(report)),
+          home: Scaffold(
+            body: ReportScreen(project: project, api: apiReturning(report)),
+          ),
         ),
       );
       await tester.pumpAndSettle();
@@ -351,7 +372,9 @@ void main() {
       Future<void> show(WidgetTester tester, DepReport shown) async {
         await tester.pumpWidget(
           MaterialApp(
-            home: ReportScreen(project: project, api: apiReturning(shown)),
+            home: Scaffold(
+              body: ReportScreen(project: project, api: apiReturning(shown)),
+            ),
           ),
         );
         await tester.pumpAndSettle();
@@ -519,7 +542,9 @@ void main() {
       Future<void> show(WidgetTester tester, DepReport shown) async {
         await tester.pumpWidget(
           MaterialApp(
-            home: ReportScreen(project: project, api: apiReturning(shown)),
+            home: Scaffold(
+              body: ReportScreen(project: project, api: apiReturning(shown)),
+            ),
           ),
         );
         await tester.pumpAndSettle();
@@ -691,7 +716,13 @@ void main() {
       testWidgets('shows the band and the score', (tester) async {
         await tester.pumpWidget(
           MaterialApp(
-            home: ReportScreen(project: project, api: apiReturning(graded)),
+            home: Scaffold(
+              body: ReportScreen(
+                project: project,
+                api: apiReturning(graded),
+                tab: ReportTab.advisories,
+              ),
+            ),
           ),
         );
         await tester.pumpAndSettle();
@@ -703,7 +734,13 @@ void main() {
       testWidgets('summarises the breakdown by band', (tester) async {
         await tester.pumpWidget(
           MaterialApp(
-            home: ReportScreen(project: project, api: apiReturning(graded)),
+            home: Scaffold(
+              body: ReportScreen(
+                project: project,
+                api: apiReturning(graded),
+                tab: ReportTab.advisories,
+              ),
+            ),
           ),
         );
         await tester.pumpAndSettle();
@@ -717,7 +754,13 @@ void main() {
       testWidgets('lists the worst package first', (tester) async {
         await tester.pumpWidget(
           MaterialApp(
-            home: ReportScreen(project: project, api: apiReturning(graded)),
+            home: Scaffold(
+              body: ReportScreen(
+                project: project,
+                api: apiReturning(graded),
+                tab: ReportTab.advisories,
+              ),
+            ),
           ),
         );
         await tester.pumpAndSettle();
@@ -733,9 +776,12 @@ void main() {
           (tester) async {
         await tester.pumpWidget(
           MaterialApp(
-            home: ReportScreen(
-              project: project,
-              api: apiReturning(vulnerable),
+            home: Scaffold(
+              body: ReportScreen(
+                project: project,
+                api: apiReturning(vulnerable),
+                tab: ReportTab.advisories,
+              ),
             ),
           ),
         );
@@ -751,9 +797,12 @@ void main() {
           (tester) async {
         await tester.pumpWidget(
           MaterialApp(
-            home: ReportScreen(
-              project: project,
-              api: apiReturning(vulnerable),
+            home: Scaffold(
+              body: ReportScreen(
+                project: project,
+                api: apiReturning(vulnerable),
+                tab: ReportTab.advisories,
+              ),
             ),
           ),
         );
@@ -769,9 +818,12 @@ void main() {
           (tester) async {
         await tester.pumpWidget(
           MaterialApp(
-            home: ReportScreen(
-              project: project,
-              api: apiReturning(vulnerable),
+            home: Scaffold(
+              body: ReportScreen(
+                project: project,
+                api: apiReturning(vulnerable),
+                tab: ReportTab.advisories,
+              ),
             ),
           ),
         );
@@ -785,7 +837,9 @@ void main() {
     testWidgets('shows the dependency summary', (tester) async {
       await tester.pumpWidget(
         MaterialApp(
-          home: ReportScreen(project: project, api: apiReturning(report)),
+          home: Scaffold(
+            body: ReportScreen(project: project, api: apiReturning(report)),
+          ),
         ),
       );
       await tester.pumpAndSettle();

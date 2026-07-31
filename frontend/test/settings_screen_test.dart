@@ -25,15 +25,20 @@ Future<void> pumpSettings(
 }) async {
   await tester.pumpWidget(
     MaterialApp(
-      home: SettingsScreen(
-        email: 'dev@example.com',
-        userId: 'user-1',
-        sessionExpiresAt: expiresAt,
-        store: store,
-        lock: lock ?? AppLock(store: store),
-        scope: scope,
-        surface: surface,
-        onSignOut: onSignOut ?? () async {},
+      // Wrapped in a Scaffold because AppShell provides one in the app: the
+      // screen has no bar of its own any more, and its snack bars need a
+      // Scaffold to present to.
+      home: Scaffold(
+        body: SettingsScreen(
+          email: 'dev@example.com',
+          userId: 'user-1',
+          sessionExpiresAt: expiresAt,
+          store: store,
+          lock: lock ?? AppLock(store: store),
+          scope: scope,
+          surface: surface,
+          onSignOut: onSignOut ?? () async {},
+        ),
       ),
     ),
   );

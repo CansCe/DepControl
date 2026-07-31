@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:frontend/api/api_client.dart';
+import 'package:frontend/routing/app_route.dart';
 import 'package:frontend/screens/report_screen.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -67,9 +68,20 @@ Project project({bool archived = false}) => Project(
   return (api: api, calls: calls);
 }
 
-Future<void> pump(WidgetTester tester, Project p, ApiClient api) async {
+Future<void> pump(
+  WidgetTester tester,
+  Project p,
+  ApiClient api, {
+  // The report opens on its packages, so a test about advisories or licenses
+  // has to say which panel it means.
+  ReportTab tab = ReportTab.packages,
+}) async {
   await tester.pumpWidget(
-    MaterialApp(home: ReportScreen(project: p, api: api)),
+    MaterialApp(
+      // AppShell provides the Scaffold in the app; the screen has no bar of
+      // its own any more.
+      home: Scaffold(body: ReportScreen(project: p, api: api, tab: tab)),
+    ),
   );
   await tester.pumpAndSettle();
 }
@@ -116,7 +128,12 @@ void main() {
     testWidgets('keeps advisories but not the remediation offer',
         (tester) async {
       final c = clientFor();
-      await pump(tester, project(archived: true), c.api);
+      await pump(
+        tester,
+        project(archived: true),
+        c.api,
+        tab: ReportTab.advisories,
+      );
 
       expect(find.textContaining('GHSA-demo'), findsWidgets);
       expect(find.textContaining('Work out how to fix'), findsNothing);
@@ -131,6 +148,24 @@ void main() {
       final c = clientFor();
       await pump(tester, project(archived: true), c.api);
 
+      // One call, not two. Splitting the report into panels made the license
+      // report lazy: it is fetched when somebody opens that tab rather than on
+      // every visit to every report, which is a saved round trip per view.
+      expect(c.calls, ['GET /projects/p1']);
+    });
+
+    testWidgets('fetches the license report when that panel is opened',
+        (tester) async {
+      final c = clientFor();
+      await pump(
+        tester,
+        project(archived: true),
+        c.api,
+        tab: ReportTab.licenses,
+      );
+
+      // Still stored data on both counts: the policy runs over rows already in
+      // the database, which is why archiving does not take it away.
       expect(c.calls, ['GET /projects/p1', 'GET /projects/p1/licenses']);
     });
   });
@@ -143,6 +178,13 @@ void main() {
       expect(find.text('Re-analyze'), findsOneWidget);
       expect(find.text('outdated'), findsWidgets);
       expect(find.text('Latest'), findsOneWidget);
+    });
+
+    testWidgets('offers to plan a fix, which archiving is what removes',
+        (tester) async {
+      final c = clientFor();
+      await pump(tester, project(), c.api, tab: ReportTab.advisories);
+
       expect(find.textContaining('Work out how to fix'), findsOneWidget);
     });
   });

@@ -139,7 +139,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _signOut() async {
-    final handler = widget.onSignOut ?? SessionMonitor.instance.signOutRequested;
+    final handler =
+        widget.onSignOut ?? SessionMonitor.instance.signOutRequested;
     await handler();
     if (mounted) Navigator.of(context).maybePop();
   }
@@ -149,80 +150,79 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final theme = Theme.of(context);
     final surface = widget.surface ?? AppSurface.current();
 
-    return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(title: const Text('Settings')),
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          InkBand(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Eyebrow('Account', color: Palette.pub),
-                const SizedBox(height: 6),
-                Text(
-                  _email ?? 'Signed in',
-                  style: display(
-                    theme.textTheme.headlineSmall,
-                    color: Colors.white,
-                  ),
+    // No Scaffold and no app bar: [AppShell] draws the header around this, and
+    // the section is already marked there. The ink band below is what names
+    // this screen.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        InkBand(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Eyebrow('Account', color: Palette.pub),
+              const SizedBox(height: 6),
+              Text(
+                _email ?? 'Signed in',
+                style: display(
+                  theme.textTheme.headlineSmall,
+                  color: Colors.white,
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 720),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _SessionCard(expiresAt: _expiresAt),
-                      const SizedBox(height: 16),
-                      // The browser has no PIN to offer: it is not built,
-                      // cannot be set, and would not have locked anything the
-                      // developer console could not reach anyway. What guards
-                      // an unattended tab there is the idle sign-out, so that
-                      // is what this card describes instead.
-                      if (surface.isBrowser)
-                        _IdleSignOutCard(idleLimit: widget.idleLimit)
-                      else if (_loading)
-                        const Card(
-                          child: Padding(
-                            padding: EdgeInsets.all(28),
-                            child: Center(child: CircularProgressIndicator()),
-                          ),
-                        )
-                      else
-                        _PinCard(
-                          pin: _pin,
-                          appliesHere: _pin.appliesTo(_userId),
-                          scope: widget.scope ?? PinScope.current(),
-                          onCreate: () => _runPinTask(PinTask.create),
-                          onChange: () => _runPinTask(PinTask.change),
-                          onRemove: () => _runPinTask(PinTask.remove),
-                          onLockNow: () {
-                            _lock.lockNow();
-                            Navigator.of(context).maybePop();
-                          },
+        ),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 720),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _SessionCard(expiresAt: _expiresAt),
+                    const SizedBox(height: 16),
+                    // The browser has no PIN to offer: it is not built,
+                    // cannot be set, and would not have locked anything the
+                    // developer console could not reach anyway. What guards
+                    // an unattended tab there is the idle sign-out, so that
+                    // is what this card describes instead.
+                    if (surface.isBrowser)
+                      _IdleSignOutCard(idleLimit: widget.idleLimit)
+                    else if (_loading)
+                      const Card(
+                        child: Padding(
+                          padding: EdgeInsets.all(28),
+                          child: Center(child: CircularProgressIndicator()),
                         ),
-                      const SizedBox(height: 16),
-                      OutlinedButton.icon(
-                        onPressed: _signOut,
-                        icon: const Icon(Icons.logout, size: 18),
-                        label: const Text('Sign out'),
+                      )
+                    else
+                      _PinCard(
+                        pin: _pin,
+                        appliesHere: _pin.appliesTo(_userId),
+                        scope: widget.scope ?? PinScope.current(),
+                        onCreate: () => _runPinTask(PinTask.create),
+                        onChange: () => _runPinTask(PinTask.change),
+                        onRemove: () => _runPinTask(PinTask.remove),
+                        onLockNow: () {
+                          _lock.lockNow();
+                          Navigator.of(context).maybePop();
+                        },
                       ),
-                    ],
-                  ),
+                    const SizedBox(height: 16),
+                    OutlinedButton.icon(
+                      onPressed: _signOut,
+                      icon: const Icon(Icons.logout, size: 18),
+                      label: const Text('Sign out'),
+                    ),
+                  ],
                 ),
               ),
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
@@ -610,8 +610,18 @@ class _PinTaskDialogState extends State<PinTaskDialog> {
 /// time, since that is the clock they are looking at.
 String _formatStamp(DateTime time) {
   const months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
   ];
   final local = time.toLocal();
   final minute = local.minute.toString().padLeft(2, '0');

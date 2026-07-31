@@ -18,6 +18,7 @@ import 'scans/scan_queue.dart';
 import 'security/pin_gate.dart';
 import 'security/pin_prompt.dart';
 import 'security/web_session_timeout.dart';
+import 'shell/app_shell.dart';
 import 'theme.dart';
 import 'widgets/chrome.dart';
 
@@ -97,10 +98,18 @@ class _DepControlAppState extends State<DepControlApp> {
       // The session timeout and the PIN sit inside it because both act on a
       // session that already exists — there is nothing to lock, and nothing to
       // time out, when nobody is signed in.
+      // AppShell is innermost of the wrappers and outermost of the page: it
+      // draws the header and the project rail *around* whatever route is
+      // showing, so the rail is built once instead of once per navigation.
       builder: (context, child) => ScanOverlay(
         child: AuthGate(
           child: WebSessionTimeout(
-            child: PinGate(child: child ?? const SizedBox()),
+            child: PinGate(
+              child: AppShell(
+                router: _delegate,
+                child: child ?? const SizedBox(),
+              ),
+            ),
           ),
         ),
       ),
@@ -249,25 +258,18 @@ class _RegistryScreenState extends State<RegistryScreen> {
   /// without a new key it would go on offering a PIN that was just set.
   int _promptRevision = 0;
 
-  /// Where the account, the session and the device PIN are managed. Signing out
-  /// lives there too, so the app bar spends its width on the registry rather
-  /// than on account plumbing.
+  /// Where the account, the session and the device PIN are managed.
+  ///
+  /// Reached from the header now rather than from this screen, but the PIN
+  /// prompt still sends people here, so it stays.
   void _openSettings() => routerOf(context).go(const AppRoute.settings());
 
-  /// The signed-in address, or null where there is no Supabase to ask.
+  /// The signed-in id, or null where there is no Supabase to ask.
   ///
   /// Guarded the same way [PinGate] guards its own lookup: reaching for
   /// `Supabase.instance` before `main` has initialized it throws, which makes
   /// this screen unmountable in a widget test for the sake of one line of
-  /// chrome.
-  String? get _email {
-    try {
-      return supabase.auth.currentUser?.email;
-    } catch (_) {
-      return null;
-    }
-  }
-
+  /// chrome. The address is the header's business now.
   String? get _userId {
     try {
       return supabase.auth.currentUser?.id;
@@ -276,121 +278,115 @@ class _RegistryScreenState extends State<RegistryScreen> {
     }
   }
 
+  /// No Scaffold and no app bar: [AppShell] draws the header, the account and
+  /// the project rail around this, and a second bar inside it would be a second
+  /// copy of the same chrome. What is left is what this screen is actually for
+  /// — adding a repository, and managing the ones already tracked.
+  ///
+  /// The rail is for *switching* projects and this list is for *managing* them:
+  /// the rail shows a name and a ref, and here each row carries the repository,
+  /// when it was analyzed, and the archive and delete actions. Neither is a
+  /// truncated copy of the other.
   @override
   Widget build(BuildContext context) {
-    final email = _email;
-
     final theme = Theme.of(context);
 
-    return Scaffold(
-      // The band is drawn by the body, so the bar floats over it and its
-      // actions land inside the dark area rather than on a strip above it.
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        title: const Text('DepControl'),
-        actions: [
-          IconButton(
-            tooltip: _showArchived ? 'Show active projects' : 'Show archived',
-            icon: Icon(
-              _showArchived
-                  ? Icons.folder_outlined
-                  : Icons.inventory_2_outlined,
-            ),
-            onPressed: () {
-              setState(() => _showArchived = !_showArchived);
-              _reload();
-            },
-          ),
-          if (email != null)
-            Center(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                child: Text(
-                  email,
-                  style: mono(
-                    theme.textTheme.bodySmall,
-                    color: Colors.white.withValues(alpha: 0.7),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        InkBand(
+          // Bounded to the same measure as the list below it, so the heading
+          // and the rows it introduces share a left edge on a wide screen.
+          child: BoundedWidth(
+            max: 1180,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Eyebrow(
+                  _showArchived ? 'Archived' : 'Registry',
+                  color: Palette.pub,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  _showArchived
+                      ? 'Projects you have put out of the way.'
+                      : 'Every project you track, and what it depends on.',
+                  style: display(
+                    theme.textTheme.headlineSmall,
+                    color: Colors.white,
                   ),
                 ),
+                if (!_showArchived) ...[
+                  const SizedBox(height: 18),
+                  _AddForm(
+                    controller: _urlController,
+                    onSubmit: _add,
+                  ),
+                ],
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    _error!,
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: const Color(0xFFFF9CA8)),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+        PinPrompt(
+          key: ValueKey(
+            'pin-prompt-$_userId-$_promptRevision',
+          ),
+          userId: _userId,
+          onSetUp: _openSettings,
+        ),
+        // The toggle lives with the list it filters rather than in a bar
+        // above it. The rail already shows archived projects under their own
+        // heading, so this is about which set is being *managed*, not which
+        // is visible.
+        Padding(
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+          child: BoundedWidth(
+            max: 1180,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: SegmentedButton<bool>(
+                showSelectedIcon: false,
+                style: const ButtonStyle(
+                  visualDensity: VisualDensity.compact,
+                ),
+                segments: const [
+                  ButtonSegment(value: false, label: Text('Active')),
+                  ButtonSegment(value: true, label: Text('Archived')),
+                ],
+                selected: {_showArchived},
+                onSelectionChanged: (selection) {
+                  setState(() => _showArchived = selection.first);
+                  _reload();
+                },
               ),
             ),
-          IconButton(
-            tooltip: 'Settings',
-            icon: const Icon(Icons.settings_outlined),
-            onPressed: _openSettings,
           ),
-          const SizedBox(width: 8),
-        ],
-      ),
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          InkBand(
-            // Bounded to the same measure as the list below it, so the heading
-            // and the rows it introduces share a left edge on a wide screen.
+        ),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 14, 24, 24),
+            // Bounded, so a wide monitor gives more columns rather than
+            // wider rows — a project name and its menu at opposite ends of a
+            // 2560-pixel row is a head-turn to read.
             child: BoundedWidth(
               max: 1180,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Eyebrow(
-                    _showArchived ? 'Archived' : 'Registry',
-                    color: Palette.pub,
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    _showArchived
-                        ? 'Projects you have put out of the way.'
-                        : 'Every project you track, and what it depends on.',
-                    style: display(
-                      theme.textTheme.headlineSmall,
-                      color: Colors.white,
-                    ),
-                  ),
-                  if (!_showArchived) ...[
-                    const SizedBox(height: 18),
-                    _AddForm(
-                      controller: _urlController,
-                      onSubmit: _add,
-                    ),
-                  ],
-                  if (_error != null) ...[
-                    const SizedBox(height: 10),
-                    Text(
-                      _error!,
-                      style: theme.textTheme.bodySmall
-                          ?.copyWith(color: const Color(0xFFFF9CA8)),
-                    ),
-                  ],
-                ],
+              child: ProjectList(
+                future: _projects,
+                api: _api,
+                archived: _showArchived,
               ),
             ),
           ),
-          PinPrompt(
-            key: ValueKey(
-              'pin-prompt-$_userId-$_promptRevision',
-            ),
-            userId: _userId,
-            onSetUp: _openSettings,
-          ),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
-              // Bounded, so a wide monitor gives more columns rather than
-              // wider rows — a project name and its menu at opposite ends of a
-              // 2560-pixel row is a head-turn to read.
-              child: BoundedWidth(
-                max: 1180,
-                child: ProjectList(
-                  future: _projects,
-                  api: _api,
-                  archived: _showArchived,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

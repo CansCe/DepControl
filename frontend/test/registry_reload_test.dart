@@ -81,7 +81,7 @@ Widget _app(ApiClient api, ScanQueue scans) => MaterialApp(
       theme: buildTheme(),
       builder: (context, child) =>
           ScanOverlay(queue: scans, child: child ?? const SizedBox()),
-      home: RegistryScreen(api: api, scans: scans),
+      home: Scaffold(body: RegistryScreen(api: api, scans: scans)),
     );
 
 void main() {
