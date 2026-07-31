@@ -271,4 +271,101 @@ void main() {
 
     expect(s.paths.where((p) => p == '/thing'), hasLength(1));
   });
+
+  group('size', () {
+    test('reads the installed weight npm recorded, and the file count', () async {
+      final s = serving({
+        '/lodash': {
+          'dist-tags': {'latest': '4.17.21'},
+          'versions': {
+            '4.17.21': {
+              'version': '4.17.21',
+              'dist': {'unpackedSize': 1412415, 'fileCount': 1054},
+            },
+          },
+        },
+      });
+
+      final size = await s.registry.sizeOf('lodash', '4.17.21');
+
+      expect(size?.bytes, 1412415);
+      expect(size?.fileCount, 1054);
+      // npm states what the package occupies once installed, which is not what
+      // pub.dev's compressed archive figure means.
+      expect(size?.basis, SizeBasis.unpacked);
+    });
+
+    test('costs no request of its own', () async {
+      // The size rides along in the abbreviated packument the client already
+      // fetches, so adding it to a scan adds nothing to the scan's cost.
+      final s = serving({
+        '/lodash': {
+          'dist-tags': {'latest': '4.17.21'},
+          'versions': {
+            '4.17.21': {
+              'version': '4.17.21',
+              'dist': {'unpackedSize': 1412415},
+            },
+          },
+        },
+      });
+
+      await s.registry.info('lodash');
+      await s.registry.sizeOf('lodash', '4.17.21');
+
+      expect(s.paths.where((p) => p == '/lodash'), hasLength(1));
+    });
+
+    test('a version published before npm recorded sizes reports none', () async {
+      // Not a corner case: `sax` carries unpackedSize on 9 of 54 releases, and
+      // those small old packages are what a tree is full of. Null here, never
+      // zero — a tree that reported its unmeasured half as weightless would
+      // understate itself in the direction this feature exists to expose.
+      final s = serving({
+        '/inherits': {
+          'dist-tags': {'latest': '2.0.4'},
+          'versions': {
+            '2.0.4': {
+              'version': '2.0.4',
+              'dist': {'shasum': 'abc', 'tarball': 'https://x/y.tgz'},
+            },
+          },
+        },
+      });
+
+      expect(await s.registry.sizeOf('inherits', '2.0.4'), isNull);
+    });
+
+    test('tolerates the shapes a registry actually serves', () async {
+      final s = serving({
+        '/odd': {
+          'dist-tags': {'latest': '3.0.0'},
+          'versions': {
+            '1.0.0': {'version': '1.0.0', 'dist': 'not-an-object'},
+            '2.0.0': {'version': '2.0.0', 'dist': {'unpackedSize': '4096'}},
+            '3.0.0': {'version': '3.0.0'},
+          },
+        },
+      });
+
+      expect(await s.registry.sizeOf('odd', '1.0.0'), isNull);
+      // A number served as a string is still a number.
+      expect((await s.registry.sizeOf('odd', '2.0.0'))?.bytes, 4096);
+      expect(await s.registry.sizeOf('odd', '3.0.0'), isNull);
+    });
+
+    test('an unknown package or version reports no size', () async {
+      final s = serving({
+        '/thing': {
+          'dist-tags': {'latest': '1.0.0'},
+          'versions': {
+            '1.0.0': {'version': '1.0.0', 'dist': {'unpackedSize': 10}},
+          },
+        },
+      });
+
+      expect(await s.registry.sizeOf('thing', '9.9.9'), isNull);
+      expect(await s.registry.sizeOf('missing', '1.0.0'), isNull);
+    });
+  });
 }

@@ -162,6 +162,52 @@ class PubApiClient {
   /// to say.
   ///
   /// [package] is validated rather than escaped: a name that is not a package
+  /// The size of a published version's archive, in compressed bytes.
+  ///
+  /// pub.dev publishes no size field anywhere in its API — not in the package
+  /// document, not in the per-version one — so the only measurement available
+  /// is the `Content-Length` of the archive itself, taken with a HEAD so the
+  /// bytes are never transferred.
+  ///
+  /// The URL is built rather than read out of the version document's
+  /// `archive_url`, which would cost a second request per package for a field
+  /// whose value is this exact string. `/api/archives/<name>-<version>.tar.gz`
+  /// is the documented archive endpoint and is what `archive_url` returns.
+  /// Should that ever stop being true the HEAD fails and the package reports no
+  /// size, which is the same outcome as a package pub.dev has never heard of —
+  /// a gap in the report rather than a wrong number in it.
+  ///
+  /// Returns null on any failure, and callers must read that as "not measured".
+  Future<int?> archiveSizeBytes(String package, String version) async {
+    if (!_packageName.hasMatch(package)) return null;
+    // The version comes out of a lockfile the project controls, so it is
+    // untrusted in exactly the way the package name is: it lands in the path.
+    if (!_archiveVersion.hasMatch(version)) return null;
+
+    final http.Response res;
+    try {
+      res = await _client
+          .head(Uri.parse('$baseUrl/api/archives/$package-$version.tar.gz'))
+          .timeout(_timeout);
+    } on TimeoutException {
+      return null;
+    } on http.ClientException {
+      return null;
+    }
+    if (res.statusCode != 200) return null;
+
+    // The raw header, not `Response.contentLength` — that one is derived from
+    // the body, and a HEAD has no body, so it reads 0 for every archive on
+    // pub.dev however large. Trusting it would report the whole ecosystem as
+    // unmeasured while looking like it worked.
+    final length = int.tryParse(res.headers['content-length'] ?? '');
+    return length != null && length > 0 ? length : null;
+  }
+
+  /// A version string safe to interpolate into an archive path: semver's
+  /// character set and nothing else, so no `../` can reach the URL.
+  static final _archiveVersion = RegExp(r'^[0-9A-Za-z.+-]{1,64}$');
+
   /// name is not a request worth making, and refusing it here means no caller
   /// has to remember to check.
   Future<Map<String, dynamic>?> _getJson(String path, String package) async {

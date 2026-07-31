@@ -5,6 +5,7 @@ import 'package:pub_semver/pub_semver.dart';
 import 'dep_node.dart';
 import 'dep_report.dart';
 import 'package_license.dart';
+import 'package_size.dart';
 
 /// A report's nodes read as a graph: what pulls in what, which packages the
 /// repository ended up with twice, and where the edges close a loop.
@@ -159,14 +160,7 @@ class DependencyGraph {
   /// swallowed, because a tree that silently omits a tenth of the lockfile is
   /// worse than one that says which tenth.
   late final List<DepNode> unreachable = () {
-    final reached = <String>{for (final root in roots) root.name};
-    final queue = Queue<String>.of(reached);
-
-    while (queue.isNotEmpty) {
-      for (final child in _adjacency[queue.removeFirst()] ?? const <String>{}) {
-        if (reached.add(child)) queue.add(child);
-      }
-    }
+    final reached = _reachableFrom([for (final root in roots) root.name]);
 
     final orphans = [
       for (final node in nodes)
@@ -188,6 +182,78 @@ class DependencyGraph {
   /// Whether this report merges several pubspecs, which is what makes a name
   /// able to mean two versions.
   late final bool spansManifests = nodes.any((n) => n.manifests.isNotEmpty);
+
+  /// What the whole report weighs, per [SizeBasis], with a count of what could
+  /// not be measured.
+  late final SizeTally weight = SizeTally.of([for (final n in nodes) n.size]);
+
+  /// Every name reachable from [starts], following edges, [starts] included.
+  Set<String> _reachableFrom(Iterable<String> starts) {
+    final reached = <String>{...starts};
+    final queue = Queue<String>.of(reached);
+
+    while (queue.isNotEmpty) {
+      for (final child in _adjacency[queue.removeFirst()] ?? const <String>{}) {
+        if (reached.add(child)) queue.add(child);
+      }
+    }
+    return reached;
+  }
+
+  /// The packages that would leave the tree if [packages] stopped being
+  /// declared — them, plus everything nothing else pulls in.
+  ///
+  /// This is the difference between what a package weighs and what dropping it
+  /// buys you, and for the packages worth dropping the second number is the
+  /// larger one by far. A 40 KB helper that is the only thing pulling in eleven
+  /// transitive packages costs the tree all twelve.
+  ///
+  /// Computed by re-running reachability from the *other* declared packages, so
+  /// three ordinary cases come out right without being special-cased:
+  ///
+  /// * a dependency two roots share reclaims only itself, because the rest
+  ///   stays reachable through the other one;
+  /// * a package that is both declared and pulled in transitively reclaims
+  ///   **nothing** — deleting the line leaves it installed exactly as it was,
+  ///   which is a true answer and a useful one;
+  /// * a cycle among the reclaimed packages falls out whole, since reachability
+  ///   does not care that they point at each other.
+  ///
+  /// Takes a set rather than one name because the answers do not add up. Two
+  /// unused packages that both pull in the same helper each reclaim nothing of
+  /// it on their own, and dropping both reclaims it — so summing the
+  /// single-package answers understates the total, sometimes by a lot. Asking
+  /// about the whole set at once is the only way to get that right.
+  ///
+  /// Returns nodes, alphabetically. A package the report holds at two versions
+  /// contributes both: the edges here are names, and dropping the declaration
+  /// drops whichever versions only it reached.
+  List<DepNode> reclaimedByDropping(Iterable<String> packages) {
+    final dropped = packages.toSet();
+    if (dropped.isEmpty) return const [];
+
+    final survivors = [
+      for (final root in roots)
+        if (!dropped.contains(root.name)) root.name,
+    ];
+
+    final kept = _reachableFrom(survivors);
+    final lost = _reachableFrom(dropped).difference(kept);
+
+    final reclaimed = [
+      for (final node in nodes)
+        if (lost.contains(node.name)) node,
+    ]..sort((a, b) {
+        final byName = a.name.compareTo(b.name);
+        return byName != 0 ? byName : a.installed.compareTo(b.installed);
+      });
+    return List<DepNode>.unmodifiable(reclaimed);
+  }
+
+  /// What [reclaimedByDropping] adds up to — the bytes a deletion actually
+  /// recovers, kept apart by [SizeBasis].
+  SizeTally reclaimableFrom(Iterable<String> packages) =>
+      SizeTally.of([for (final n in reclaimedByDropping(packages)) n.size]);
 
   List<DependencyCycle> _findCycles() {
     // Tarjan, iterating names in sorted order so the same report always yields

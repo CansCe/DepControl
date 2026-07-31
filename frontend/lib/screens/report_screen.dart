@@ -328,6 +328,16 @@ class _Summary extends StatelessWidget {
     final undeclared = report.undeclaredImports;
     final unimported = report.unimportedDeclarations;
 
+    // What the tree weighs, and what dropping the unused part of it would give
+    // back. Both are empty on a report from before size scanning, and on one
+    // whose registries published no sizes — which reads as no figure at all
+    // rather than as a zero.
+    final graph = DependencyGraph.of(report);
+    final weight = graph.weight;
+    final reclaimable = unimported.isEmpty
+        ? SizeTally.empty
+        : graph.reclaimableFrom([for (final n in unimported) n.name]);
+
     return InkBand(
       // The default leaves a toolbar's height of room at the top for an app bar
       // drawn over the band. This one sits below the bar rather than under it,
@@ -381,6 +391,18 @@ class _Summary extends StatelessWidget {
               ),
               if (unknown > 0 && !project.isArchived)
                 _Stat(label: 'unknown', value: unknown),
+              // Install weight, not bundle weight, labelled with the scale it
+              // was measured on. Shown as a stat only where the repository is
+              // one ecosystem and there is therefore one scale; where it holds
+              // both, the two figures do not belong side by side pretending to
+              // be one number, and the note below carries them instead.
+              if (weight.bases.length == 1)
+                _Stat.text(
+                  figure: PackageSize.formatBytes(
+                    weight.bytesOn(weight.bases.single),
+                  ),
+                  label: weight.bases.single.label,
+                ),
             ],
           ),
           const SizedBox(height: 18),
@@ -435,10 +457,26 @@ class _Summary extends StatelessWidget {
             const SizedBox(height: 10),
             _Note(
               icon: Icons.delete_sweep_outlined,
-              text: 'No Dart source imports ${_names(unimported)} — '
+              // Deliberately not "no Dart source": this report covers npm too,
+              // and naming the wrong language is how a true finding gets read
+              // as a bug in the scanner.
+              text: 'Nothing in this repository imports ${_names(unimported)} — '
                   '${_count(unimported.length, 'declared dependency', plural: 'declared dependencies')} '
                   'to consider dropping. Build tooling and lint sets are '
-                  'already excluded.',
+                  'already excluded.'
+                  '${_reclaimNote(reclaimable, unimported.length)}',
+            ),
+          ],
+          // What the sizes are, and what they are not. Kept to one line and
+          // shown only where something was measured.
+          if (!weight.isEmpty) ...[
+            const SizedBox(height: 10),
+            _Note(
+              icon: Icons.scale_outlined,
+              text: 'Weight is ${weight.display} — what these packages take to '
+                  'install, not what a bundler would ship after tree-shaking. '
+                  '${weight.bases.map((b) => b.caveat).join(' ')}'
+                  '${weight.shortfall == null ? '' : ' ${weight.shortfall}'}',
             ),
           ],
         ],
@@ -459,6 +497,25 @@ String _names(List<DepNode> nodes, {int limit = 6}) {
 
 String _count(int n, String noun, {String? plural}) =>
     n == 1 ? '1 $noun' : '$n ${plural ?? '${noun}s'}';
+
+/// What dropping the unused declarations would actually give back, appended to
+/// the note that lists them.
+///
+/// The interesting number is rarely the packages named: it is the transitive
+/// tail that comes out with them, which is why this counts [SizeTally.measured]
+/// rather than [dropped]. Empty when nothing was measured — a report that
+/// cannot say must not imply the saving is nil.
+String _reclaimNote(SizeTally reclaimable, int dropped) {
+  if (reclaimable.isEmpty) return '';
+
+  final extra = reclaimable.measured + reclaimable.unmeasured - dropped;
+  final tail = extra > 0
+      ? ' with ${_count(extra, 'package')} nothing else pulls in'
+      : '';
+
+  return ' Dropping them frees ${reclaimable.display}$tail.'
+      '${reclaimable.shortfall == null ? '' : ' ${reclaimable.shortfall}'}';
+}
 
 /// A line of context inside the header band: what the report covers, or what it
 /// could not.
@@ -510,10 +567,20 @@ String _ago(DateTime time) {
 }
 
 class _Stat extends StatelessWidget {
-  const _Stat({required this.label, required this.value, this.color});
+  const _Stat({required this.label, required int value, this.color})
+      : figure = '$value';
+
+  /// A stat whose figure is not a count — `1.4 MB` beside `installed`.
+  ///
+  /// Never coloured: the palette here means "this needs attention", and a
+  /// dependency tree having a size is not a finding.
+  const _Stat.text({required this.label, required this.figure}) : color = null;
 
   final String label;
-  final int value;
+
+  /// What to print large. A string rather than a number because the tree's
+  /// weight is measured in bytes and reads in megabytes.
+  final String figure;
   final Color? color;
 
   @override
@@ -526,7 +593,7 @@ class _Stat extends StatelessWidget {
       textBaseline: TextBaseline.alphabetic,
       children: [
         Text(
-          '$value',
+          figure,
           style: display(
             theme.textTheme.headlineSmall,
             color: color ?? Colors.white,

@@ -127,21 +127,29 @@ class _DepTableState extends State<DepTable> {
     'Package',
     'Kind',
     'Installed',
+    'Size',
     'Latest',
     'Status',
   ];
 
   /// The last two columns are the comparison against pub.dev, which an
   /// archived project does not make.
+  ///
+  /// Size sits before them rather than at the end so that it survives: what a
+  /// package weighed is a fact about the snapshot, like its advisories and its
+  /// license, not a comparison with what the registry is serving today.
   List<String> get _columnLabels => widget.showCurrency
       ? _allColumnLabels
-      : _allColumnLabels.take(3).toList();
+      : _allColumnLabels.take(4).toList();
 
   Comparable Function(DepNode) _keyForColumn(int column) => switch (column) {
         1 => (n) => n.kind.name,
         2 => (n) => n.installed,
-        3 => (n) => n.latest ?? '',
-        4 => (n) => n.status.index,
+        // Unmeasured sorts below every measured package rather than beside the
+        // small ones — "nobody looked" is not "weighs nothing".
+        3 => (n) => n.size?.bytes ?? -1,
+        4 => (n) => n.latest ?? '',
+        5 => (n) => n.status.index,
         _ => (n) => n.name,
       };
 
@@ -302,6 +310,7 @@ class _DepTableState extends State<DepTable> {
                     // and a monospaced column lets the eye compare `1.2.0`
                     // against `1.10.0` on the digit rather than on the width.
                     Text(n.installed, style: mono(theme.textTheme.bodyMedium)),
+                    _SizeCell(size: n.size),
                     if (widget.showCurrency) ...[
                       Text(
                         n.latest ?? '—',
@@ -323,6 +332,50 @@ class _DepTableState extends State<DepTable> {
               ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// One package's weight, or a dash where nothing was measured.
+///
+/// The dash is doing real work: npm publishes `unpackedSize` only for versions
+/// released since it began recording it, so a tree full of small old packages
+/// is largely dashes, and printing `0 B` there would understate the tree in the
+/// one direction this column exists to expose.
+///
+/// The scale is in the tooltip rather than in the cell. It is the same for
+/// every row of a single-ecosystem report, which is nearly all of them, and
+/// repeating `compressed` down a column costs more width than it returns.
+class _SizeCell extends StatelessWidget {
+  const _SizeCell({required this.size});
+
+  final PackageSize? size;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final measured = size;
+
+    if (measured == null) {
+      return Tooltip(
+        message: 'The registry publishes no size for this version.',
+        child: Text(
+          '—',
+          style: mono(theme.textTheme.bodyMedium, color: Palette.slate),
+        ),
+      );
+    }
+
+    final files = measured.fileCount;
+    return Tooltip(
+      message: [
+        measured.basis.caveat,
+        if (files != null) '$files files.',
+      ].join(' '),
+      child: Text(
+        measured.display,
+        style: mono(theme.textTheme.bodyMedium),
       ),
     );
   }
@@ -490,10 +543,29 @@ class _CompactRow extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 3),
-                  if (showCurrency)
-                    _VersionLine(node: node)
-                  else
-                    Text(node.installed, style: theme.textTheme.bodySmall),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: showCurrency
+                            ? _VersionLine(node: node)
+                            : Text(
+                                node.installed,
+                                style: theme.textTheme.bodySmall,
+                              ),
+                      ),
+                      // Only where there is one. A dash per row would fill a
+                      // narrow layout with the absence of a measurement, which
+                      // is worth a column on a wide table and not worth a line
+                      // here.
+                      if (node.size case final size?) ...[
+                        Text(
+                          '  ·  ${size.display}',
+                          style: theme.textTheme.bodySmall
+                              ?.copyWith(color: Palette.slate),
+                        ),
+                      ],
+                    ],
+                  ),
                 ],
               ),
             ),

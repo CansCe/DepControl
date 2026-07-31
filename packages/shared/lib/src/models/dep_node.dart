@@ -1,5 +1,6 @@
 import 'dep_advisory.dart';
 import 'package_license.dart';
+import 'package_size.dart';
 
 /// How a dependency is pulled into the project.
 enum DepKind { direct, dev, transitive }
@@ -39,6 +40,7 @@ class DepNode {
     this.dependencies = const [],
     this.manifests = const [],
     this.imported,
+    this.size,
   });
 
   /// The ecosystem this package was published in — `dart`, `npm`.
@@ -78,6 +80,7 @@ class DepNode {
     List<String>? dependencies,
     List<String>? manifests,
     bool? imported,
+    PackageSize? size,
   }) =>
       DepNode(
         name: name ?? this.name,
@@ -93,6 +96,7 @@ class DepNode {
         dependencies: dependencies ?? this.dependencies,
         manifests: manifests ?? this.manifests,
         imported: imported ?? this.imported,
+        size: size ?? this.size,
       );
 
   final String name;
@@ -150,6 +154,19 @@ class DepNode {
   /// will warn about the upgrade that stops it.
   final bool? imported;
 
+  /// What this version weighs, where its registry says.
+  ///
+  /// Null means no measurement, and there are two ordinary reasons for one:
+  /// the report predates size scanning, or the registry publishes no size for
+  /// this version. npm records `unpackedSize` only for versions published
+  /// since it began doing so, which is a minority of the releases of the small
+  /// old packages a tree is full of.
+  ///
+  /// Install weight, not bundle weight — see [PackageSize]. Sizes from
+  /// different ecosystems are measured on different scales, so they must be
+  /// summed through [SizeTally] rather than added directly.
+  final PackageSize? size;
+
   factory DepNode.fromJson(Map<String, dynamic> json) {
     return DepNode(
       name: json['name'] as String,
@@ -176,6 +193,7 @@ class DepNode {
           (json['dependencies'] as List?)?.cast<String>() ?? const [],
       manifests: (json['manifests'] as List?)?.cast<String>() ?? const [],
       imported: json['imported'] as bool?,
+      size: PackageSize.fromJson(json['size']),
     );
   }
 
@@ -216,5 +234,8 @@ class DepNode {
         // Omitted rather than written as null, so a report stored before import
         // scanning keeps reading back as "never scanned".
         if (imported != null) 'imported': imported,
+        // Same reasoning: absent means unmeasured, which is what every report
+        // stored before size scanning genuinely is.
+        if (size != null) 'size': size!.toJson(),
       };
 }

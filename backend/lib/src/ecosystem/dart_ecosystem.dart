@@ -205,6 +205,27 @@ class DartRegistry implements PackageRegistry {
     );
     return fromLatest ?? PackageLicense.undetermined;
   }
+
+  /// The compressed archive size, because pub.dev publishes no installed one.
+  ///
+  /// Reported as [SizeBasis.archive] rather than converted: source compresses
+  /// somewhere between two and five times depending on what the package is
+  /// mostly made of, and multiplying by a guess would turn a measured number
+  /// into an invented one. `(unresolved)` and other non-versions never reach
+  /// the network — there is no archive to ask about.
+  ///
+  /// No file count: a HEAD reports the archive's length and nothing about what
+  /// is inside it, and opening the tarball to count would mean downloading
+  /// every dependency of every project on every scan.
+  @override
+  Future<PackageSize?> sizeOf(String package, String version) async {
+    if (!isValidPackageName(package)) return null;
+
+    final bytes = await _pub.archiveSizeBytes(package, version);
+    return bytes == null
+        ? null
+        : PackageSize(bytes: bytes, basis: SizeBasis.archive);
+  }
 }
 
 /// [ImportScanner] behind the [SourceScanner] interface.

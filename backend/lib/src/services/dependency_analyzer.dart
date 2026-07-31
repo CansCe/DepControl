@@ -147,6 +147,9 @@ class DependencyAnalyzer {
       // Same package at the same version, so both readings describe the same
       // published archive; either will do.
       license: a.license ?? b.license,
+      // Likewise a fact about the published archive, not about the manifest
+      // that reached it — so one manifest measuring it is enough.
+      size: a.size ?? b.size,
       dependencies: edges,
     );
   }
@@ -287,6 +290,13 @@ class DependencyAnalyzer {
       final status = _status(installed, info.latest, advisories);
       final license = await registry.licenseFor(name, installed, info.latest);
 
+      // Null wherever the registry publishes no size, which is most npm
+      // releases and every pub.dev archive that cannot be reached. The node
+      // then says nothing about its weight rather than claiming none.
+      final size = current == null
+          ? null
+          : await registry.sizeOf(name, installed);
+
       // Graph edges: this package's regular deps, kept only if they're also in
       // the project's set (so edges never dangle). The resolver already knows
       // them for the versions it picked; otherwise ask the registry, which it
@@ -311,6 +321,7 @@ class DependencyAnalyzer {
         imported: usedInSource,
         advisories: advisories,
         license: license,
+        size: size,
         dependencies: children,
       );
     });

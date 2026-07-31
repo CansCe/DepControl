@@ -406,9 +406,30 @@ void main() {
         );
 
         expect(
-          find.textContaining('No Dart source imports crypto'),
+          find.textContaining('Nothing in this repository imports crypto'),
           findsOneWidget,
         );
+      });
+
+      // The note used to say "No Dart source imports ...", which is wrong for
+      // the npm half of a report and reads as a bug in the scanner rather than
+      // as the true finding it is.
+      testWidgets('does not name a language the report may not be about',
+          (tester) async {
+        await show(
+          tester,
+          reportOf(const [
+            DepNode(
+              name: 'lodash',
+              kind: DepKind.direct,
+              installed: '4.17.21',
+              ecosystem: 'npm',
+              imported: false,
+            ),
+          ]),
+        );
+
+        expect(find.textContaining('Dart source'), findsNothing);
       });
 
       // The silence that matters: a report from a scan that never read source
@@ -427,7 +448,169 @@ void main() {
         );
 
         expect(find.textContaining('without being declared'), findsNothing);
-        expect(find.textContaining('No Dart source imports'), findsNothing);
+        expect(find.textContaining('imports'), findsNothing);
+      });
+
+      testWidgets('says what dropping the unused packages would free',
+          (tester) async {
+        // The point of the figure: the unused package is 40 KB, but it is the
+        // only thing holding up a megabyte of transitive tail.
+        await show(
+          tester,
+          reportOf(const [
+            DepNode(
+              name: 'http',
+              kind: DepKind.direct,
+              installed: '1.0.0',
+              imported: true,
+            ),
+            DepNode(
+              name: 'unused_helper',
+              kind: DepKind.direct,
+              installed: '2.0.0',
+              imported: false,
+              dependencies: ['buried'],
+              size: PackageSize(bytes: 40 * 1024, basis: SizeBasis.unpacked),
+            ),
+            DepNode(
+              name: 'buried',
+              kind: DepKind.transitive,
+              installed: '1.0.0',
+              imported: false,
+              size: PackageSize(bytes: 1024 * 1024, basis: SizeBasis.unpacked),
+            ),
+          ]),
+        );
+
+        expect(find.textContaining('Dropping them frees 1.0 MB'), findsOneWidget);
+        expect(
+          find.textContaining('1 package nothing else pulls in'),
+          findsOneWidget,
+        );
+      });
+
+      testWidgets('claims no saving where nothing was measured',
+          (tester) async {
+        // A report from before size scanning must not imply the saving is nil.
+        await show(
+          tester,
+          reportOf(const [
+            DepNode(
+              name: 'unused_helper',
+              kind: DepKind.direct,
+              installed: '2.0.0',
+              imported: false,
+            ),
+          ]),
+        );
+
+        expect(find.textContaining('to consider dropping'), findsOneWidget);
+        expect(find.textContaining('frees'), findsNothing);
+      });
+    });
+
+    group('weight', () {
+      DepReport reportOf(List<DepNode> nodes) => DepReport(
+            projectId: 'p1',
+            generatedAt: DateTime.utc(2026, 1, 1),
+            nodes: nodes,
+          );
+
+      Future<void> show(WidgetTester tester, DepReport shown) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ReportScreen(project: project, api: apiReturning(shown)),
+          ),
+        );
+        await tester.pumpAndSettle();
+      }
+
+      testWidgets('is called install weight, never bundle size',
+          (tester) async {
+        // No registry knows what survives tree-shaking, and saying "bundle"
+        // over a download figure would be wrong where people act on it.
+        await show(
+          tester,
+          reportOf(const [
+            DepNode(
+              name: 'lodash',
+              kind: DepKind.direct,
+              installed: '4.17.21',
+              ecosystem: 'npm',
+              size: PackageSize(bytes: 1412415, basis: SizeBasis.unpacked),
+            ),
+          ]),
+        );
+
+        expect(find.textContaining('1.3 MB'), findsWidgets);
+        expect(find.textContaining('not what a bundler would ship'),
+            findsOneWidget);
+      });
+
+      testWidgets('does not add npm bytes to pub.dev bytes', (tester) async {
+        await show(
+          tester,
+          reportOf(const [
+            DepNode(
+              name: 'lodash',
+              kind: DepKind.direct,
+              installed: '4.17.21',
+              ecosystem: 'npm',
+              size: PackageSize(bytes: 1048576, basis: SizeBasis.unpacked),
+            ),
+            DepNode(
+              name: 'http',
+              kind: DepKind.direct,
+              installed: '1.6.0',
+              size: PackageSize(bytes: 46315, basis: SizeBasis.archive),
+            ),
+          ]),
+        );
+
+        // Two figures, named for their scales — not one number that is the sum
+        // of two different units.
+        expect(
+          find.textContaining('1.0 MB installed + 45 KB compressed'),
+          findsOneWidget,
+        );
+      });
+
+      testWidgets('says nothing at all when nothing was measured',
+          (tester) async {
+        await show(
+          tester,
+          reportOf(const [
+            DepNode(name: 'http', kind: DepKind.direct, installed: '1.6.0'),
+          ]),
+        );
+
+        expect(find.textContaining('Weight is'), findsNothing);
+      });
+
+      testWidgets('counts the packages that publish no size', (tester) async {
+        await show(
+          tester,
+          reportOf(const [
+            DepNode(
+              name: 'lodash',
+              kind: DepKind.direct,
+              installed: '4.17.21',
+              ecosystem: 'npm',
+              size: PackageSize(bytes: 1000, basis: SizeBasis.unpacked),
+            ),
+            DepNode(
+              name: 'inherits',
+              kind: DepKind.transitive,
+              installed: '2.0.4',
+              ecosystem: 'npm',
+            ),
+          ]),
+        );
+
+        expect(
+          find.textContaining('1 of 2 packages publish no size'),
+          findsOneWidget,
+        );
       });
     });
 

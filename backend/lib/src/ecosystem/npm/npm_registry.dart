@@ -155,6 +155,54 @@ class NpmRegistry implements PackageRegistry {
     return deps is Map<String, dynamic> ? deps.keys.toList() : const [];
   }
 
+  /// The installed weight npm recorded for one published version.
+  ///
+  /// Free: `dist.unpackedSize` and `dist.fileCount` are in the abbreviated
+  /// packument this client already fetches and caches, so no request is added
+  /// to a scan.
+  ///
+  /// Absent for anything published before npm began recording it, which is not
+  /// a rare corner — `sax` carries it on 9 of 54 releases, `inherits` on 1 of
+  /// 7 — and those small old packages are exactly what a dependency tree is
+  /// full of. Missing reads as null, never as zero: a tree that reported its
+  /// unmeasured half as weightless would understate itself in the one
+  /// direction that matters here.
+  @override
+  Future<PackageSize?> sizeOf(String package, String version) async {
+    final packument = await _packument(package);
+    final versions = packument?['versions'];
+    if (versions is! Map<String, dynamic>) return null;
+
+    final doc = versions[version];
+    if (doc is! Map<String, dynamic>) return null;
+
+    // Publisher-supplied, like everything else in a packument: read
+    // defensively rather than cast.
+    final dist = doc['dist'];
+    if (dist is! Map) return null;
+
+    final bytes = _positiveInt(dist['unpackedSize']);
+    if (bytes == null) return null;
+
+    return PackageSize(
+      bytes: bytes,
+      basis: SizeBasis.unpacked,
+      fileCount: _positiveInt(dist['fileCount']),
+    );
+  }
+
+  /// A non-negative integer from a JSON number that a registry has, in
+  /// practice, served as a string often enough to be worth tolerating.
+  static int? _positiveInt(Object? raw) {
+    final value = switch (raw) {
+      final int i => i,
+      final num n => n.toInt(),
+      final String s => int.tryParse(s),
+      _ => null,
+    };
+    return value != null && value >= 0 ? value : null;
+  }
+
   /// The licence npm holds for one published version.
   ///
   /// A single version document rather than the packument: the abbreviated

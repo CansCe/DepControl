@@ -9,6 +9,8 @@ DepNode node(
   List<String> manifests = const [],
   List<DepAdvisory> advisories = const [],
   PackageLicense? license,
+  int? bytes,
+  SizeBasis basis = SizeBasis.unpacked,
 }) =>
     DepNode(
       name: name,
@@ -18,7 +20,12 @@ DepNode node(
       manifests: manifests,
       advisories: advisories,
       license: license,
+      size: bytes == null ? null : PackageSize(bytes: bytes, basis: basis),
     );
+
+/// The names [graph] says would leave if [packages] stopped being declared.
+List<String> reclaimed(DependencyGraph graph, List<String> packages) =>
+    [for (final n in graph.reclaimedByDropping(packages)) n.name];
 
 void main() {
   group('roots', () {
@@ -293,5 +300,126 @@ void main() {
 
     expect(graph.roots.single.name, 'http');
     expect(graph.spansManifests, isFalse);
+  });
+
+  group('reclaimedByDropping', () {
+    test('takes the exclusive tail out with the package', () {
+      // build_runner is the only thing holding three of these up.
+      final graph = DependencyGraph.fromNodes([
+        node('build_runner', kind: DepKind.dev, deps: ['build', 'watcher']),
+        node('build', deps: ['glob']),
+        node('watcher'),
+        node('glob'),
+        node('http', kind: DepKind.direct),
+      ]);
+
+      expect(
+        reclaimed(graph, ['build_runner']),
+        ['build', 'build_runner', 'glob', 'watcher'],
+      );
+    });
+
+    test('leaves behind whatever another declared package still reaches', () {
+      // `meta` has a second parent, so dropping `http` does not take it.
+      final graph = DependencyGraph.fromNodes([
+        node('http', kind: DepKind.direct, deps: ['meta', 'http_parser']),
+        node('test', kind: DepKind.dev, deps: ['meta']),
+        node('meta'),
+        node('http_parser'),
+      ]);
+
+      expect(reclaimed(graph, ['http']), ['http', 'http_parser']);
+    });
+
+    test('a declared package that is also pulled in transitively frees '
+        'nothing', () {
+      // Deleting the line leaves it installed exactly as it was. Saying so is
+      // more useful than reporting a saving that will not happen.
+      final graph = DependencyGraph.fromNodes([
+        node('collection', kind: DepKind.direct),
+        node('http', kind: DepKind.direct, deps: ['collection']),
+      ]);
+
+      expect(reclaimed(graph, ['collection']), isEmpty);
+    });
+
+    test('dropping a set frees what no single member could', () {
+      // `shared_helper` has two parents, so neither alone reclaims it and the
+      // two single-package answers do not add up to the set's.
+      final graph = DependencyGraph.fromNodes([
+        node('lint_a', kind: DepKind.dev, deps: ['shared_helper']),
+        node('lint_b', kind: DepKind.dev, deps: ['shared_helper']),
+        node('shared_helper'),
+      ]);
+
+      expect(reclaimed(graph, ['lint_a']), ['lint_a']);
+      expect(reclaimed(graph, ['lint_b']), ['lint_b']);
+      expect(
+        reclaimed(graph, ['lint_a', 'lint_b']),
+        ['lint_a', 'lint_b', 'shared_helper'],
+      );
+    });
+
+    test('a cycle among the reclaimed packages comes out whole', () {
+      final graph = DependencyGraph.fromNodes([
+        node('orphan_root', kind: DepKind.dev, deps: ['a']),
+        node('a', deps: ['b']),
+        node('b', deps: ['a']),
+        node('kept', kind: DepKind.direct),
+      ]);
+
+      expect(reclaimed(graph, ['orphan_root']), ['a', 'b', 'orphan_root']);
+    });
+
+    test('an empty set reclaims nothing', () {
+      final graph = DependencyGraph.fromNodes([
+        node('http', kind: DepKind.direct, deps: ['meta']),
+        node('meta'),
+      ]);
+
+      expect(graph.reclaimedByDropping(const []), isEmpty);
+      expect(graph.reclaimableFrom(const []).isEmpty, isTrue);
+    });
+  });
+
+  group('weight', () {
+    test('totals the tree per basis, counting what it could not measure', () {
+      final graph = DependencyGraph.fromNodes([
+        node('http', kind: DepKind.direct, bytes: 1000),
+        node('meta', bytes: 500),
+        node('sky_engine'),
+      ]);
+
+      expect(graph.weight.bytesOn(SizeBasis.unpacked), 1500);
+      expect(graph.weight.measured, 2);
+      expect(graph.weight.unmeasured, 1);
+    });
+
+    test('reclaimable is the tail, not just the package', () {
+      final graph = DependencyGraph.fromNodes([
+        node('build_runner', kind: DepKind.dev, deps: ['build'], bytes: 40000),
+        node('build', deps: ['glob'], bytes: 900000),
+        node('glob', bytes: 60000),
+        node('http', kind: DepKind.direct, bytes: 20000),
+      ]);
+
+      // The point of the feature: the 40 KB package costs the tree a megabyte.
+      expect(
+        graph.reclaimableFrom(['build_runner']).bytesOn(SizeBasis.unpacked),
+        1000000,
+      );
+    });
+
+    test('does not add npm bytes to pub.dev bytes', () {
+      final graph = DependencyGraph.fromNodes([
+        node('lodash', kind: DepKind.direct, bytes: 1000),
+        node('http',
+            kind: DepKind.direct, bytes: 250, basis: SizeBasis.archive),
+      ]);
+
+      expect(graph.weight.bytesOn(SizeBasis.unpacked), 1000);
+      expect(graph.weight.bytesOn(SizeBasis.archive), 250);
+      expect(graph.weight.display, contains('+'));
+    });
   });
 }

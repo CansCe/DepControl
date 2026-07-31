@@ -288,4 +288,18 @@ abstract class PackageRegistry {
     String installed,
     String? latest,
   );
+
+  /// What [package] at [version] weighs, or null where the registry does not
+  /// say.
+  ///
+  /// Null is the common answer rather than the exceptional one, and callers
+  /// must treat it as "not measured" rather than as zero. npm records
+  /// `unpackedSize` only for versions published since it started to, which
+  /// leaves most releases of the small old packages a tree is full of; pub.dev
+  /// publishes no size at all, so its figure is the compressed archive and
+  /// costs a request that can fail on its own.
+  ///
+  /// The returned [PackageSize] carries the [SizeBasis] it was measured on,
+  /// because the two registries are not answering the same question.
+  Future<PackageSize?> sizeOf(String package, String version);
 }

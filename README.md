@@ -66,6 +66,7 @@ are shared code that never learns which ecosystem it is serving.
 | Advisories | OSV.dev | OSV.dev |
 | Licenses | pub.dev's detection | the publisher's `license` field |
 | Imports | `import 'package:…'` | `import`/`require`, `/// <reference types>` |
+| Size | the archive's `Content-Length` | `dist.unpackedSize` |
 | Resolve & simulate | yes | not yet |
 
 **A repository can be more than one.** A Flutter app with a JavaScript front
@@ -153,6 +154,43 @@ the gap between the two is worth reporting:
 Both are silent — not empty — on a report whose source was never read. "Nobody
 looked" and "nothing uses it" are different claims, and only one of them is
 worth acting on.
+
+## What a dependency weighs
+
+Each package carries the size its registry publishes, and the report totals
+them. The number that makes an unused dependency worth deleting is not what
+that package weighs — it is what comes out **with** it: the transitive tail
+nothing else pulls in. A 40 KB helper that is the only thing holding up eleven
+other packages costs the tree all twelve, and that is the figure the report
+gives for dropping it.
+
+Asked about a *set* of packages rather than one at a time, because the answers
+do not add up. Two unused packages that both pull in the same helper each
+reclaim nothing of it alone, and dropping both reclaims it.
+
+**This is install weight, not bundle size.** What survives tree-shaking and
+minification into a production bundle depends on which symbols the project
+imports and which bundler runs over them, and no registry knows either — the
+tools that report bundle size run a bundler to find out. Reporting a download
+figure under that name would be wrong in the direction people act on.
+
+The two registries are also not answering the same question, so the report
+keeps their totals apart rather than adding them:
+
+- **npm states installed bytes.** `dist.unpackedSize` is recorded at publish
+  time and arrives in the abbreviated packument the scan already fetches, so it
+  costs no request. It is absent for anything published before npm began
+  recording it — `sax` carries it on 9 of its 54 releases — and those small old
+  packages are what a tree is full of.
+- **pub.dev publishes no size at all,** so the figure is the `Content-Length` of
+  the `.tar.gz`, taken with a HEAD. That is the compressed download. Source
+  expands several times over, by a factor that depends on what the package is
+  made of, so a multiplier would turn a measurement into an invention.
+
+A package with no published size reports none, never zero, and every total says
+how many it had to leave out. A tree that reported its unmeasured half as
+weightless would understate itself in exactly the direction this exists to
+expose.
 
 ## Managing the registry
 
