@@ -6,11 +6,14 @@ import 'package:shared/shared.dart';
 import '../api/api_client.dart';
 import '../auth/session_monitor.dart';
 import '../export/file_download.dart';
+import '../main.dart' show supabase;
 import '../export/report_export.dart';
 import '../platform/breakpoints.dart';
+import '../platform/relative_time.dart';
 import '../scans/scan_queue.dart';
 import '../theme.dart';
 import '../widgets/chrome.dart';
+import '../widgets/console_shell.dart';
 import '../widgets/dep_status_chip.dart';
 import '../widgets/dep_table.dart';
 import '../widgets/dependency_path.dart';
@@ -19,6 +22,7 @@ import '../widgets/dependency_tree.dart';
 import '../widgets/license_panel.dart';
 import '../widgets/remediation_panel.dart';
 import '../widgets/severity_chip.dart';
+import 'report_console.dart';
 
 /// The dependency report for one project: a summary, a sortable table, and the
 /// dependency graph.
@@ -210,10 +214,145 @@ class _ReportScreenState extends State<ReportScreen> {
     );
   }
 
+  /// The signed-in address for the console's top bar.
+  ///
+  /// Guarded the same way the registry guards its own lookup: reaching for
+  /// `Supabase.instance` before `main` has initialized it throws, which would
+  /// make this screen unmountable in a widget test for the sake of one line of
+  /// chrome.
+  String? get _email {
+    try {
+      return supabase.auth.currentUser?.email;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Loading, failure and "nothing here yet", which both skins answer the same
+  /// way. [ready] is called only with a report that has something in it.
+  Widget _gate(
+    AsyncSnapshot<DepReport?> snap,
+    Widget Function(DepReport) ready,
+  ) {
+    if (snap.connectionState == ConnectionState.waiting) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (snap.hasError) {
+      if (snap.error case final ApiAuthException auth) {
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => SessionMonitor.instance.reportExpired(auth.message),
+        );
+      }
+      return _Message(
+        icon: Icons.error_outline,
+        text: snap.error is ApiException
+            ? (snap.error! as ApiException).message
+            : 'Could not load the report.',
+        isError: true,
+        onRetry: _reload,
+      );
+    }
+
+    final report = snap.data;
+    if (report == null || report.nodes.isEmpty) {
+      return const _Message(
+        icon: Icons.inbox_outlined,
+        text: 'No dependency report for this project yet.',
+      );
+    }
+    return ready(report);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Builder(
-      builder: (context) => Scaffold(
+      builder: (context) => ConsoleFrame(
+        api: widget.api,
+        active: ConsoleNav.projects,
+        selectedProjectId: _project.id,
+        email: _email,
+        console: FutureBuilder<DepReport?>(
+          future: _report,
+          builder: (context, snap) => _gate(snap, (report) => _console(report)),
+        ),
+        compact: _compact(context),
+      ),
+    );
+  }
+
+  /// The report split across tabs, under a header that stays put.
+  Widget _console(DepReport report) {
+    return ReportConsole(
+      project: _project,
+      report: report,
+      isScanning: _scans.isScanning(_project.id),
+      onReanalyze: _reanalyze,
+      // Only where a file can actually go somewhere, and only once there is a
+      // report to write. An archived project exports too: a snapshot is a thing
+      // people want to take away precisely because it will not change.
+      onExport: canDownload && _loaded != null
+          ? ({required bool asCsv}) => _export(_loaded!, asCsv: asCsv)
+          : null,
+      tabs: [
+        ReportTab(
+          label: 'Packages',
+          body: () => ConsoleCard(
+            eyebrow: 'Every package',
+            subtitle: _project.isArchived
+                ? 'Select a package to see why it is here.'
+                : 'Select a package to see why it is here and what upgrading '
+                    'it involves.',
+            child: DepTable(
+              nodes: report.nodes,
+              showCurrency: !_project.isArchived,
+              onSelect: (node) => _explain(node, report),
+            ),
+          ),
+        ),
+        ReportTab(
+          label: 'Advisories',
+          body: () => report.vulnerable > 0
+              // Planning a fix re-fetches the repository, which archiving opted
+              // out of — so an archived project gets no remediation.
+              ? _Advisories(
+                  report: report,
+                  onLoadRemediation: _project.isArchived
+                      ? null
+                      : () => widget.api.remediation(_project.id),
+                )
+              : const _Clear(
+                  text: 'No known vulnerabilities.',
+                  detail: 'Every dependency passed the last security scan.',
+                ),
+        ),
+        ReportTab(
+          label: 'Licenses',
+          body: () => LicensePanel(
+            key: ValueKey('licenses-${_project.id}'),
+            load: () => widget.api.licenseReport(_project.id),
+            onLoadManifest: () => widget.api.licenseManifest(_project.id),
+            onSavePolicy: widget.api.saveLicensePolicy,
+            onResetPolicy: widget.api.resetLicensePolicy,
+          ),
+        ),
+        ReportTab(
+          label: 'Tree',
+          body: () => ConsoleCard(
+            eyebrow: 'The tree',
+            child: DependencyTree(
+              report: report,
+              showCurrency: !_project.isArchived,
+              onSelect: (node) => _explain(node, report),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// The single-scroll layout, unchanged, for anything narrower.
+  Widget _compact(BuildContext context) {
+    return Scaffold(
         // The body does *not* run behind the app bar, now that the summary
         // scrolls away with everything else. It used to: the summary was
         // pinned, its ink band filled that region, and a transparent app bar
@@ -280,34 +419,7 @@ class _ReportScreenState extends State<ReportScreen> {
         ),
         body: FutureBuilder<DepReport?>(
           future: _report,
-          builder: (context, snap) {
-            if (snap.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            if (snap.hasError) {
-              if (snap.error case final ApiAuthException auth) {
-                WidgetsBinding.instance.addPostFrameCallback(
-                  (_) => SessionMonitor.instance.reportExpired(auth.message),
-                );
-              }
-              return _Message(
-                icon: Icons.error_outline,
-                text: snap.error is ApiException
-                    ? (snap.error! as ApiException).message
-                    : 'Could not load the report.',
-                isError: true,
-                onRetry: _reload,
-              );
-            }
-
-            final report = snap.data;
-            if (report == null || report.nodes.isEmpty) {
-              return const _Message(
-                icon: Icons.inbox_outlined,
-                text: 'No dependency report for this project yet.',
-              );
-            }
-
+          builder: (context, snap) => _gate(snap, (report) {
             // The summary scrolls away with everything else rather than being
             // pinned above it. It is a tall band — repository, ref, when it was
             // analyzed, and the counts — and holding all of that on screen
@@ -417,8 +529,55 @@ class _ReportScreenState extends State<ReportScreen> {
                 ],
               ),
             );
-          },
+          }),
         ),
+    );
+  }
+}
+
+/// The all-clear, for a tab that would otherwise be empty.
+///
+/// Only the console has one. The compact layout omits the advisories section
+/// entirely when there is nothing in it, which is right for a page read top to
+/// bottom — but a *tab* labelled Advisories that opens onto nothing reads as a
+/// failure to load rather than as good news.
+class _Clear extends StatelessWidget {
+  const _Clear({required this.text, required this.detail});
+
+  final String text;
+  final String detail;
+
+  @override
+  Widget build(BuildContext context) {
+    final surfaces = Surfaces.of(context);
+    final theme = Theme.of(context);
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: surfaces.wash(surfaces.patch),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: surfaces.patch.withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.verified_user_outlined, size: 22, color: surfaces.patch),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(text, style: theme.textTheme.titleSmall),
+                const SizedBox(height: 3),
+                Text(
+                  detail,
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: surfaces.muted),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -722,14 +881,9 @@ class _Note extends StatelessWidget {
   }
 }
 
-/// Coarse relative time — a report's age only matters in broad strokes.
-String _ago(DateTime time) {
-  final delta = DateTime.now().toUtc().difference(time.toUtc());
-  if (delta.inMinutes < 1) return 'just now';
-  if (delta.inHours < 1) return '${delta.inMinutes}m ago';
-  if (delta.inDays < 1) return '${delta.inHours}h ago';
-  return '${delta.inDays}d ago';
-}
+/// Coarse relative time. Lives in `platform/relative_time.dart` now that the
+/// console draws the same figure on the registry grid as well.
+String _ago(DateTime time) => relativeAge(time);
 
 class _Stat extends StatelessWidget {
   const _Stat({required this.label, required int value, this.color})

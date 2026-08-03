@@ -48,11 +48,13 @@ class SpineCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final surfaces = Surfaces.of(context);
+
     return ClipRRect(
       borderRadius: BorderRadius.circular(14),
       child: Container(
         decoration: BoxDecoration(
-          color: Palette.paper,
+          color: surfaces.card,
           border: Border.all(color: accent.withValues(alpha: 0.28)),
           borderRadius: BorderRadius.circular(14),
         ),
@@ -129,9 +131,10 @@ class Eyebrow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(
       text.toUpperCase(),
-      style: display(
+      style: displayOf(
+        context,
         Theme.of(context).textTheme.labelSmall,
-        color: color ?? Palette.slate,
+        color: color ?? Surfaces.of(context).muted,
         weight: FontWeight.w700,
       ).copyWith(letterSpacing: 1.4, fontSize: 11),
     );

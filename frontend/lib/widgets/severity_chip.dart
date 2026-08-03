@@ -6,15 +6,26 @@ import 'package:shared/shared.dart';
 ///
 /// Critical is deliberately a different hue from high rather than a darker red:
 /// at a glance across a list, hue separates and lightness does not.
-Color severityColor(AdvisorySeverity severity, ThemeData theme) =>
-    switch (severity) {
-      AdvisorySeverity.critical => const Color(0xFF7B1FA2),
-      AdvisorySeverity.high => const Color(0xFFC62828),
-      AdvisorySeverity.medium => const Color(0xFFE65100),
-      AdvisorySeverity.low => const Color(0xFF1565C0),
-      AdvisorySeverity.none => Colors.blueGrey,
-      AdvisorySeverity.unknown => Colors.blueGrey,
-    };
+/// The ramp keeps its hues on both skins and only changes brightness. These
+/// were picked to survive white paper; on navy every one of them goes to a
+/// smear, which is the same problem the semver triad had and gets the same
+/// answer — same position on the wheel, lifted until it reads.
+Color severityColor(AdvisorySeverity severity, ThemeData theme) {
+  final dark = theme.brightness == Brightness.dark;
+  return switch (severity) {
+    AdvisorySeverity.critical =>
+      dark ? const Color(0xFFD48BF0) : const Color(0xFF7B1FA2),
+    AdvisorySeverity.high =>
+      dark ? const Color(0xFFFF7A85) : const Color(0xFFC62828),
+    AdvisorySeverity.medium =>
+      dark ? const Color(0xFFFFA24D) : const Color(0xFFE65100),
+    AdvisorySeverity.low =>
+      dark ? const Color(0xFF7FB2FF) : const Color(0xFF1565C0),
+    AdvisorySeverity.none ||
+    AdvisorySeverity.unknown =>
+      dark ? const Color(0xFF8D90A0) : Colors.blueGrey,
+  };
+}
 
 /// What to call each band in the interface.
 String severityLabel(AdvisorySeverity severity) => switch (severity) {

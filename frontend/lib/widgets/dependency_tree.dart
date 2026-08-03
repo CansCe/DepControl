@@ -268,10 +268,10 @@ class _Row extends StatelessWidget {
     final theme = Theme.of(context);
     final isDuplicated = graph.isDuplicated(node.name);
     final versionColor = node.advisories.isNotEmpty
-        ? depStatusColor(DepStatus.vulnerable)
+        ? depStatusColor(DepStatus.vulnerable, Surfaces.of(context))
         : showCurrency
-            ? depStatusColor(node.status)
-            : Palette.slate;
+            ? depStatusColor(node.status, Surfaces.of(context))
+            : Surfaces.of(context).muted;
 
     return Row(
       children: [
@@ -288,7 +288,7 @@ class _Row extends StatelessWidget {
                   tooltip: isOpen ? 'Collapse' : 'Expand',
                   icon: Icon(
                     isOpen ? Icons.expand_more : Icons.chevron_right,
-                    color: Palette.slate,
+                    color: Surfaces.of(context).muted,
                   ),
                 )
               : Center(
@@ -296,7 +296,7 @@ class _Row extends StatelessWidget {
                     width: 4,
                     height: 4,
                     decoration: BoxDecoration(
-                      color: Palette.slate.withValues(alpha: 0.5),
+                      color: Surfaces.of(context).muted.withValues(alpha: 0.5),
                       shape: BoxShape.circle,
                     ),
                   ),
@@ -336,7 +336,7 @@ class _Row extends StatelessWidget {
                       label: node.advisories.length == 1
                           ? '1 advisory'
                           : '${node.advisories.length} advisories',
-                      color: depStatusColor(DepStatus.vulnerable),
+                      color: depStatusColor(DepStatus.vulnerable, Surfaces.of(context)),
                     ),
                 ],
               ),
@@ -362,12 +362,12 @@ class _LoopStop extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(28, 5, 4, 5),
       child: Row(
         children: [
-          Icon(Icons.u_turn_left, size: 15, color: Palette.slate),
+          Icon(Icons.u_turn_left, size: 15, color: Surfaces.of(context).muted),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               '$name — already above this, so the branch closes here',
-              style: theme.textTheme.bodySmall?.copyWith(color: Palette.slate),
+              style: theme.textTheme.bodySmall?.copyWith(color: Surfaces.of(context).muted),
             ),
           ),
         ],
@@ -392,7 +392,7 @@ class _Unresolved extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.call_split, size: 15, color: Palette.slate),
+          Icon(Icons.call_split, size: 15, color: Surfaces.of(context).muted),
           const SizedBox(width: 8),
           Expanded(
             child: Text.rich(
@@ -409,7 +409,7 @@ class _Unresolved extends StatelessWidget {
                   ),
                 ],
               ),
-              style: theme.textTheme.bodySmall?.copyWith(color: Palette.slate),
+              style: theme.textTheme.bodySmall?.copyWith(color: Surfaces.of(context).muted),
             ),
           ),
         ],
@@ -429,7 +429,7 @@ class _Flag extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final tint = color ?? Palette.ink;
+    final tint = color ?? Surfaces.of(context).text;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
@@ -472,7 +472,7 @@ class _Indent extends StatelessWidget {
         padding: const EdgeInsets.only(left: 10),
         decoration: BoxDecoration(
           border: Border(
-            left: BorderSide(color: Palette.ink.withValues(alpha: 0.12)),
+            left: BorderSide(color: Surfaces.of(context).text.withValues(alpha: 0.12)),
           ),
         ),
         child: child,
@@ -503,7 +503,7 @@ class _Findings extends StatelessWidget {
         padding: const EdgeInsets.only(bottom: 6),
         child: Row(
           children: [
-            const Icon(Icons.check, size: 15, color: Palette.patch),
+            Icon(Icons.check, size: 15, color: Surfaces.of(context).patch),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
@@ -527,8 +527,8 @@ class _Findings extends StatelessWidget {
                 ? '1 package at two versions'
                 : '${duplicates.length} packages at more than one version',
             accent: duplicates.any((d) => d.carriesAdvisory)
-                ? depStatusColor(DepStatus.vulnerable)
-                : Palette.ink,
+                ? depStatusColor(DepStatus.vulnerable, Surfaces.of(context))
+                : Surfaces.of(context).text,
             children: [
               for (final duplicate in duplicates)
                 _Duplicate(duplicate: duplicate),
@@ -549,7 +549,7 @@ class _Findings extends StatelessWidget {
             title: cycles.length == 1
                 ? '1 dependency loop'
                 : '${cycles.length} dependency loops',
-            accent: Palette.ink,
+            accent: Surfaces.of(context).text,
             children: [
               for (final cycle in cycles) _Cycle(cycle: cycle),
               const SizedBox(height: 4),
@@ -578,7 +578,7 @@ class _Findings extends StatelessWidget {
             title: '${unreachable.length} '
                 '${unreachable.length == 1 ? 'package sits' : 'packages sit'} '
                 'outside the tree',
-            accent: Palette.ink,
+            accent: Surfaces.of(context).text,
             children: [
               Text(
                 [for (final node in unreachable.take(12)) node.name].join(', ') +
@@ -645,8 +645,8 @@ class _Duplicate extends StatelessWidget {
                     style: mono(
                       theme.textTheme.bodySmall,
                       color: version.advisories.isNotEmpty
-                          ? depStatusColor(DepStatus.vulnerable)
-                          : Palette.ink,
+                          ? depStatusColor(DepStatus.vulnerable, Surfaces.of(context))
+                          : Surfaces.of(context).text,
                     ),
                   ),
                   if (version.manifests.isNotEmpty)
@@ -660,7 +660,7 @@ class _Duplicate extends StatelessWidget {
                           ? 'carries 1 advisory'
                           : 'carries ${version.advisories.length} advisories',
                       style: theme.textTheme.bodySmall?.copyWith(
-                        color: depStatusColor(DepStatus.vulnerable),
+                        color: depStatusColor(DepStatus.vulnerable, Surfaces.of(context)),
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -693,7 +693,7 @@ class _Cycle extends StatelessWidget {
             cycle.isSelfReference
                 ? '${cycle.loop.single} depends on itself'
                 : cycle.describe(),
-            style: mono(theme.textTheme.bodyMedium, color: Palette.ink)
+            style: mono(theme.textTheme.bodyMedium, color: Surfaces.of(context).text)
                 .copyWith(fontWeight: FontWeight.w600),
           ),
           if (outside.isNotEmpty)

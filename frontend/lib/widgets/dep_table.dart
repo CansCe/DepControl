@@ -272,6 +272,8 @@ class _DepTableState extends State<DepTable> {
   }
 
   Widget _table(BuildContext context, ThemeData theme) {
+    final surfaces = Surfaces.of(context);
+
     return SingleChildScrollView(
       scrollDirection: Axis.vertical,
       child: SizedBox(
@@ -304,19 +306,21 @@ class _DepTableState extends State<DepTable> {
                     Text(
                       n.kind.name,
                       style: theme.textTheme.bodySmall
-                          ?.copyWith(color: Palette.slate),
+                          ?.copyWith(color: surfaces.muted),
                     ),
                     // Versions are machine-assigned, so they are set like it —
                     // and a monospaced column lets the eye compare `1.2.0`
                     // against `1.10.0` on the digit rather than on the width.
-                    Text(n.installed, style: mono(theme.textTheme.bodyMedium)),
+                    Text(n.installed,
+                        style: monoOf(context, theme.textTheme.bodyMedium)),
                     _SizeCell(size: n.size),
                     if (widget.showCurrency) ...[
                       Text(
                         n.latest ?? '—',
-                        style: mono(
+                        style: monoOf(
+                          context,
                           theme.textTheme.bodyMedium,
-                          color: n.latest == null ? Palette.slate : null,
+                          color: n.latest == null ? surfaces.muted : null,
                         ),
                       ),
                       DepStatusChip(status: n.status),
@@ -362,7 +366,7 @@ class _SizeCell extends StatelessWidget {
         message: 'The registry publishes no size for this version.',
         child: Text(
           '—',
-          style: mono(theme.textTheme.bodyMedium, color: Palette.slate),
+          style: mono(theme.textTheme.bodyMedium, color: Surfaces.of(context).muted),
         ),
       );
     }
@@ -403,7 +407,7 @@ class _SearchField extends StatelessWidget {
       decoration: InputDecoration(
         isDense: true,
         hintText: 'Filter packages',
-        hintStyle: theme.textTheme.bodySmall?.copyWith(color: Palette.slate),
+        hintStyle: theme.textTheme.bodySmall?.copyWith(color: Surfaces.of(context).muted),
         prefixIcon: const Icon(Icons.search, size: 18),
         prefixIconConstraints: const BoxConstraints(minWidth: 36),
         contentPadding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
@@ -452,7 +456,7 @@ class _NoMatches extends StatelessWidget {
         style: Theme.of(context)
             .textTheme
             .bodySmall
-            ?.copyWith(color: Palette.slate),
+            ?.copyWith(color: Surfaces.of(context).muted),
       ),
     );
   }
@@ -491,7 +495,7 @@ class _MoreRows extends StatelessWidget {
         children: [
           Text(
             '$remaining more not shown',
-            style: theme.textTheme.bodySmall?.copyWith(color: Palette.slate),
+            style: theme.textTheme.bodySmall?.copyWith(color: Surfaces.of(context).muted),
           ),
           TextButton(onPressed: onMore, child: Text('Show $next more')),
           TextButton(onPressed: onAll, child: const Text('Show all')),
@@ -561,7 +565,7 @@ class _CompactRow extends StatelessWidget {
                         Text(
                           '  ·  ${size.display}',
                           style: theme.textTheme.bodySmall
-                              ?.copyWith(color: Palette.slate),
+                              ?.copyWith(color: Surfaces.of(context).muted),
                         ),
                       ],
                     ],
@@ -593,31 +597,39 @@ class _VersionLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final surfaces = Surfaces.of(context);
     final small = theme.textTheme.bodySmall;
     final latest = node.latest;
     final movesTo = latest != null && latest != node.installed;
 
     if (!movesTo) {
-      return Text(node.installed, style: mono(small));
+      return Text(node.installed, style: monoOf(context, small));
     }
 
     // The target takes the colour of the field that would move, so the row says
     // how big the step is before the reader opens anything.
     final risk = assessUpgrade(node).risk;
     final target = switch (risk) {
-      UpgradeRisk.breaking => Palette.major,
-      UpgradeRisk.minor || UpgradeRisk.patch => Palette.minor,
-      _ => Palette.slate,
+      UpgradeRisk.breaking => surfaces.major,
+      UpgradeRisk.minor || UpgradeRisk.patch => surfaces.minor,
+      _ => surfaces.muted,
     };
 
     return Text.rich(
       TextSpan(
         children: [
-          TextSpan(text: node.installed, style: mono(small, color: Palette.slate)),
-          TextSpan(text: '  →  ', style: mono(small, color: Palette.slate)),
+          TextSpan(
+            text: node.installed,
+            style: monoOf(context, small, color: surfaces.muted),
+          ),
+          TextSpan(
+            text: '  →  ',
+            style: monoOf(context, small, color: surfaces.muted),
+          ),
           TextSpan(
             text: latest,
-            style: mono(small, color: target, weight: FontWeight.w600),
+            style:
+                monoOf(context, small, color: target, weight: FontWeight.w600),
           ),
         ],
       ),

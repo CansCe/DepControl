@@ -15,14 +15,18 @@ class DepKindBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final surfaces = Surfaces.of(context);
 
     // Deliberately muted: the kind is context, not the headline. Direct
     // dependencies get the brand colour because they are the ones a developer
     // can actually change; the rest recede.
     final (label, color) = switch (kind) {
-      DepKind.direct => ('direct', Palette.pub),
-      DepKind.dev => ('dev', const Color(0xFF7B4FBF)),
-      DepKind.transitive => ('transitive', Palette.slate),
+      DepKind.direct => ('direct', surfaces.accent),
+      DepKind.dev => (
+          'dev',
+          surfaces.isDark ? const Color(0xFFC4A2F5) : const Color(0xFF7B4FBF),
+        ),
+      DepKind.transitive => ('transitive', surfaces.faint),
     };
 
     return Container(

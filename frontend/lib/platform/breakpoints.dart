@@ -32,6 +32,17 @@ enum Layout {
   bool get isCompact => this == Layout.compact;
   bool get isWide => this != Layout.compact;
 
+  /// Whether there is room for the console shell — the fixed rail, the top bar
+  /// and the tabbed report.
+  ///
+  /// Only [expanded], and deliberately not [medium]. The rail costs 240 pixels
+  /// that are never content, and at 900 the two-column project grid and the
+  /// four stat cards both fold; what is left is the console's furniture around
+  /// a column narrower than the layout it replaced. The existing light layout
+  /// already handles that width well, so that is what a half-width browser
+  /// window keeps.
+  bool get isConsole => this == Layout.expanded;
+
   /// How many project cards sit side by side.
   int get registryColumns => switch (this) {
         Layout.compact => 1,

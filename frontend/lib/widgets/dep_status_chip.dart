@@ -9,11 +9,12 @@ import '../theme.dart';
 /// about: up to date means no field would move, outdated means one of them
 /// would. Vulnerable steps outside the triad into the advisory red, since it is
 /// not a version-arithmetic finding at all.
-Color depStatusColor(DepStatus status) => switch (status) {
-      DepStatus.upToDate => Palette.patch,
-      DepStatus.outdated => Palette.minor,
-      DepStatus.vulnerable => const Color(0xFFC62828),
-      DepStatus.unknown => Palette.slate,
+Color depStatusColor(DepStatus status, [Surfaces surfaces = Surfaces.light]) =>
+    switch (status) {
+      DepStatus.upToDate => surfaces.patch,
+      DepStatus.outdated => surfaces.minor,
+      DepStatus.vulnerable => surfaces.alarm,
+      DepStatus.unknown => surfaces.faint,
     };
 
 /// Small colored badge for a dependency's freshness / security status.
@@ -30,7 +31,8 @@ class DepStatusChip extends StatelessWidget {
       DepStatus.vulnerable => 'vulnerable',
       DepStatus.unknown => 'unknown',
     };
-    final color = depStatusColor(status);
+    final surfaces = Surfaces.of(context);
+    final color = depStatusColor(status, surfaces);
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
@@ -42,7 +44,7 @@ class DepStatusChip extends StatelessWidget {
       child: Text(
         label,
         style: TextStyle(
-          fontFamily: kBodyFont,
+          fontFamily: surfaces.faces.body,
           color: color,
           fontSize: 11.5,
           height: 1.2,

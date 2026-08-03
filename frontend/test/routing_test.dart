@@ -88,6 +88,26 @@ void main() {
       expect(d.stack, [const AppRoute.registry()]);
     });
 
+    test('a deep link to the archived half arrives there', () async {
+      // The registry is the floor, and rebuilding that floor from a constant
+      // used to drop the flag — so `/archived` opened the active view.
+      final d = delegate();
+      await d.setNewRoutePath(const AppRoute.registry(archived: true));
+
+      expect(d.stack, [const AppRoute.registry(archived: true)]);
+      expect(d.currentConfiguration.location, '/archived');
+    });
+
+    test('the two halves of the registry are different places', () {
+      final d = delegate()..go(const AppRoute.registry(archived: true));
+      expect(d.currentConfiguration, const AppRoute.registry(archived: true));
+
+      // And going back to the active half replaces it rather than stacking on
+      // top of it: both are the registry.
+      d.go(const AppRoute.registry());
+      expect(d.stack, [const AppRoute.registry()]);
+    });
+
     test('going home leaves one screen, not two', () {
       final d = delegate()
         ..go(const AppRoute.report('p1'))

@@ -21,14 +21,20 @@
          splash agree with the UI instead of flashing white first. -->
     <meta name="theme-color" content="#151B2E">
 
-    <!-- Archivo sets titles, Plex Sans sets prose, Plex Mono sets everything a
-         machine assigned — versions, GHSA ids, CVSS vectors, SPDX ids. Loaded
-         here rather than through a Dart package so the app takes no dependency
-         for it: Flutter Web resolves families by name against the browser's
-         own font list, and falls back silently where these never arrive. -->
+    <!-- Two families per role, because the browser build now has two skins.
+         Narrow windows keep the original: Archivo sets titles, Plex Sans sets
+         prose, Plex Mono sets everything a machine assigned — versions, GHSA
+         ids, CVSS vectors, SPDX ids. The wide console swaps in Geist and
+         JetBrains Mono and keeps the same rule about which of the two a given
+         string belongs to.
+
+         Loaded here rather than through a Dart package so the app takes no
+         dependency for it: Flutter Web resolves families by name against the
+         browser's own font list, and falls back silently where these never
+         arrive. -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Geist:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
     <meta name="description" content="Inspect, report and control a Dart or Flutter project's dependencies.">
   </head>
   <body>

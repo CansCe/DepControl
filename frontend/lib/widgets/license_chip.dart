@@ -7,11 +7,20 @@ import 'package:shared/shared.dart';
 /// palette's severity ramp. The icon and the card's own heading carry the
 /// difference between "a lawyer decides this" and "a CVE is open"; the colour
 /// only has to say how far through the decision you are.
-Color licenseRuleColor(LicenseRule rule, ThemeData theme) => switch (rule) {
-      LicenseRule.forbidden => const Color(0xFFB3261E),
-      LicenseRule.review => const Color(0xFFA05E00),
-      LicenseRule.allowed => const Color(0xFF2E7D32),
-    };
+/// Stop / think / go keeps its three hues on both skins; only the brightness
+/// changes, for the same reason every other palette here needed a second set —
+/// a colour picked to carry weight on white paper goes muddy on navy.
+Color licenseRuleColor(LicenseRule rule, ThemeData theme) {
+  final dark = theme.brightness == Brightness.dark;
+  return switch (rule) {
+    LicenseRule.forbidden =>
+      dark ? const Color(0xFFFF7A85) : const Color(0xFFB3261E),
+    LicenseRule.review =>
+      dark ? const Color(0xFFF2A93B) : const Color(0xFFA05E00),
+    LicenseRule.allowed =>
+      dark ? const Color(0xFF34D399) : const Color(0xFF2E7D32),
+  };
+}
 
 IconData licenseRuleIcon(LicenseRule rule) => switch (rule) {
       LicenseRule.forbidden => Icons.gavel_outlined,

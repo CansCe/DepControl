@@ -91,10 +91,18 @@ class AppRouterDelegate extends RouterDelegate<AppRoute>
   /// landing on a route this session never pushed.
   @override
   Future<void> setNewRoutePath(AppRoute route) async {
-    _stack
-      ..clear()
-      ..add(const AppRoute.registry());
-    if (route is! RegistryRoute) _stack.add(route);
+    _stack.clear();
+    // A registry route *is* the floor rather than something on top of it —
+    // including the archived half, whose flag would otherwise be dropped on the
+    // way in. `/archived` typed into the address bar has to arrive at the
+    // archived view, not at the active one.
+    if (route is RegistryRoute) {
+      _stack.add(route);
+    } else {
+      _stack
+        ..add(const AppRoute.registry())
+        ..add(route);
+    }
     notifyListeners();
   }
 
@@ -118,9 +126,12 @@ class AppRouterDelegate extends RouterDelegate<AppRoute>
   }
 
   Page<void> _pageFor(AppRoute route) => switch (route) {
-        RegistryRoute() => MaterialPage(
-            key: ValueKey(route.location),
-            child: RegistryScreen(api: api),
+        RegistryRoute(:final archived) => MaterialPage(
+            // Keyed on the route rather than its location, so switching halves
+            // updates the screen in place instead of tearing down its state and
+            // its in-flight fetch to build the same widget again.
+            key: const ValueKey('/'),
+            child: RegistryScreen(api: api, archived: archived),
           ),
         SettingsRoute() => MaterialPage(
             key: ValueKey(route.location),

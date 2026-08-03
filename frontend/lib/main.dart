@@ -7,6 +7,7 @@ import 'package:shared/shared.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'api/api_client.dart';
+import 'api/project_index.dart';
 import 'auth/auth_gate.dart';
 import 'auth/session_monitor.dart';
 import 'platform/app_surface.dart';
@@ -15,11 +16,14 @@ import 'routing/app_route.dart';
 import 'routing/app_router.dart';
 import 'scans/scan_overlay.dart';
 import 'scans/scan_queue.dart';
+import 'screens/registry_console.dart';
 import 'security/pin_gate.dart';
 import 'security/pin_prompt.dart';
 import 'security/web_session_timeout.dart';
 import 'theme.dart';
 import 'widgets/chrome.dart';
+import 'widgets/console_shell.dart';
+import 'widgets/project_card.dart';
 
 /// Shorthand for the Supabase client once [main] has initialized it.
 SupabaseClient get supabase => Supabase.instance.client;
@@ -80,11 +84,17 @@ class _DepControlAppState extends State<DepControlApp> {
   late final AppRouterDelegate _delegate = AppRouterDelegate(api: ApiClient());
   final _parser = const AppRouteParser();
 
+  // Built once each. They are pure functions of nothing, and rebuilding a
+  // ThemeData on every frame of a window resize is exactly the wrong time to
+  // be doing it.
+  late final ThemeData _paper = buildTheme();
+  late final ThemeData _console = buildConsoleTheme();
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp.router(
       title: 'DepControl',
-      theme: buildTheme(),
+      theme: _paper,
       routerDelegate: _delegate,
       routeInformationParser: _parser,
       // Everything that has to outlive a route change wraps the Navigator
@@ -97,10 +107,19 @@ class _DepControlAppState extends State<DepControlApp> {
       // The session timeout and the PIN sit inside it because both act on a
       // session that already exists — there is nothing to lock, and nothing to
       // time out, when nobody is signed in.
-      builder: (context, child) => ScanOverlay(
-        child: AuthGate(
-          child: WebSessionTimeout(
-            child: PinGate(child: child ?? const SizedBox()),
+      //
+      // The skin is chosen here rather than passed to `theme:` because it is a
+      // width question, and width is not known until there is a MediaQuery —
+      // which MaterialApp inserts above this builder and not above itself. A
+      // wide browser window gets the dark console; anything narrower, including
+      // every phone, keeps the light layout this app already had.
+      builder: (context, child) => Theme(
+        data: Layout.of(context).isConsole ? _console : _paper,
+        child: ScanOverlay(
+          child: AuthGate(
+            child: WebSessionTimeout(
+              child: PinGate(child: child ?? const SizedBox()),
+            ),
           ),
         ),
       ),
@@ -118,13 +137,23 @@ AppRouterDelegate routerOf(BuildContext context) =>
 
 /// Phase 3 entry point: the multi-project registry + an "add by git URL" form.
 class RegistryScreen extends StatefulWidget {
-  const RegistryScreen({this.api, this.scans, super.key});
+  const RegistryScreen({
+    this.api,
+    this.scans,
+    this.index,
+    this.archived = false,
+    super.key,
+  });
 
-  /// Both default to the app-wide instances. Injectable so the screen can be
-  /// tested without standing up Supabase and without one test's scans leaking
-  /// into the next.
+  /// All three default to the app-wide instances. Injectable so the screen can
+  /// be tested without standing up Supabase and without one test's scans
+  /// leaking into the next.
   final ApiClient? api;
   final ScanQueue? scans;
+  final ProjectIndex? index;
+
+  /// Which half of the registry the route asked for.
+  final bool archived;
 
   @override
   State<RegistryScreen> createState() => _RegistryScreenState();
@@ -135,10 +164,16 @@ class _RegistryScreenState extends State<RegistryScreen> {
   final _urlController = TextEditingController();
   late Future<List<Project>> _projects;
 
+  ProjectIndex get _index => widget.index ?? ProjectIndex.instance;
+
   /// Archived projects are a separate view: putting one out of the way should
-  /// take it out of the way.
-  bool _showArchived = false;
+  /// take it out of the way. Seeded from the route, which is what makes the
+  /// console sidebar's Archived entry reachable from any screen.
+  late bool _showArchived = widget.archived;
   String? _error;
+
+  /// How many active projects there are, once a load has said so.
+  int? _trackedCount;
 
   ScanQueue get _scans => widget.scans ?? ScanQueue.instance;
 
@@ -154,8 +189,40 @@ class _RegistryScreenState extends State<RegistryScreen> {
   @override
   void initState() {
     super.initState();
-    _projects = _api.listProjects();
+    _projects = _fetch();
     _scans.addListener(_onScansChanged);
+  }
+
+  /// Follows the route. The console sidebar links to `/` and `/archived`, and
+  /// both land on this same screen — so a filter change arrives as a new
+  /// `archived` rather than as a call to anything here.
+  @override
+  void didUpdateWidget(RegistryScreen old) {
+    super.didUpdateWidget(old);
+    if (old.archived == widget.archived) return;
+    _showArchived = widget.archived;
+    _reload();
+  }
+
+  /// Asks for the current half, and hands the active one to the sidebar.
+  ///
+  /// Only the active set is adopted: the rail lists what you are working on,
+  /// and an archived project appearing there would undo the one thing
+  /// archiving does.
+  Future<List<Project>> _fetch() {
+    final archived = _showArchived;
+    final pending = _api.listProjects(archived: archived);
+    pending.then((projects) {
+      if (!mounted || archived != _showArchived) return;
+      if (!archived) {
+        _index.adopt(projects);
+        setState(() => _trackedCount = projects.length);
+      }
+    }).catchError((Object _) {
+      // The list below already renders the failure; this only exists to stop
+      // an unhandled rejection, and the sidebar simply keeps what it had.
+    });
+    return pending;
   }
 
   /// Watches the router so returning here re-decides the PIN offer.
@@ -211,10 +278,17 @@ class _RegistryScreenState extends State<RegistryScreen> {
     // that returns a Future — so in a debug build this method threw and the
     // list was never rebuilt. It looked like the reload had not been asked for;
     // it had, and it was blowing up on the way out.
-    final projects = _api.listProjects(archived: _showArchived);
+    final projects = _fetch();
     setState(() {
       _projects = projects;
     });
+  }
+
+  /// Switches half. Goes through the router so the address bar follows and the
+  /// sidebar's two entries agree with what is on screen.
+  void _setFilter(bool archived) {
+    if (archived == _showArchived) return;
+    routerOf(context).go(AppRoute.registry(archived: archived));
   }
 
   /// Hands the repository to the background queue and clears the field.
@@ -276,8 +350,44 @@ class _RegistryScreenState extends State<RegistryScreen> {
     }
   }
 
+  /// The offer to set a device PIN. Same widget on both skins — only where it
+  /// sits differs.
+  Widget get _pinPrompt => PinPrompt(
+        key: ValueKey('pin-prompt-$_userId-$_promptRevision'),
+        userId: _userId,
+        onSetUp: _openSettings,
+      );
+
+  Widget get _list => ProjectList(
+        future: _projects,
+        api: _api,
+        archived: _showArchived,
+        index: _index,
+      );
+
   @override
   Widget build(BuildContext context) {
+    return ConsoleFrame(
+      api: _api,
+      active: _showArchived ? ConsoleNav.archived : ConsoleNav.projects,
+      email: _email,
+      index: widget.index,
+      console: RegistryConsole(
+        controller: _urlController,
+        onSubmit: _add,
+        archived: _showArchived,
+        onFilter: _setFilter,
+        error: _error,
+        pinPrompt: _pinPrompt,
+        trackedCount: _trackedCount,
+        grid: _list,
+      ),
+      compact: _buildCompact(context),
+    );
+  }
+
+  /// The layout this app had before the console: an ink band, then the list.
+  Widget _buildCompact(BuildContext context) {
     final email = _email;
 
     final theme = Theme.of(context);
@@ -296,10 +406,7 @@ class _RegistryScreenState extends State<RegistryScreen> {
                   ? Icons.folder_outlined
                   : Icons.inventory_2_outlined,
             ),
-            onPressed: () {
-              setState(() => _showArchived = !_showArchived);
-              _reload();
-            },
+            onPressed: () => _setFilter(!_showArchived),
           ),
           if (email != null)
             Center(
@@ -366,27 +473,14 @@ class _RegistryScreenState extends State<RegistryScreen> {
               ),
             ),
           ),
-          PinPrompt(
-            key: ValueKey(
-              'pin-prompt-$_userId-$_promptRevision',
-            ),
-            userId: _userId,
-            onSetUp: _openSettings,
-          ),
+          _pinPrompt,
           Expanded(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
               // Bounded, so a wide monitor gives more columns rather than
               // wider rows — a project name and its menu at opposite ends of a
               // 2560-pixel row is a head-turn to read.
-              child: BoundedWidth(
-                max: 1180,
-                child: ProjectList(
-                  future: _projects,
-                  api: _api,
-                  archived: _showArchived,
-                ),
-              ),
+              child: BoundedWidth(max: 1180, child: _list),
             ),
           ),
         ],
@@ -450,12 +544,17 @@ class ProjectList extends StatelessWidget {
     required this.api,
     this.archived = false,
     this.surface,
+    this.index,
     super.key,
   });
 
   final Future<List<Project>> future;
   final ApiClient api;
   final bool archived;
+
+  /// Kept in step when a row is deleted, so the sidebar stops offering a link
+  /// to a report the server no longer has.
+  final ProjectIndex? index;
 
   /// Which build this is — it decides whether rows can be swiped. Defaults to
   /// the real one; a widget test runs on neither platform and passes a value.
@@ -508,6 +607,7 @@ class ProjectList extends StatelessWidget {
           api: api,
           archived: archived,
           surface: surface,
+          index: index,
         );
       },
     );
@@ -522,11 +622,13 @@ class _ProjectRows extends StatefulWidget {
     required this.api,
     required this.archived,
     this.surface,
+    this.index,
     super.key,
   });
 
   final List<Project> projects;
   final ApiClient api;
+  final ProjectIndex? index;
 
   /// Whether this is the archived view, which swaps archiving for restoring.
   final bool archived;
@@ -643,6 +745,10 @@ class _ProjectRowsState extends State<_ProjectRows> {
     setState(() => _projects.removeAt(index));
     try {
       await widget.api.deleteProject(project.id);
+      // The sidebar is drawn from a cache this screen feeds, so it has to be
+      // told — otherwise the rail goes on linking to a report the server has
+      // just thrown away.
+      (widget.index ?? ProjectIndex.instance).forget(project.id);
       _show('${project.name} deleted.');
     } on ApiException catch (e) {
       _restoreRow(index, project);
@@ -654,6 +760,12 @@ class _ProjectRowsState extends State<_ProjectRows> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final surface = widget.surface ?? AppSurface.current();
+
+    // The console draws the same projects as cards rather than rows. Only the
+    // drawing differs — archiving, deleting and their undos stay here, because
+    // an optimistic removal belongs in the same object as the list it removes
+    // from.
+    if (ConsoleFrame.isConsole(context)) return _cards(context);
 
     final columns = Layout.of(context).registryColumns;
 
@@ -679,6 +791,44 @@ class _ProjectRowsState extends State<_ProjectRows> {
       itemCount: _projects.length,
       separatorBuilder: (_, __) => const SizedBox(height: 10),
       itemBuilder: (context, i) => _row(context, theme, surface, i),
+    );
+  }
+
+  /// The console's grid of project cards.
+  ///
+  /// Shrink-wrapped and unscrollable: the console page is one scroll view from
+  /// the hero down to the banner, and a grid with its own scrolling inside that
+  /// would trap the wheel over half the page.
+  Widget _cards(BuildContext context) {
+    // Two columns is the drawing, and it holds down to about a 1400-pixel
+    // window; below that a card's repository URL starts wrapping, so the grid
+    // gives up the second column rather than the legibility.
+    final width = MediaQuery.sizeOf(context).width;
+    final columns = width >= 1400 ? 2 : 1;
+
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: columns,
+        mainAxisSpacing: 20,
+        crossAxisSpacing: 20,
+        mainAxisExtent: 152,
+      ),
+      itemCount: _projects.length,
+      itemBuilder: (context, i) {
+        final project = _projects[i];
+        return ProjectCard(
+          key: ValueKey(project.id),
+          project: project,
+          archived: widget.archived,
+          onOpen: () => routerOf(context).openReport(project),
+          onArchive: () => _archive(project, i, archive: !widget.archived),
+          onDelete: () async {
+            if (await _confirmDelete(project)) await _delete(project, i);
+          },
+        );
+      },
     );
   }
 

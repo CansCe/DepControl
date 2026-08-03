@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../api/api_client.dart';
 import '../auth/session_monitor.dart';
 import '../platform/app_surface.dart';
 import '../security/app_lock.dart';
@@ -10,6 +11,8 @@ import '../security/pin_store.dart';
 import '../security/web_session_timeout.dart';
 import '../theme.dart';
 import '../widgets/chrome.dart';
+import '../widgets/console_shell.dart';
+import 'registry_console.dart';
 
 /// Account, session and device settings.
 ///
@@ -26,10 +29,15 @@ class SettingsScreen extends StatefulWidget {
     this.store,
     this.scope,
     this.surface,
+    this.api,
     this.idleLimit = WebSessionTimeout.defaultIdleLimit,
     this.onSignOut,
     super.key,
   });
+
+  /// Only ever used to fill the console sidebar. Nothing on this screen reads
+  /// the registry; the rail beside it does.
+  final ApiClient? api;
 
   /// All optional so the screen can be driven without Supabase. In the app they
   /// are read from the current session.
@@ -146,8 +154,88 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    return ConsoleFrame(
+      api: widget.api ?? ApiClient(),
+      active: ConsoleNav.settings,
+      email: _email,
+      console: ConsolePage(
+        max: 780,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: const ConsoleEyebrow('Account'),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              _email ?? 'Signed in',
+              style: displayOf(context, Theme.of(context).textTheme.headlineSmall),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Your session, and how this device is kept locked.',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Surfaces.of(context).muted,
+                  ),
+            ),
+            const SizedBox(height: 26),
+            ..._cards(context),
+          ],
+        ),
+      ),
+      compact: _buildCompact(context),
+    );
+  }
+
+  /// The cards themselves, which are the same on both skins — they were
+  /// already drawn from the theme rather than from a fixed palette.
+  List<Widget> _cards(BuildContext context) {
     final surface = widget.surface ?? AppSurface.current();
+
+    return [
+      _SessionCard(expiresAt: _expiresAt),
+      const SizedBox(height: 16),
+      // The browser has no PIN to offer: it is not built, cannot be set, and
+      // would not have locked anything the developer console could not reach
+      // anyway. What guards an unattended tab there is the idle sign-out, so
+      // that is what this card describes instead.
+      if (surface.isBrowser)
+        _IdleSignOutCard(idleLimit: widget.idleLimit)
+      else if (_loading)
+        const Card(
+          child: Padding(
+            padding: EdgeInsets.all(28),
+            child: Center(child: CircularProgressIndicator()),
+          ),
+        )
+      else
+        _PinCard(
+          pin: _pin,
+          appliesHere: _pin.appliesTo(_userId),
+          scope: widget.scope ?? PinScope.current(),
+          onCreate: () => _runPinTask(PinTask.create),
+          onChange: () => _runPinTask(PinTask.change),
+          onRemove: () => _runPinTask(PinTask.remove),
+          onLockNow: () {
+            _lock.lockNow();
+            Navigator.of(context).maybePop();
+          },
+        ),
+      const SizedBox(height: 16),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: OutlinedButton.icon(
+          onPressed: _signOut,
+          icon: const Icon(Icons.logout, size: 18),
+          label: const Text('Sign out'),
+        ),
+      ),
+    ];
+  }
+
+  Widget _buildCompact(BuildContext context) {
+    final theme = Theme.of(context);
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -179,43 +267,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   constraints: const BoxConstraints(maxWidth: 720),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _SessionCard(expiresAt: _expiresAt),
-                      const SizedBox(height: 16),
-                      // The browser has no PIN to offer: it is not built,
-                      // cannot be set, and would not have locked anything the
-                      // developer console could not reach anyway. What guards
-                      // an unattended tab there is the idle sign-out, so that
-                      // is what this card describes instead.
-                      if (surface.isBrowser)
-                        _IdleSignOutCard(idleLimit: widget.idleLimit)
-                      else if (_loading)
-                        const Card(
-                          child: Padding(
-                            padding: EdgeInsets.all(28),
-                            child: Center(child: CircularProgressIndicator()),
-                          ),
-                        )
-                      else
-                        _PinCard(
-                          pin: _pin,
-                          appliesHere: _pin.appliesTo(_userId),
-                          scope: widget.scope ?? PinScope.current(),
-                          onCreate: () => _runPinTask(PinTask.create),
-                          onChange: () => _runPinTask(PinTask.change),
-                          onRemove: () => _runPinTask(PinTask.remove),
-                          onLockNow: () {
-                            _lock.lockNow();
-                            Navigator.of(context).maybePop();
-                          },
-                        ),
-                      const SizedBox(height: 16),
-                      OutlinedButton.icon(
-                        onPressed: _signOut,
-                        icon: const Icon(Icons.logout, size: 18),
-                        label: const Text('Sign out'),
-                      ),
-                    ],
+                    children: _cards(context),
                   ),
                 ),
               ),
@@ -322,7 +374,8 @@ class _IdleSignOutCard extends StatelessWidget {
               'refuse one taken earlier, and that stays usable until it '
               'expires on its own. If a machine is lost rather than merely '
               'left open, treat the session as compromised.',
-              style: theme.textTheme.bodySmall?.copyWith(color: Palette.slate),
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: Surfaces.of(context).muted),
             ),
           ],
         ),
@@ -372,7 +425,9 @@ class _PinCard extends StatelessWidget {
                 Icon(
                   appliesHere ? Icons.lock_outline : Icons.lock_open_outlined,
                   size: 18,
-                  color: appliesHere ? Palette.patch : Palette.slate,
+                  color: appliesHere
+                      ? Surfaces.of(context).patch
+                      : Surfaces.of(context).muted,
                 ),
                 const SizedBox(width: 8),
                 Expanded(

@@ -219,7 +219,7 @@ class _Card extends StatelessWidget {
     // one thing it must not be. Findings are already worst-first, so the first
     // flagged one is the accent.
     final accent = report.flagged.isEmpty
-        ? Palette.slate
+        ? Surfaces.of(context).muted
         : licenseRuleColor(report.flagged.first.rule, theme);
 
     return SpineCard(

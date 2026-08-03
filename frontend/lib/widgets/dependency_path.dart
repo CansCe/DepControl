@@ -3,6 +3,7 @@ import 'dart:collection';
 import 'package:flutter/material.dart';
 import 'package:shared/shared.dart';
 
+import '../theme.dart';
 import 'dep_status_chip.dart';
 import 'severity_chip.dart';
 
@@ -289,12 +290,17 @@ class _Upgrade extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
+    // The semver triad, not Material's stock colours. This banner names which
+    // field of MAJOR.MINOR.PATCH would move, which is the one thing the whole
+    // palette is anchored on — drawing it in a red and a blue that mean nothing
+    // anywhere else in the app was the odd one out.
+    final surfaces = Surfaces.of(context);
     final (label, color) = switch (assessment.risk) {
-      UpgradeRisk.breaking => ('Breaking upgrade', Colors.red),
-      UpgradeRisk.minor => ('Minor upgrade', Colors.blue),
-      UpgradeRisk.patch => ('Patch upgrade', Colors.green),
-      UpgradeRisk.none => ('Up to date', Colors.green),
-      UpgradeRisk.unknown => ('Unknown', Colors.blueGrey),
+      UpgradeRisk.breaking => ('Breaking upgrade', surfaces.major),
+      UpgradeRisk.minor => ('Minor upgrade', surfaces.minor),
+      UpgradeRisk.patch => ('Patch upgrade', surfaces.patch),
+      UpgradeRisk.none => ('Up to date', surfaces.patch),
+      UpgradeRisk.unknown => ('Unknown', surfaces.faint),
     };
 
     return Container(
@@ -315,13 +321,13 @@ class _Upgrade extends StatelessWidget {
                     ? Icons.warning_amber_outlined
                     : Icons.info_outline,
                 size: 18,
-                color: color.shade700,
+                color: color,
               ),
               const SizedBox(width: 8),
               Text(
                 label,
                 style: theme.textTheme.titleSmall
-                    ?.copyWith(color: color.shade900),
+                    ?.copyWith(color: color),
               ),
             ],
           ),
@@ -687,12 +693,10 @@ class _Step extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final color = switch (node?.status) {
-      DepStatus.vulnerable => Colors.red,
-      DepStatus.outdated => Colors.orange,
-      DepStatus.upToDate => Colors.green,
-      _ => Colors.blueGrey,
-    };
+    final surfaces = Surfaces.of(context);
+    final color = node?.status == null
+        ? surfaces.faint
+        : depStatusColor(node!.status, surfaces);
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -704,7 +708,7 @@ class _Step extends StatelessWidget {
       child: Text(
         node?.installed != null ? '$name ${node!.installed}' : name,
         style: theme.textTheme.bodySmall?.copyWith(
-          color: color.shade900,
+          color: color,
           fontWeight: isLast ? FontWeight.w600 : FontWeight.w400,
         ),
       ),

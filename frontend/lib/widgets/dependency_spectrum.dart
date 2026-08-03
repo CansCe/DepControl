@@ -16,15 +16,48 @@ enum DepBand {
   current,
   unread;
 
-  Color get color => switch (this) {
+  Color get color => colorOn(Surfaces.light);
+
+  /// This band's colour in [surfaces].
+  ///
+  /// The meanings are fixed; only the brightness moves. Which is the point of
+  /// routing it through the theme: on navy the light theme's rose and its
+  /// advisory red converge, and those two staying apart is the whole reason
+  /// breaking is not drawn in red to begin with.
+  Color colorOn(Surfaces surfaces) => switch (this) {
         // Borrowed from the advisory ramp rather than the semver triad: a CVE
         // is not a version-bump decision, and it should not look like one.
-        DepBand.vulnerable => const Color(0xFFC62828),
-        DepBand.breaking => Palette.major,
-        DepBand.routine => Palette.minor,
-        DepBand.current => Palette.patch,
-        DepBand.unread => Palette.slate,
+        DepBand.vulnerable => surfaces.alarm,
+        DepBand.breaking => surfaces.major,
+        DepBand.routine => surfaces.minor,
+        DepBand.current => surfaces.patch,
+        DepBand.unread => surfaces.faint,
       };
+
+  /// Which band [node] falls in, given whether currency can be judged at all.
+  static DepBand forNode(DepNode node, {required bool showCurrency}) =>
+      showCurrency
+          ? DepBand.of(node)
+          : (node.advisories.isNotEmpty ? DepBand.vulnerable : DepBand.unread);
+
+  /// How many packages fall in each band, worst first.
+  static Map<DepBand, int> tally(
+    List<DepNode> nodes, {
+    required bool showCurrency,
+  }) {
+    final counts = <DepBand, int>{};
+    for (final node in nodes) {
+      counts.update(
+        forNode(node, showCurrency: showCurrency),
+        (n) => n + 1,
+        ifAbsent: () => 1,
+      );
+    }
+    return Map.fromEntries(
+      counts.entries.toList()
+        ..sort((a, b) => a.key.index.compareTo(b.key.index)),
+    );
+  }
 
   String get label => switch (this) {
         DepBand.vulnerable => 'vulnerable',
@@ -112,10 +145,7 @@ class _DependencySpectrumState extends State<DependencySpectrum> {
   void _classify() {
     _bands = <DepBand>[
       for (final node in widget.nodes)
-        if (!widget.showCurrency)
-          node.advisories.isNotEmpty ? DepBand.vulnerable : DepBand.unread
-        else
-          DepBand.of(node),
+        DepBand.forNode(node, showCurrency: widget.showCurrency),
     ]..sort((a, b) => a.index.compareTo(b.index));
 
     _counts = <DepBand, int>{};
@@ -127,6 +157,8 @@ class _DependencySpectrumState extends State<DependencySpectrum> {
   @override
   Widget build(BuildContext context) {
     if (widget.nodes.isEmpty) return const SizedBox.shrink();
+
+    final surfaces = Surfaces.of(context);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -150,6 +182,7 @@ class _DependencySpectrumState extends State<DependencySpectrum> {
                 child: CustomPaint(
                   painter: _SpectrumPainter(
                     bands: _bands,
+                    surfaces: surfaces,
                     columns: columns,
                     tickWidth: _tickWidth,
                     tickGap: _tickGap,
@@ -189,6 +222,7 @@ String _spokenSummary(Map<DepBand, int> counts) {
 class _SpectrumPainter extends CustomPainter {
   const _SpectrumPainter({
     required this.bands,
+    required this.surfaces,
     required this.columns,
     required this.tickWidth,
     required this.tickGap,
@@ -196,6 +230,7 @@ class _SpectrumPainter extends CustomPainter {
   });
 
   final List<DepBand> bands;
+  final Surfaces surfaces;
   final int columns;
   final double tickWidth;
   final double tickGap;
@@ -204,7 +239,8 @@ class _SpectrumPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paints = <DepBand, Paint>{
-      for (final band in DepBand.values) band: Paint()..color = band.color,
+      for (final band in DepBand.values)
+        band: Paint()..color = band.colorOn(surfaces),
     };
     final height = rowHeight - tickGap;
     const radius = Radius.circular(1.5);
@@ -227,6 +263,7 @@ class _SpectrumPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_SpectrumPainter old) =>
+      old.surfaces != surfaces ||
       old.columns != columns ||
       old.tickWidth != tickWidth ||
       old.tickGap != tickGap ||
@@ -244,6 +281,7 @@ class _Key extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final surfaces = Surfaces.of(context);
 
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -252,7 +290,7 @@ class _Key extends StatelessWidget {
           width: 8,
           height: 8,
           decoration: BoxDecoration(
-            color: band.color,
+            color: band.colorOn(surfaces),
             borderRadius: BorderRadius.circular(2),
           ),
         ),
@@ -260,7 +298,11 @@ class _Key extends StatelessWidget {
         Text(
           '$count ${band.label}',
           style: theme.textTheme.labelMedium?.copyWith(
-            color: Colors.white.withValues(alpha: 0.86),
+            // On the light skin this legend is drawn on the ink band, which is
+            // the one place in that theme where white is the body colour.
+            color: surfaces.isDark
+                ? surfaces.muted
+                : Colors.white.withValues(alpha: 0.86),
             fontWeight: FontWeight.w600,
           ),
         ),

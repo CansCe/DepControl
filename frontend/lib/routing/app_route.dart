@@ -13,7 +13,12 @@ sealed class AppRoute {
   const AppRoute();
 
   /// The registry: every project, and the form that adds one.
-  const factory AppRoute.registry() = RegistryRoute;
+  ///
+  /// The archived view is the same screen over a different set rather than a
+  /// route of its own, but it *is* addressable — the console sidebar offers it
+  /// from every screen, and an entry that could only be reached by toggling
+  /// something on one particular screen would not be reachable from there.
+  const factory AppRoute.registry({bool archived}) = RegistryRoute;
 
   /// One project's dependency report.
   const factory AppRoute.report(String projectId) = ReportRoute;
@@ -35,22 +40,27 @@ sealed class AppRoute {
     return switch (path) {
       ['projects', final id, ...] when id.isNotEmpty => ReportRoute(id),
       ['settings', ...] => const SettingsRoute(),
+      ['archived', ...] => const RegistryRoute(archived: true),
       _ => const RegistryRoute(),
     };
   }
 }
 
 class RegistryRoute extends AppRoute {
-  const RegistryRoute();
+  const RegistryRoute({this.archived = false});
+
+  /// Whether this is the put-out-of-the-way half of the registry.
+  final bool archived;
 
   @override
-  String get location => '/';
+  String get location => archived ? '/archived' : '/';
 
   @override
-  bool operator ==(Object other) => other is RegistryRoute;
+  bool operator ==(Object other) =>
+      other is RegistryRoute && other.archived == archived;
 
   @override
-  int get hashCode => (RegistryRoute).hashCode;
+  int get hashCode => Object.hash(RegistryRoute, archived);
 }
 
 class ReportRoute extends AppRoute {

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:shared/shared.dart';
 
+import '../theme.dart';
+
 /// The verified fixes for a project's advisories.
 ///
 /// Loaded on demand rather than with the report: each suggestion costs a full
@@ -103,10 +105,11 @@ class _Fix extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final green = Colors.green.shade800;
+    final surfaces = Surfaces.of(context);
+    final green = surfaces.patch;
     final code = theme.textTheme.bodySmall?.copyWith(
-      fontFamily: 'monospace',
-      fontFamilyFallback: const ['Courier New', 'monospace'],
+      fontFamily: surfaces.faces.mono,
+      fontFamilyFallback: surfaces.faces.monoFallback,
     );
 
     // Only the packages that move besides the one being edited.
