@@ -260,6 +260,12 @@ class _Blocked extends StatelessWidget {
                 RemediationBlocker.unreachable =>
                   'No change to this pubspec reaches a fixed ${fix.package} — '
                       'something in the tree holds it below the fix.',
+                // Not "no fix exists" — this tool cannot work one out. Says so
+                // plainly, and points at what can.
+                RemediationBlocker.unsupportedEcosystem =>
+                  'Fixes are only worked out for Dart packages, and '
+                      '${fix.package} is not one. The advisory is real — check '
+                      'it against your own package manager.',
                 null => 'No fix could be worked out for ${fix.package}.',
               },
               style: theme.textTheme.bodySmall,

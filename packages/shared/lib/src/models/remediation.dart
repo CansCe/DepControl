@@ -26,6 +26,20 @@ enum RemediationBlocker {
   /// A fix exists, but no change to this pubspec reaches it — usually because
   /// something else in the project pins the vulnerable package down.
   unreachable,
+
+  /// The package is not one this server can plan a fix for.
+  ///
+  /// Remediation resolves against pub.dev and edits a `pubspec.yaml`, so it
+  /// covers Dart and nothing else — the resolver is built with the Dart
+  /// ecosystem explicitly, and there is no npm equivalent of it yet.
+  ///
+  /// This is a blocker rather than an omission because the two read completely
+  /// differently to whoever is looking. An npm advisory dropped from the plan
+  /// leaves a report that says "3 vulnerable" beside a panel that offers
+  /// nothing and explains nothing, which reads as "there is no fix" — the one
+  /// conclusion that is definitely wrong. Saying the tool does not cover this
+  /// ecosystem sends someone to `npm audit` instead of to a dead end.
+  unsupportedEcosystem,
 }
 
 /// A concrete, verified change to `pubspec.yaml` that clears one advisory.

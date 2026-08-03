@@ -23,6 +23,15 @@ class Resolver {
 
   final Ecosystem _ecosystem;
 
+  /// Which ecosystem this resolver can answer for.
+  ///
+  /// Exposed because a resolver is built for exactly one — `Deps` passes
+  /// `ecosystems.require('dart')` explicitly — and callers holding a report
+  /// that spans several need to know which of its packages this one can speak
+  /// about, rather than discovering it by handing over an npm package and
+  /// getting nonsense back.
+  Ecosystem get ecosystem => _ecosystem;
+
   Future<ResolutionResult> simulate(
     ManifestFiles files,
     ResolutionRequest request,

@@ -162,4 +162,148 @@ void main() {
       expect(response.statusCode, HttpStatus.methodNotAllowed);
     });
   });
+
+  // Remediation resolves against pub.dev and edits a pubspec, so it covers Dart
+  // and nothing else. What it used to do about that was reach for a
+  // `pubspec.yaml` anyway — which for an npm repository is not there, so
+  // `GitFetcher.fetch` threw and the route answered 500 for every advisory an
+  // npm project has.
+  group('a project this planner does not cover', () {
+    const npmAdvisory = DepNode(
+      name: 'lodash',
+      ecosystem: 'npm',
+      kind: DepKind.direct,
+      installed: '4.17.20',
+      constraint: '^4.17.0',
+      status: DepStatus.vulnerable,
+      advisories: [
+        DepAdvisory(
+          id: 'GHSA-npm-demo',
+          severity: AdvisorySeverity.high,
+          fixedIn: '4.17.21',
+        ),
+      ],
+    );
+
+    test('answers rather than failing', () async {
+      await storeReport(const [npmAdvisory]);
+
+      final response = await remediation_route.onRequest(
+        contextFor(user: alice),
+        'p-alice',
+      );
+
+      expect(response.statusCode, HttpStatus.ok);
+    });
+
+    // The whole point. Dropping the advisory would leave a report saying
+    // "1 vulnerable" beside a panel offering nothing, which reads as "there is
+    // no fix" — the one conclusion that is definitely wrong.
+    test('reports the advisory as blocked, not as absent', () async {
+      await storeReport(const [npmAdvisory]);
+
+      final response = await remediation_route.onRequest(
+        contextFor(user: alice),
+        'p-alice',
+      );
+
+      final plan = RemediationPlan.fromJson(await jsonOf(response));
+      expect(plan.remediations, hasLength(1));
+      expect(plan.blocked.single.package, 'lodash');
+      expect(
+        plan.blocked.single.blocker,
+        RemediationBlocker.unsupportedEcosystem,
+      );
+      expect(plan.blocked.single.advisoryIds, ['GHSA-npm-demo']);
+      expect(plan.actionable, isEmpty);
+    });
+
+    test('does not go looking for a manifest that is not there', () async {
+      await storeReport(const [npmAdvisory]);
+
+      await remediation_route.onRequest(contextFor(user: alice), 'p-alice');
+
+      expect(fetcher.calls, isEmpty);
+    });
+
+    // A repository holding both still gets its Dart fixes planned; only the
+    // packages this planner cannot speak for come back blocked.
+    test('still plans the Dart half of a mixed repository', () async {
+      await storeReport(const [
+        npmAdvisory,
+        DepNode(
+          name: 'http',
+          kind: DepKind.direct,
+          installed: '1.0.0',
+          constraint: '^1.0.0',
+          status: DepStatus.vulnerable,
+          advisories: [
+            DepAdvisory(
+              id: 'GHSA-dart-demo',
+              severity: AdvisorySeverity.high,
+              fixedIn: '1.2.0',
+            ),
+          ],
+        ),
+      ]);
+
+      final response = await remediation_route.onRequest(
+        contextFor(user: alice),
+        'p-alice',
+      );
+
+      final plan = RemediationPlan.fromJson(await jsonOf(response));
+      expect(plan.remediations, hasLength(2));
+      expect(
+        plan.remediations
+            .firstWhere((r) => r.package == 'lodash')
+            .blocker,
+        RemediationBlocker.unsupportedEcosystem,
+      );
+      // The Dart one was actually planned, which means the manifest was read.
+      expect(fetcher.calls, isNotEmpty);
+    });
+  });
+
+  // The report says there are Dart packages and the repository has no pubspec:
+  // a moved directory, a rewritten default branch, a report older than the
+  // layout it describes. The reader needs to know their report is stale, and a
+  // 500 does not tell them that.
+  group('a repository whose manifest has gone', () {
+    test('says the report is stale rather than throwing', () async {
+      deps = Deps.forTesting(
+        repository: repository,
+        gitFetcher: FakeGitFetcher(
+          onFetch: (gitUrl, ref) =>
+              throw StateError('No pubspec.yaml found at $gitUrl ($ref).'),
+        ),
+        analyzer: FakeAnalyzer(),
+      );
+
+      await storeReport(const [
+        DepNode(
+          name: 'http',
+          kind: DepKind.direct,
+          installed: '1.0.0',
+          constraint: '^1.0.0',
+          status: DepStatus.vulnerable,
+          advisories: [
+            DepAdvisory(
+              id: 'GHSA-demo',
+              severity: AdvisorySeverity.high,
+              fixedIn: '1.2.0',
+            ),
+          ],
+        ),
+      ]);
+
+      final response = await remediation_route.onRequest(
+        contextFor(user: alice),
+        'p-alice',
+      );
+
+      expect(response.statusCode, HttpStatus.conflict);
+      expect((await jsonOf(response))['error'], contains('Re-analyze'));
+    });
+  });
 }

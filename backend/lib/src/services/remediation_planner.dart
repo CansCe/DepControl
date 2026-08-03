@@ -26,11 +26,30 @@ class RemediationPlanner {
 
   final Resolver _resolver;
 
+  /// The one ecosystem this planner can plan for.
+  ///
+  /// A remediation is a verified edit to a specific manifest, resolved against
+  /// a specific registry, and [_resolver] is built for exactly one of each.
+  String get _supported => _resolver.ecosystem.id;
+
+  /// Whether [report] holds anything this planner can act on.
+  ///
+  /// Callers use this to avoid fetching a manifest that is not there: asking
+  /// for a `pubspec.yaml` from a repository that has none throws, and an
+  /// npm-only project is the ordinary case of that rather than a broken one.
+  bool covers(DepReport report) =>
+      report.affectedNodes.any((n) => n.ecosystem == _supported);
+
   /// Plans a fix for every advisory in [report], worst first.
   ///
   /// Each candidate costs a resolution, and a resolution costs pub.dev
   /// requests, so [maxPackages] bounds the work: the tail of a long list is not
   /// where anyone starts anyway.
+  ///
+  /// Packages from an ecosystem this planner does not cover come back blocked
+  /// rather than missing. Dropping them would leave a report saying "3
+  /// vulnerable" next to a panel offering nothing, which reads as "there is no
+  /// fix" — see [RemediationBlocker.unsupportedEcosystem].
   Future<RemediationPlan> plan(
     DepReport report,
     ManifestFiles files, {
@@ -40,7 +59,15 @@ class RemediationPlanner {
 
     final remediations = <Remediation>[];
     for (final node in affected) {
-      remediations.add(await _forPackage(node, report, files));
+      remediations.add(
+        node.ecosystem == _supported
+            ? await _forPackage(node, report, files)
+            : Remediation(
+                package: node.name,
+                advisoryIds: node.advisories.map((a) => a.id).toList(),
+                blocker: RemediationBlocker.unsupportedEcosystem,
+              ),
+      );
     }
 
     return RemediationPlan(
@@ -49,6 +76,25 @@ class RemediationPlanner {
       worstSeverity: report.worstSeverity,
     );
   }
+
+  /// A plan that offers nothing, and says why, for a report this planner cannot
+  /// read the manifest of at all.
+  ///
+  /// Separate from [plan] because it needs no [ManifestFiles] — which is the
+  /// whole point: there is no manifest of this planner's kind to fetch.
+  RemediationPlan uncoveredPlan(DepReport report, {int maxPackages = 10}) =>
+      RemediationPlan(
+        projectId: report.projectId,
+        worstSeverity: report.worstSeverity,
+        remediations: [
+          for (final node in report.affectedNodes.take(maxPackages))
+            Remediation(
+              package: node.name,
+              advisoryIds: node.advisories.map((a) => a.id).toList(),
+              blocker: RemediationBlocker.unsupportedEcosystem,
+            ),
+        ],
+      );
 
   Future<Remediation> _forPackage(
     DepNode node,

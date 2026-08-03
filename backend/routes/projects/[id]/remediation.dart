@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:backend/src/archived_project.dart';
 import 'package:backend/src/auth/auth_user.dart';
 import 'package:backend/src/deps.dart';
+import 'package:backend/src/ecosystem/ecosystem.dart';
 import 'package:dart_frog/dart_frog.dart';
 import 'package:shared/shared.dart';
 
@@ -49,10 +50,39 @@ Future<Response> onRequest(RequestContext context, String id) async {
     );
   }
 
+  final planner = deps.planner;
+
+  // A project with nothing this planner covers has no manifest worth fetching.
+  //
+  // Asking for a `pubspec.yaml` from a repository that has none throws, and
+  // that is the ordinary case for an npm project rather than a fault — so
+  // reaching the fetch at all produced a 500 on every advisory an npm project
+  // has. The plan says the ecosystem is not covered instead.
+  if (!planner.covers(report)) {
+    return Response.json(body: planner.uncoveredPlan(report).toJson());
+  }
+
   // Resolve against live content: a fix is only worth offering if it works
   // against the pubspec as it stands now.
-  final files = await deps.gitFetcher.fetch(project.gitUrl, ref: project.ref);
-  final plan = await deps.planner.plan(report, files);
+  final ManifestFiles files;
+  try {
+    files = await deps.gitFetcher.fetch(project.gitUrl, ref: project.ref);
+  } on StateError {
+    // The report says this project has Dart packages and the repository does
+    // not have the manifest they came from — a moved directory, a rewritten
+    // default branch, a report older than the layout it describes. The reader
+    // needs to know their report is stale, which a 500 does not tell them.
+    return Response.json(
+      statusCode: HttpStatus.conflict,
+      body: {
+        'error': 'Could not read ${project.gitUrl} (${project.ref}) to verify '
+            'a fix. Re-analyze the project — the stored report may describe a '
+            'layout the repository no longer has.',
+      },
+    );
+  }
+
+  final plan = await planner.plan(report, files);
 
   return Response.json(body: plan.toJson());
 }

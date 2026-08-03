@@ -132,30 +132,53 @@ class _ConsoleShellState extends State<ConsoleShell> {
     // content is what people came for.
     final collapsed = MediaQuery.sizeOf(context).width < 1280;
 
-    return Scaffold(
-      backgroundColor: surfaces.page,
-      body: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _Sidebar(
-            collapsed: collapsed,
-            active: _active,
-            projects: _index.projects,
-            loading: _index.isLoading && !_index.isLoaded,
-            selectedProjectId: _selectedProjectId,
-            onGo: widget.router.go,
-          ),
-          Expanded(
-            child: Column(
+    // An Overlay of the shell's own, and it is not optional.
+    //
+    // The only Overlay in the app belongs to the Navigator, and the Navigator
+    // arrives here as [widget.child] — *below* this widget. So everything the
+    // shell draws around it (the rail, the bar, the search field) is mounted
+    // above the one thing a tooltip, a popup menu or a snackbar needs, and
+    // asking for any of them throws `No Overlay widget found`.
+    //
+    // That is the cost of the arrangement in `main.dart`, which mounts this
+    // above the Navigator on purpose so the chrome survives the navigation it
+    // drives. The chrome keeps that, and gets somewhere to put a tooltip.
+    //
+    // Worth knowing how this failed, because the symptom named neither cause:
+    // current Flutter resolves the Overlay while *building* a tooltip rather
+    // than when showing one, so the first frame threw and the subtree never
+    // laid out — which surfaced in a release build as `RenderBox was not laid
+    // out` against a minified frame, pointing nowhere near a tooltip.
+    return Overlay(
+      initialEntries: [
+        OverlayEntry(
+          builder: (context) => Scaffold(
+            backgroundColor: surfaces.page,
+            body: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _TopBar(email: _email),
-                Expanded(child: widget.child),
+                _Sidebar(
+                  collapsed: collapsed,
+                  active: _active,
+                  projects: _index.projects,
+                  loading: _index.isLoading && !_index.isLoaded,
+                  selectedProjectId: _selectedProjectId,
+                  onGo: widget.router.go,
+                ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _TopBar(email: _email),
+                      Expanded(child: widget.child),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

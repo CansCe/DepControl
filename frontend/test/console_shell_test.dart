@@ -127,6 +127,51 @@ void main() {
     });
   });
 
+  // Every other case here mounts the shell under `MaterialApp(home:)`, which
+  // puts it *below* the Navigator and therefore below an Overlay. Production
+  // does the opposite — `main.dart` mounts it in `MaterialApp.builder`, above
+  // the Navigator, so the chrome survives the navigation it drives — and that
+  // is the arrangement in which a tooltip in the bar has nowhere to go.
+  //
+  // So this group mounts it the way the app does. Without an Overlay of the
+  // shell's own it throws on the first frame, and in a release build that
+  // surfaced as `RenderBox was not laid out` against a minified frame, which
+  // names neither the tooltip nor the Overlay.
+  group('mounted above the Navigator, as the app mounts it', () {
+    Widget asTheAppMountsIt({ProjectIndex? index}) => MaterialApp(
+          theme: buildConsoleTheme(),
+          builder: (context, child) => ConsoleShell(
+            router: AppRouterDelegate(api: _api()),
+            index: index ?? (ProjectIndex()..adopt([_project])),
+            email: 'someone@example.com',
+            child: child ?? const SizedBox(),
+          ),
+          home: const Text('routed content'),
+        );
+
+    testWidgets('builds without an Overlay lookup failure', (tester) async {
+      _size(tester, const Size(1500, 950));
+
+      await tester.pumpWidget(asTheAppMountsIt());
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('routed content'), findsOneWidget);
+    });
+
+    // The specific widget that failed, named so a future change to the bar
+    // cannot quietly reintroduce it.
+    testWidgets('the top bar can hold a tooltip', (tester) async {
+      _size(tester, const Size(1500, 950));
+
+      await tester.pumpWidget(asTheAppMountsIt());
+      await tester.pumpAndSettle();
+
+      expect(find.byType(Tooltip), findsWidgets);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   group('the sidebar', () {
     testWidgets('lists the tracked projects and marks the open one',
         (tester) async {
