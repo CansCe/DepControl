@@ -5,6 +5,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:frontend/api/api_client.dart';
 import 'package:frontend/api/project_index.dart';
 import 'package:frontend/platform/breakpoints.dart';
+import 'package:frontend/routing/app_route.dart';
+import 'package:frontend/routing/app_router.dart';
 import 'package:frontend/screens/report_screen.dart';
 import 'package:frontend/theme.dart';
 import 'package:frontend/widgets/console_shell.dart';
@@ -96,12 +98,9 @@ void main() {
       await tester.pumpWidget(
         _app(
           console: false,
-          ConsoleFrame(
-            api: _api(),
-            active: ConsoleNav.projects,
-            console: const Text('console'),
-            compact: const Text('compact'),
-            index: ProjectIndex(),
+          const ConsoleFrame(
+            console: Text('console'),
+            compact: Text('compact'),
           ),
         ),
       );
@@ -110,17 +109,14 @@ void main() {
       expect(find.text('console'), findsNothing);
     });
 
-    testWidgets('a wide window gets the shell', (tester) async {
+    testWidgets('a wide window gets the console body', (tester) async {
       _size(tester, const Size(1500, 950));
 
       await tester.pumpWidget(
         _app(
-          ConsoleFrame(
-            api: _api(),
-            active: ConsoleNav.projects,
-            console: const Text('console'),
-            compact: const Text('compact'),
-            index: ProjectIndex(),
+          const ConsoleFrame(
+            console: Text('console'),
+            compact: Text('compact'),
           ),
         ),
       );
@@ -140,9 +136,9 @@ void main() {
       await tester.pumpWidget(
         _app(
           ConsoleShell(
+            router: AppRouterDelegate(api: _api())
+              ..go(const AppRoute.report('p1')),
             api: _api(),
-            active: ConsoleNav.projects,
-            selectedProjectId: 'p1',
             email: 'someone@example.com',
             index: index,
             child: const Text('body'),
@@ -167,8 +163,8 @@ void main() {
       await tester.pumpWidget(
         _app(
           ConsoleShell(
+            router: AppRouterDelegate(api: _api()),
             api: _api(),
-            active: ConsoleNav.projects,
             index: ProjectIndex()..adopt([_project]),
             child: const Text('body'),
           ),
@@ -191,8 +187,8 @@ void main() {
       await tester.pumpWidget(
         _app(
           ConsoleShell(
+            router: AppRouterDelegate(api: _api()),
             api: _api(),
-            active: ConsoleNav.projects,
             index: ProjectIndex(),
             child: const Text('body'),
           ),
@@ -246,7 +242,10 @@ void main() {
       ProjectIndex.instance.reset();
 
       await tester.pumpWidget(
-        _app(ReportScreen(project: _project, api: _api())),
+        // Wrapped in a Scaffold because a console body is deliberately bare —
+        // the shell above the Navigator is what normally supplies the Material
+        // its tabs and rows ink onto.
+        _app(Scaffold(body: ReportScreen(project: _project, api: _api()))),
       );
       await tester.pumpAndSettle();
 
@@ -266,7 +265,10 @@ void main() {
       ProjectIndex.instance.reset();
 
       await tester.pumpWidget(
-        _app(ReportScreen(project: _project, api: _api())),
+        // Wrapped in a Scaffold because a console body is deliberately bare —
+        // the shell above the Navigator is what normally supplies the Material
+        // its tabs and rows ink onto.
+        _app(Scaffold(body: ReportScreen(project: _project, api: _api()))),
       );
       await tester.pumpAndSettle();
 
@@ -275,6 +277,72 @@ void main() {
 
       // An empty tab reads as a failure to load; the all-clear does not.
       expect(find.text('No known vulnerabilities.'), findsOneWidget);
+    });
+  });
+
+  group('moving between projects', () {
+    testWidgets('swaps the content and leaves the shell standing',
+        (tester) async {
+      _size(tester, const Size(1500, 950));
+
+      final router = AppRouterDelegate(api: _api());
+      final index = ProjectIndex()
+        ..adopt([
+          _project,
+          Project(id: 'p2', gitUrl: 'https://github.com/owner/other',
+              name: 'other'),
+        ]);
+
+      await tester.pumpWidget(
+        _app(
+          ConsoleShell(
+            router: router,
+            api: _api(),
+            index: index,
+            child: const Text('body'),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // The State object identity is the assertion: if the rail were rebuilt on
+      // navigation — which is what made opening a project read as a full page
+      // load — this would be a different one afterwards.
+      final before = tester.state(find.byType(ConsoleShell));
+
+      router.go(const AppRoute.report('p1'));
+      await tester.pumpAndSettle();
+      router.go(const AppRoute.report('p2'));
+      await tester.pumpAndSettle();
+
+      expect(tester.state(find.byType(ConsoleShell)), same(before));
+    });
+
+    testWidgets('lights the project the route is on', (tester) async {
+      _size(tester, const Size(1500, 950));
+
+      final router = AppRouterDelegate(api: _api());
+      await tester.pumpWidget(
+        _app(
+          ConsoleShell(
+            router: router,
+            api: _api(),
+            index: ProjectIndex()..adopt([_project]),
+            child: const Text('body'),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // The rail reads the route rather than being told by whichever screen
+      // happens to be mounted, so it cannot disagree with the address bar.
+      router.go(const AppRoute.registry(archived: true));
+      await tester.pumpAndSettle();
+
+      final archived = tester.widget<Icon>(
+        find.byIcon(Icons.inventory_2_outlined),
+      );
+      expect(archived.color, Surfaces.dark.accent);
     });
   });
 

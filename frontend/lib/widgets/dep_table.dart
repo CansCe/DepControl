@@ -274,67 +274,82 @@ class _DepTableState extends State<DepTable> {
   Widget _table(BuildContext context, ThemeData theme) {
     final surfaces = Surfaces.of(context);
 
-    return SingleChildScrollView(
-      scrollDirection: Axis.vertical,
-      child: SizedBox(
-        width: double.infinity,
-        child: DataTable(
-          sortColumnIndex: _sortColumn,
-          sortAscending: _ascending,
-          columns: [
-            for (final label in _columnLabels)
-              DataColumn(
-                label: Text(label),
-                onSort: (c, _) => _sortBy(c, _keyForColumn(c)),
-              ),
-          ],
-          rows: [
-            for (final n in _page)
-              DataRow(
-                // Per-cell onTap rather than onSelectChanged: the latter turns
-                // DataTable into a selectable one, adding a checkbox column and
-                // a "select all" header. With onSelectAll unset, that header
-                // invokes onSelectChanged for every row at once — which here
-                // would try to open a sheet per dependency.
-                cells: [
-                  for (final cell in <Widget>[
-                    Text(
-                      n.name,
-                      style: theme.textTheme.bodyMedium
-                          ?.copyWith(fontWeight: FontWeight.w500),
-                    ),
-                    Text(
-                      n.kind.name,
-                      style: theme.textTheme.bodySmall
-                          ?.copyWith(color: surfaces.muted),
-                    ),
-                    // Versions are machine-assigned, so they are set like it —
-                    // and a monospaced column lets the eye compare `1.2.0`
-                    // against `1.10.0` on the digit rather than on the width.
-                    Text(n.installed,
-                        style: monoOf(context, theme.textTheme.bodyMedium)),
-                    _SizeCell(size: n.size),
-                    if (widget.showCurrency) ...[
+    // Horizontally scrollable, with a floor of the width on offer.
+    //
+    // A `SizedBox(width: infinity)` was not enough: six columns have a minimum
+    // intrinsic width of their own, and where that exceeds the card the table
+    // simply drew past its right edge — the status chips ended up outside the
+    // rounded border, clipped by the page rather than by anything that looked
+    // deliberate. `minWidth` keeps it filling the card whenever it fits, and
+    // the scroll view takes over exactly when it stops fitting.
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minWidth: constraints.maxWidth),
+          child: DataTable(
+            sortColumnIndex: _sortColumn,
+            sortAscending: _ascending,
+            // Tighter than Material's default 56. Six columns of short strings
+            // do not need that much air, and the room it gives back is what
+            // keeps the table inside the card at ordinary window widths.
+            columnSpacing: 28,
+            horizontalMargin: 20,
+            columns: [
+              for (final label in _columnLabels)
+                DataColumn(
+                  label: Text(label),
+                  onSort: (c, _) => _sortBy(c, _keyForColumn(c)),
+                ),
+            ],
+            rows: [
+              for (final n in _page)
+                DataRow(
+                  // Per-cell onTap rather than onSelectChanged: the latter turns
+                  // DataTable into a selectable one, adding a checkbox column
+                  // and a "select all" header. With onSelectAll unset, that
+                  // header invokes onSelectChanged for every row at once —
+                  // which here would try to open a sheet per dependency.
+                  cells: [
+                    for (final cell in <Widget>[
                       Text(
-                        n.latest ?? '—',
-                        style: monoOf(
-                          context,
-                          theme.textTheme.bodyMedium,
-                          color: n.latest == null ? surfaces.muted : null,
-                        ),
+                        n.name,
+                        style: theme.textTheme.bodyMedium
+                            ?.copyWith(fontWeight: FontWeight.w500),
                       ),
-                      DepStatusChip(status: n.status),
-                    ],
-                  ])
-                    DataCell(
-                      cell,
-                      onTap: widget.onSelect == null
-                          ? null
-                          : () => widget.onSelect!(n),
-                    ),
-                ],
-              ),
-          ],
+                      Text(
+                        n.kind.name,
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: surfaces.muted),
+                      ),
+                      // Versions are machine-assigned, so they are set like it
+                      // — and a monospaced column lets the eye compare `1.2.0`
+                      // against `1.10.0` on the digit rather than on the width.
+                      Text(n.installed,
+                          style: monoOf(context, theme.textTheme.bodyMedium)),
+                      _SizeCell(size: n.size),
+                      if (widget.showCurrency) ...[
+                        Text(
+                          n.latest ?? '—',
+                          style: monoOf(
+                            context,
+                            theme.textTheme.bodyMedium,
+                            color: n.latest == null ? surfaces.muted : null,
+                          ),
+                        ),
+                        DepStatusChip(status: n.status),
+                      ],
+                    ])
+                      DataCell(
+                        cell,
+                        onTap: widget.onSelect == null
+                            ? null
+                            : () => widget.onSelect!(n),
+                      ),
+                  ],
+                ),
+            ],
+          ),
         ),
       ),
     );

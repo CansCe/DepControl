@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../api/api_client.dart';
+import '../api/api_config.dart';
 import '../auth/session_monitor.dart';
 import '../platform/app_surface.dart';
 import '../security/app_lock.dart';
@@ -30,14 +31,18 @@ class SettingsScreen extends StatefulWidget {
     this.scope,
     this.surface,
     this.api,
+    this.config,
     this.idleLimit = WebSessionTimeout.defaultIdleLimit,
     this.onSignOut,
     super.key,
   });
 
-  /// Only ever used to fill the console sidebar. Nothing on this screen reads
-  /// the registry; the rail beside it does.
+  /// Fills the console sidebar, and is what the API card pings.
   final ApiClient? api;
+
+  /// Which backend this device talks to. Defaults to the app-wide one;
+  /// injectable so a test does not write to real preferences.
+  final ApiConfig? config;
 
   /// All optional so the screen can be driven without Supabase. In the app they
   /// are read from the current session.
@@ -146,7 +151,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
+  /// Asks first.
+  ///
+  /// Signing out is not destructive, but it is not free either: on the browser
+  /// it is the one button on this screen that throws away work in progress —
+  /// any scan queued from this tab goes with the session — and it sits directly
+  /// under a card about locking, which is a neighbourhood where a misclick is
+  /// easy. One dialog is cheaper than getting signed out by accident.
   Future<void> _signOut() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Sign out?'),
+        content: Text(
+          'You will need to sign in again to reach your projects on '
+          '${(widget.scope ?? PinScope.current()).container.toLowerCase()}.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Sign out'),
+          ),
+        ],
+      ),
+    );
+    if (!(confirmed ?? false)) return;
+
     final handler = widget.onSignOut ?? SessionMonitor.instance.signOutRequested;
     await handler();
     if (mounted) Navigator.of(context).maybePop();
@@ -155,9 +189,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     return ConsoleFrame(
-      api: widget.api ?? ApiClient(),
-      active: ConsoleNav.settings,
-      email: _email,
       console: ConsolePage(
         max: 780,
         child: Column(
@@ -223,6 +254,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           },
         ),
       const SizedBox(height: 16),
+      const SizedBox(height: 16),
+      _ApiCard(config: widget.config ?? ApiConfig.instance, api: widget.api),
+      const SizedBox(height: 16),
       Align(
         alignment: Alignment.centerLeft,
         child: OutlinedButton.icon(
@@ -274,6 +308,222 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Which backend this device talks to.
+///
+/// Shown to everyone rather than hidden behind a developer flag. The address is
+/// compiled in, so when the app cannot reach it the failure surfaces as every
+/// screen at once saying it could not load — and the first useful question is
+/// "where is it even looking". Printing that, and letting it be pointed
+/// somewhere else, turns a whole class of "the app is broken" into something a
+/// person can check in ten seconds.
+class _ApiCard extends StatefulWidget {
+  const _ApiCard({required this.config, this.api});
+
+  final ApiConfig config;
+  final ApiClient? api;
+
+  @override
+  State<_ApiCard> createState() => _ApiCardState();
+}
+
+class _ApiCardState extends State<_ApiCard> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.config.baseUrl);
+
+  String? _error;
+  bool _saving = false;
+  bool _pinging = false;
+  ({bool reachable, String detail})? _result;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.config.addListener(_onConfigChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.config.removeListener(_onConfigChanged);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onConfigChanged() {
+    if (!mounted) return;
+    setState(() {
+      _controller.text = widget.config.baseUrl;
+      // Whatever the last check said was about the old address.
+      _result = null;
+    });
+  }
+
+  Future<void> _save() async {
+    setState(() {
+      _saving = true;
+      _error = null;
+      _result = null;
+    });
+
+    final problem = await widget.config.setBaseUrl(_controller.text);
+
+    if (!mounted) return;
+    setState(() {
+      _saving = false;
+      _error = problem;
+    });
+    if (problem != null) return;
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text('Now talking to ${widget.config.baseUrl}.')),
+      );
+  }
+
+  Future<void> _useDefault() async {
+    await widget.config.setBaseUrl(null);
+    if (mounted) setState(() => _error = null);
+  }
+
+  /// Checks the address in the *field*, not the saved one, so it can be tried
+  /// before committing to it.
+  Future<void> _test() async {
+    final typed = _controller.text.trim();
+    final problem = ApiConfig.validate(typed);
+    if (problem != null) {
+      setState(() => _error = problem);
+      return;
+    }
+
+    setState(() {
+      _pinging = true;
+      _error = null;
+      _result = null;
+    });
+
+    final api = widget.api ?? ApiClient(baseUrl: ApiConfig.normalize(typed));
+    final result = await api.ping();
+
+    if (mounted) {
+      setState(() {
+        _pinging = false;
+        _result = result;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final surfaces = Surfaces.of(context);
+    final busy = _saving || _pinging;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Eyebrow('API'),
+            const SizedBox(height: 10),
+            Text(
+              'Where this app looks for the DepControl server. Stored on this '
+              'device only — it does not follow your account.',
+              style: theme.textTheme.bodySmall?.copyWith(color: surfaces.muted),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _controller,
+              enabled: !busy,
+              style: monoOf(context, theme.textTheme.bodyMedium),
+              decoration: InputDecoration(
+                labelText: 'Base URL',
+                hintText: widget.config.compiledDefault,
+                hintStyle: monoOf(
+                  context,
+                  theme.textTheme.bodyMedium,
+                  color: surfaces.faint,
+                ),
+                prefixIcon: const Icon(Icons.dns_outlined, size: 20),
+                errorText: _error,
+              ),
+              onSubmitted: busy ? null : (_) => _save(),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                FilledButton(
+                  onPressed: busy ? null : _save,
+                  child: _saving
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Save'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: busy ? null : _test,
+                  icon: _pinging
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.wifi_tethering, size: 18),
+                  label: const Text('Test connection'),
+                ),
+                // Only worth offering when it would change something.
+                if (widget.config.isCustom)
+                  TextButton(
+                    onPressed: busy ? null : _useDefault,
+                    child: const Text('Use the default'),
+                  ),
+              ],
+            ),
+            if (_result case final result?) ...[
+              const SizedBox(height: 12),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    result.reachable
+                        ? Icons.check_circle_outline
+                        : Icons.error_outline,
+                    size: 17,
+                    color: result.reachable ? surfaces.patch : surfaces.alarm,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      result.detail,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color:
+                            result.reachable ? surfaces.patch : surfaces.alarm,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            if (!widget.config.isCustom) ...[
+              const SizedBox(height: 10),
+              Text(
+                'This is the address this build was compiled with.',
+                style:
+                    theme.textTheme.bodySmall?.copyWith(color: surfaces.faint),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }

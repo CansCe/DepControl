@@ -43,6 +43,11 @@ class DepStatusChip extends StatelessWidget {
       ),
       child: Text(
         label,
+        // Never wrapped. `up to date` broke across two lines the moment the
+        // column was squeezed, which made the chip taller than its row and set
+        // every row in the table to a different height.
+        softWrap: false,
+        overflow: TextOverflow.visible,
         style: TextStyle(
           fontFamily: surfaces.faces.body,
           color: color,

@@ -7,6 +7,7 @@ import 'package:shared/shared.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'api/api_client.dart';
+import 'api/api_config.dart';
 import 'api/project_index.dart';
 import 'auth/auth_gate.dart';
 import 'auth/session_monitor.dart';
@@ -31,6 +32,9 @@ SupabaseClient get supabase => Supabase.instance.client;
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   _goFullscreen();
+  // Before the first client is built, so a device pointed at a different
+  // backend does not spend one launch talking to the compiled-in default.
+  await ApiConfig.instance.load();
   await Supabase.initialize(
     url: 'https://ogsnkqlamfvftdgvvtje.supabase.co',
     // Publishable key — public by design; safe in client code.
@@ -113,16 +117,32 @@ class _DepControlAppState extends State<DepControlApp> {
       // which MaterialApp inserts above this builder and not above itself. A
       // wide browser window gets the dark console; anything narrower, including
       // every phone, keeps the light layout this app already had.
-      builder: (context, child) => Theme(
-        data: Layout.of(context).isConsole ? _console : _paper,
-        child: ScanOverlay(
-          child: AuthGate(
-            child: WebSessionTimeout(
-              child: PinGate(child: child ?? const SizedBox()),
+      //
+      // The console shell wraps the Navigator for the same reason everything
+      // else here does: the rail and the bar have to survive the navigation
+      // they drive. Inside a screen they were rebuilt on every route change,
+      // which made opening a project from the rail look like a page reload.
+      // It sits inside the auth gate, so the sign-in screen is not framed by a
+      // sidebar belonging to nobody.
+      builder: (context, child) {
+        final console = Layout.of(context).isConsole;
+        final content = child ?? const SizedBox();
+
+        return Theme(
+          data: console ? _console : _paper,
+          child: ScanOverlay(
+            child: AuthGate(
+              child: WebSessionTimeout(
+                child: PinGate(
+                  child: console
+                      ? ConsoleShell(router: _delegate, child: content)
+                      : content,
+                ),
+              ),
             ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }
@@ -368,10 +388,6 @@ class _RegistryScreenState extends State<RegistryScreen> {
   @override
   Widget build(BuildContext context) {
     return ConsoleFrame(
-      api: _api,
-      active: _showArchived ? ConsoleNav.archived : ConsoleNav.projects,
-      email: _email,
-      index: widget.index,
       console: RegistryConsole(
         controller: _urlController,
         onSubmit: _add,

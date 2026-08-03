@@ -237,51 +237,69 @@ class _Actions extends StatelessWidget {
   Widget build(BuildContext context) {
     final surfaces = Surfaces.of(context);
 
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        if (isScanning)
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 18),
-            child: SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-          )
-        else if (onReanalyze != null)
-          OutlinedButton.icon(
-            onPressed: onReanalyze,
-            icon: const Icon(Icons.refresh, size: 18),
-            label: const Text('Re-analyze'),
-          ),
-        if (onExport != null) ...[
-          const SizedBox(width: 10),
-          PopupMenuButton<String>(
-            tooltip: 'Export',
-            onSelected: (choice) => onExport!(asCsv: choice == 'csv'),
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'csv', child: Text('Download CSV')),
-              PopupMenuItem(value: 'json', child: Text('Download JSON')),
-            ],
-            child: Container(
-              height: 41,
-              width: 41,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: surfaces.raised,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: surfaces.hairline),
+    // Both controls are pinned to one height rather than each sizing to its own
+    // content. They sit side by side and read as a pair, and a button that is
+    // two pixels shorter than the one next to it looks like a mistake even when
+    // nobody can say which of the two is wrong.
+    return SizedBox(
+      height: _actionHeight,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (isScanning)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 18),
+              child: Center(
+                child: SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
               ),
-              child: Icon(Icons.download_outlined,
-                  size: 19, color: surfaces.text),
+            )
+          else if (onReanalyze != null)
+            OutlinedButton.icon(
+              onPressed: onReanalyze,
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('Re-analyze'),
+              style: OutlinedButton.styleFrom(
+                // The theme's vertical padding would otherwise decide the
+                // height, and it is set for buttons that stand alone.
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                minimumSize: const Size(0, _actionHeight),
+              ),
             ),
-          ),
+          if (onExport != null) ...[
+            const SizedBox(width: 10),
+            PopupMenuButton<String>(
+              tooltip: 'Export',
+              onSelected: (choice) => onExport!(asCsv: choice == 'csv'),
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'csv', child: Text('Download CSV')),
+                PopupMenuItem(value: 'json', child: Text('Download JSON')),
+              ],
+              child: Container(
+                height: _actionHeight,
+                width: _actionHeight,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: surfaces.raised,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: surfaces.hairline),
+                ),
+                child: Icon(Icons.download_outlined,
+                    size: 19, color: surfaces.text),
+              ),
+            ),
+          ],
         ],
-      ],
+      ),
     );
   }
 }
+
+/// The height every control in the report header is drawn at.
+const _actionHeight = 40.0;
 
 /// The four figures the whole report is judged against.
 class _Stats extends StatelessWidget {

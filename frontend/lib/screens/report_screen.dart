@@ -6,7 +6,6 @@ import 'package:shared/shared.dart';
 import '../api/api_client.dart';
 import '../auth/session_monitor.dart';
 import '../export/file_download.dart';
-import '../main.dart' show supabase;
 import '../export/report_export.dart';
 import '../platform/breakpoints.dart';
 import '../platform/relative_time.dart';
@@ -214,20 +213,6 @@ class _ReportScreenState extends State<ReportScreen> {
     );
   }
 
-  /// The signed-in address for the console's top bar.
-  ///
-  /// Guarded the same way the registry guards its own lookup: reaching for
-  /// `Supabase.instance` before `main` has initialized it throws, which would
-  /// make this screen unmountable in a widget test for the sake of one line of
-  /// chrome.
-  String? get _email {
-    try {
-      return supabase.auth.currentUser?.email;
-    } catch (_) {
-      return null;
-    }
-  }
-
   /// Loading, failure and "nothing here yet", which both skins answer the same
   /// way. [ready] is called only with a report that has something in it.
   Widget _gate(
@@ -267,10 +252,6 @@ class _ReportScreenState extends State<ReportScreen> {
   Widget build(BuildContext context) {
     return Builder(
       builder: (context) => ConsoleFrame(
-        api: widget.api,
-        active: ConsoleNav.projects,
-        selectedProjectId: _project.id,
-        email: _email,
         console: FutureBuilder<DepReport?>(
           future: _report,
           builder: (context, snap) => _gate(snap, (report) => _console(report)),

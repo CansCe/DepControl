@@ -127,11 +127,22 @@ class _SignInScreenState extends State<SignInScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final surfaces = Surfaces.of(context);
 
-    // Ink page, paper form. The same two surfaces the rest of the app is built
-    // from, so the first screen someone sees already teaches the palette.
+    // The same two surfaces the rest of the app is built from, so the first
+    // screen someone sees already teaches the palette — which means it has to
+    // follow the app into the console.
+    //
+    // On paper that pairing is ink and white, and the contrast is what lifts
+    // the form off the page. In the console both surfaces are already dark, and
+    // dropping a white card onto near-black navy is not that same idea drawn
+    // twice: it is a light box in a dark room, and it is the brightest thing on
+    // a screen whose whole point is to be read for a long time.
+    final page = surfaces.isDark ? surfaces.page : Palette.ink;
+    final card = surfaces.isDark ? surfaces.card : Palette.paper;
+
     return Scaffold(
-      backgroundColor: Palette.ink,
+      backgroundColor: page,
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
@@ -141,13 +152,17 @@ class _SignInScreenState extends State<SignInScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Eyebrow('DepControl', color: Palette.pub),
+                Eyebrow(
+                  'DepControl',
+                  color: surfaces.isDark ? surfaces.accent : Palette.pub,
+                ),
                 const SizedBox(height: 8),
                 Text(
                   _isSignUp ? 'Track a project.' : 'Know what you depend on.',
-                  style: display(
+                  style: displayOf(
+                    context,
                     theme.textTheme.headlineMedium,
-                    color: Colors.white,
+                    color: surfaces.isDark ? surfaces.text : Colors.white,
                   ),
                 ),
                 const SizedBox(height: 6),
@@ -156,15 +171,22 @@ class _SignInScreenState extends State<SignInScreen> {
                       ? 'Create an account to start tracking projects.'
                       : 'Sign in to see your projects.',
                   style: theme.textTheme.bodyMedium?.copyWith(
-                    color: Colors.white.withValues(alpha: 0.62),
+                    color: surfaces.isDark
+                        ? surfaces.muted
+                        : Colors.white.withValues(alpha: 0.62),
                   ),
                 ),
                 const SizedBox(height: 22),
                 Container(
                   padding: const EdgeInsets.all(24),
                   decoration: BoxDecoration(
-                    color: Palette.paper,
+                    color: card,
                     borderRadius: BorderRadius.circular(16),
+                    // The card can no longer rely on being a different
+                    // lightness from the page, so it gets an edge instead.
+                    border: surfaces.isDark
+                        ? Border.all(color: surfaces.hairline)
+                        : null,
                   ),
                   child: Form(
                     key: _formKey,

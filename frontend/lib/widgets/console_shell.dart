@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared/shared.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../api/api_client.dart';
 import '../api/project_index.dart';
@@ -21,32 +22,37 @@ enum ConsoleNav { projects, archived, settings }
 ///
 /// Only the wide build. A phone has no room for a 240-pixel rail that is not
 /// the content, and the compact layout keeps the stack-of-screens shape that
-/// suits it — see [ConsoleFrame], which is what actually decides.
+/// suits it — see [ConsoleFrame], which is what each screen uses to choose.
+///
+/// Mounted **above the Navigator**, not inside a screen. That is the whole
+/// point of it: a rail whose job is to still be there while you move between
+/// projects cannot be part of what moves. Built per-screen it was torn down and
+/// rebuilt on every navigation — the sidebar re-fetched, the bar blinked, and
+/// clicking a project in the rail read as a full page load rather than as
+/// opening the next report. Above the Navigator only the content swaps.
 class ConsoleShell extends StatefulWidget {
   const ConsoleShell({
-    required this.api,
-    required this.active,
+    required this.router,
     required this.child,
-    this.selectedProjectId,
+    this.api,
     this.email,
     this.index,
     super.key,
   });
 
-  final ApiClient api;
+  /// Where the shell reads which entry is lit, and where its links go.
+  ///
+  /// Passed rather than looked up: this sits in `MaterialApp.builder`, whose
+  /// context is *above* the Router, so `Router.of` would not find it.
+  final AppRouterDelegate router;
 
-  /// Which entry is lit.
-  final ConsoleNav active;
-
-  /// The screen.
+  /// The Navigator.
   final Widget child;
 
-  /// Which tracked project is open, if any, so its row reads as the current
-  /// one and not merely as another link.
-  final String? selectedProjectId;
+  /// Fills the sidebar. Defaults to the router's own client.
+  final ApiClient? api;
 
-  /// The signed-in address, shown in the bar. Null where there is no session to
-  /// ask — a widget test, mostly.
+  /// The signed-in address, shown in the bar. Read from the session when null.
   final String? email;
 
   /// Where the sidebar's list comes from. Defaults to the app-wide index;
@@ -59,39 +65,62 @@ class ConsoleShell extends StatefulWidget {
 
 class _ConsoleShellState extends State<ConsoleShell> {
   ProjectIndex get _index => widget.index ?? ProjectIndex.instance;
+  ApiClient get _api => widget.api ?? widget.router.api;
 
   @override
   void initState() {
     super.initState();
-    _index.addListener(_onIndexChanged);
-    // Costs nothing when the registry screen has already handed its fetch over,
-    // which is the common path — this covers arriving straight at a report from
-    // a bookmark, where nothing else would have asked.
-    _index.ensureLoaded(widget.api);
+    _index.addListener(_onChanged);
+    widget.router.addListener(_onChanged);
+    // Runs once for the session now that the shell outlives navigation. Costs
+    // nothing when the registry screen has already handed its fetch over, and
+    // covers arriving straight at a report from a bookmark.
+    _index.ensureLoaded(_api);
+  }
+
+  @override
+  void didUpdateWidget(ConsoleShell old) {
+    super.didUpdateWidget(old);
+    if (identical(old.router, widget.router)) return;
+    old.router.removeListener(_onChanged);
+    widget.router.addListener(_onChanged);
   }
 
   @override
   void dispose() {
-    _index.removeListener(_onIndexChanged);
+    widget.router.removeListener(_onChanged);
+    _index.removeListener(_onChanged);
     super.dispose();
   }
 
-  void _onIndexChanged() {
+  void _onChanged() {
     if (mounted) setState(() {});
   }
 
-  /// Navigates the way the rest of the app does.
-  ///
-  /// Through the delegate's own `go` rather than `setNewRoutePath`: the latter
-  /// is the entry point for a URL arriving from outside and rebuilds the whole
-  /// stack, so using it here would make every rail click behave like a cold
-  /// load — including throwing away the report underneath.
-  void _go(AppRoute route) {
-    final delegate = Router.of(context).routerDelegate;
-    if (delegate is AppRouterDelegate) {
-      delegate.go(route);
-    } else {
-      delegate.setNewRoutePath(route);
+  /// Which rail entry the current route lights.
+  ConsoleNav get _active => switch (widget.router.currentConfiguration) {
+        RegistryRoute(:final archived) =>
+          archived ? ConsoleNav.archived : ConsoleNav.projects,
+        SettingsRoute() => ConsoleNav.settings,
+        // A report is a project, and projects are what the registry lists.
+        ReportRoute() => ConsoleNav.projects,
+      };
+
+  /// Which tracked project is open, so its row reads as the current one rather
+  /// than as another link.
+  String? get _selectedProjectId =>
+      switch (widget.router.currentConfiguration) {
+        ReportRoute(:final projectId) => projectId,
+        _ => null,
+      };
+
+  /// The signed-in address, or null where there is no Supabase to ask.
+  String? get _email {
+    if (widget.email != null) return widget.email;
+    try {
+      return Supabase.instance.client.auth.currentUser?.email;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -110,17 +139,17 @@ class _ConsoleShellState extends State<ConsoleShell> {
         children: [
           _Sidebar(
             collapsed: collapsed,
-            active: widget.active,
+            active: _active,
             projects: _index.projects,
             loading: _index.isLoading && !_index.isLoaded,
-            selectedProjectId: widget.selectedProjectId,
-            onGo: _go,
+            selectedProjectId: _selectedProjectId,
+            onGo: widget.router.go,
           ),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _TopBar(email: widget.email),
+                _TopBar(email: _email),
                 Expanded(child: widget.child),
               ],
             ),
@@ -131,52 +160,34 @@ class _ConsoleShellState extends State<ConsoleShell> {
   }
 }
 
-/// Picks the skin.
+/// Picks which of its two layouts a screen shows.
 ///
-/// One place decides, so a screen says "wrap me in the console if this is a
-/// console" rather than each of them re-deriving what a wide window means. The
-/// compact build is handed straight through untouched — it is not a narrower
-/// console, it is the layout this app already had.
+/// One place decides what a wide window means, so a screen says "here is my
+/// console body and here is my narrow one" rather than each of them
+/// re-deriving it. The compact build is handed straight through untouched — it
+/// is not a narrower console, it is the layout this app already had.
+///
+/// The console body is *bare*: no Scaffold, no rail, no bar. Those come from
+/// [ConsoleShell], which is mounted once above the Navigator.
 class ConsoleFrame extends StatelessWidget {
   const ConsoleFrame({
-    required this.api,
-    required this.active,
     required this.console,
     required this.compact,
-    this.selectedProjectId,
-    this.email,
-    this.index,
     super.key,
   });
 
-  final ApiClient api;
-  final ConsoleNav active;
-
-  /// The body to put inside the rail and the bar.
+  /// The body to lay inside the shell's content column.
   final Widget console;
 
   /// The whole screen, Scaffold and all, for a narrow window.
   final Widget compact;
 
-  final String? selectedProjectId;
-  final String? email;
-  final ProjectIndex? index;
-
   /// Whether [context] is wide enough for the console.
   static bool isConsole(BuildContext context) => Layout.of(context).isConsole;
 
   @override
-  Widget build(BuildContext context) {
-    if (!isConsole(context)) return compact;
-    return ConsoleShell(
-      api: api,
-      active: active,
-      selectedProjectId: selectedProjectId,
-      email: email,
-      index: index,
-      child: console,
-    );
-  }
+  Widget build(BuildContext context) =>
+      isConsole(context) ? console : compact;
 }
 
 class _Sidebar extends StatelessWidget {

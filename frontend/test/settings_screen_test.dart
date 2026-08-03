@@ -209,7 +209,7 @@ void main() {
     });
   });
 
-  testWidgets('signs out', (tester) async {
+  testWidgets('signs out, once the dialog is accepted', (tester) async {
     var signOuts = 0;
     await pumpSettings(
       tester,
@@ -221,7 +221,40 @@ void main() {
     await tester.tap(find.text('Sign out'));
     await tester.pumpAndSettle();
 
+    // The button asks first now, so pressing it is not yet signing out.
+    expect(find.text('Sign out?'), findsOneWidget);
+    expect(signOuts, 0);
+
+    // The dialog's confirm carries the same words as the button that opened it,
+    // so the tap has to be aimed inside the dialog.
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.text('Sign out'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
     expect(signOuts, 1);
+  });
+
+  testWidgets('cancelling the dialog leaves the session alone', (tester) async {
+    var signOuts = 0;
+    await pumpSettings(
+      tester,
+      store: await emptyStore(),
+      onSignOut: () async => signOuts++,
+    );
+
+    await tester.ensureVisible(find.text('Sign out'));
+    await tester.tap(find.text('Sign out'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(signOuts, 0);
+    expect(find.text('Sign out?'), findsNothing);
   });
 
   group('on the browser build', () {

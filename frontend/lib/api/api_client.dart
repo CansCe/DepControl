@@ -1,8 +1,11 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 import 'package:shared/shared.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
+import 'api_config.dart';
 
 /// Where the API lives, baked in at build time:
 ///
@@ -26,18 +29,79 @@ const String kDefaultApiBaseUrl = String.fromEnvironment(
 /// refresh rather than a value captured at construction.
 class ApiClient {
   ApiClient({
-    this.baseUrl = kDefaultApiBaseUrl,
+    String? baseUrl,
     http.Client? client,
     Future<String?> Function()? accessToken,
-  })  : _client = client ?? http.Client(),
+  })  : _baseUrl = baseUrl,
+        _client = client ?? http.Client(),
         _accessToken = accessToken ?? _sessionToken;
 
-  final String baseUrl;
+  /// Set only where a caller pinned the address — a test, mostly.
+  final String? _baseUrl;
+
+  /// Where requests go.
+  ///
+  /// Resolved per read rather than captured at construction, so a device that
+  /// is pointed at a different backend from settings takes effect on the next
+  /// request instead of on the next launch. A client built with an explicit
+  /// `baseUrl` ignores all of that and stays where it was put.
+  String get baseUrl => _baseUrl ?? ApiConfig.instance.baseUrl;
+
   final http.Client _client;
   final Future<String?> Function() _accessToken;
 
   static Future<String?> _sessionToken() async =>
       Supabase.instance.client.auth.currentSession?.accessToken;
+
+  /// Whether anything is answering at [baseUrl], and what it says it is.
+  ///
+  /// Deliberately hits `GET /`, the one route that takes no token: the question
+  /// a settings screen has to answer is "is the address right", and mixing it
+  /// with "is the session valid" makes an expired token look like a typo in a
+  /// hostname. Never throws — the failure *is* the answer.
+  Future<({bool reachable, String detail})> ping({
+    Duration timeout = const Duration(seconds: 6),
+  }) async {
+    try {
+      final response =
+          await _client.get(Uri.parse(baseUrl)).timeout(timeout);
+
+      if (response.statusCode != 200) {
+        return (
+          reachable: false,
+          detail: 'Answered ${response.statusCode}.',
+        );
+      }
+
+      // A 200 from something that is not this API is the interesting failure:
+      // a proxy, a login page, somebody's default nginx.
+      final body = jsonDecode(response.body);
+      final service = body is Map ? body['service'] : null;
+      if (service != 'depcontrol-api') {
+        return (
+          reachable: false,
+          detail: 'Something answered, but it is not a DepControl API.',
+        );
+      }
+      return (reachable: true, detail: 'Reached the DepControl API.');
+    } on Object catch (error) {
+      return (reachable: false, detail: _pingFailure(error));
+    }
+  }
+
+  static String _pingFailure(Object error) {
+    final text = error.toString();
+    if (error is FormatException) return 'Answered, but not with JSON.';
+    if (text.contains('TimeoutException')) return 'No answer before timing out.';
+    // A browser reports a blocked cross-origin request as an opaque failure, so
+    // this is the one place worth naming the likely cause rather than printing
+    // an exception nobody can act on.
+    if (kIsWeb) {
+      return 'Could not reach it. On the web this also happens when the '
+          'server is up but does not allow this origin.';
+    }
+    return 'Could not reach it.';
+  }
 
   /// The caller's projects — active ones by default, archived ones when
   /// [archived] is true. Never both: archiving is how someone puts a project

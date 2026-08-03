@@ -69,6 +69,13 @@ class AppRouterDelegate extends RouterDelegate<AppRoute>
       _stack
         ..clear()
         ..add(route);
+    } else if (route is ReportRoute && _stack.last is ReportRoute) {
+      // Two reports are siblings, not one inside the other. The console rail
+      // offers every project from every project, so stacking them would build a
+      // pile as deep as the number of projects looked at — and back would then
+      // walk that history instead of returning to the registry, which is the
+      // only place back means anything from here.
+      _stack[_stack.length - 1] = route;
     } else {
       _stack.add(route);
     }

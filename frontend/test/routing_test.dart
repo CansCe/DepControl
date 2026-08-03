@@ -139,13 +139,40 @@ void main() {
       expect(d.stack, before);
     });
 
-    test('two different reports are two entries', () {
+    test('one report replaces another rather than stacking on it', () {
+      // The console rail offers every project from every project, so stacking
+      // would build a pile as deep as the number of projects looked at — and
+      // back would then walk that history instead of returning to the registry,
+      // which is the only place back means anything from a report.
       final d = delegate()
         ..go(const AppRoute.report('p1'))
         ..go(const AppRoute.report('p2'));
 
-      expect(d.stack.length, 3);
+      expect(d.stack, [
+        const AppRoute.registry(),
+        const AppRoute.report('p2'),
+      ]);
       expect(d.currentConfiguration, const AppRoute.report('p2'));
+    });
+
+    test('back from any report returns to the registry', () {
+      final d = delegate()
+        ..go(const AppRoute.report('p1'))
+        ..go(const AppRoute.report('p2'))
+        ..go(const AppRoute.report('p3'));
+
+      expect(d.pop(), isTrue);
+      expect(d.currentConfiguration, const AppRoute.registry());
+    });
+
+    test('a report opened from settings still stacks on it', () {
+      // Only *sibling* reports collapse. Settings is somewhere else, and
+      // leaving a report for it and back again is a real two-entry journey.
+      final d = delegate()
+        ..go(const AppRoute.settings())
+        ..go(const AppRoute.report('p1'));
+
+      expect(d.stack.length, 3);
     });
 
     test('notifies so the address bar follows', () {
