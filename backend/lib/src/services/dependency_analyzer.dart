@@ -14,14 +14,32 @@ import 'scan_progress_store.dart';
 /// the constraint dialect — is reached through [Ecosystem]; what is left is the
 /// part that is the same for all of them, which turns out to be most of it.
 class DependencyAnalyzer {
-  DependencyAnalyzer(this._ecosystems, {Map<String, ConstraintResolver>? resolvers})
-      : _resolvers = resolvers ??
+  DependencyAnalyzer(
+    this._ecosystems, {
+    Map<String, ConstraintResolver>? resolvers,
+    Duration lookupBudget = const Duration(seconds: 45),
+  })  : _lookupBudget = lookupBudget,
+        _resolvers = resolvers ??
             {
               for (final ecosystem in _ecosystems.all)
                 ecosystem.id: ConstraintResolver(ecosystem),
             };
 
   final Ecosystems _ecosystems;
+
+  /// How long one registry lookup may take before the node reports it as
+  /// unmeasured.
+  ///
+  /// Deliberately larger than the registry clients' own per-request timeout,
+  /// because a single lookup here can legitimately be more than one request —
+  /// a license read falls back to the latest release, an advisory with no
+  /// stated fix consults the release history. This is the outer bound that
+  /// stops a worker being held forever, not the first line of defence.
+  ///
+  /// Injectable so a test can prove the degradation without waiting for it.
+  /// Private, so the fakes that stand in for this class in route tests are not
+  /// made to carry a knob they have no use for.
+  final Duration _lookupBudget;
 
   /// One resolver per ecosystem: each caches the versions it has fetched, and
   /// those caches must not be shared across registries.
@@ -209,9 +227,11 @@ class DependencyAnalyzer {
       ..phase(ScanPhase.analyzing)
       ..manifestStarted(names.length);
 
-    // Each package needs two or three registry requests. Done one at a time a
-    // 50-package project takes tens of seconds, so run a bounded number in
-    // parallel — bounded to stay a polite API client.
+    // Each package costs a couple of registry round trips even with everything
+    // cached and overlapped. Done one at a time a 50-package project takes tens
+    // of seconds, so run a bounded number in parallel — bounded to stay a
+    // polite API client. Note that each of these now has two or three requests
+    // of its own in flight, so the real ceiling is a small multiple of this.
     final nodes = await _mapConcurrently(names.toList(), onDone: progress, (
       name,
     ) async {
@@ -277,37 +297,47 @@ class DependencyAnalyzer {
         );
       }
 
-      final info = await registry.info(name);
-
       // An advisory applies to specific versions. Only those affecting the
       // version actually in use are attached; without a resolved version we
       // cannot judge, so none are claimed.
       final current = _tryParseVersion(installed);
-      final advisories = current == null
-          ? const <DepAdvisory>[]
-          : await _advisoriesFor(registry, name, info.advisories, current);
 
-      final status = _status(installed, info.latest, advisories);
-      final license = await registry.licenseFor(name, installed, info.latest);
-
-      // Null wherever the registry publishes no size, which is most npm
+      // Three lookups that do not depend on one another's answers. `sizeOf`
+      // and `dependencyNames` need only the installed version, which is
+      // already in hand, so waiting for the registry to describe the package
+      // before asking them cost two round trips for nothing.
+      //
+      // Null size wherever the registry publishes none, which is most npm
       // releases and every pub.dev archive that cannot be reached. The node
       // then says nothing about its weight rather than claiming none.
-      final size = current == null
-          ? null
-          : await registry.sizeOf(name, installed);
+      final (info, size, children) = await (
+        _orDegrade(() => registry.info(name), const RegistryInfo(latest: null)),
+        current == null
+            ? Future<PackageSize?>.value()
+            : _orDegrade<PackageSize?>(
+                () => registry.sizeOf(name, installed),
+                null,
+              ),
+        _childrenOf(registry, resolvedPackage, name, installed, names, current),
+      ).wait;
 
-      // Graph edges: this package's regular deps, kept only if they're also in
-      // the project's set (so edges never dangle). The resolver already knows
-      // them for the versions it picked; otherwise ask the registry, which it
-      // can only answer for a real semver.
-      final children = resolvedPackage != null
-          ? resolvedPackage.dependencies.where(names.contains).toList()
-          : current == null
-              ? const <String>[]
-              : (await registry.dependencyNames(name, installed))
-                  .where(names.contains)
-                  .toList();
+      // These two need what the registry just said about the package, so they
+      // are a second wave rather than part of the first. Four round trips per
+      // package become two.
+      final (advisories, license) = await (
+        current == null
+            ? Future<List<DepAdvisory>>.value(const [])
+            : _orDegrade<List<DepAdvisory>>(
+                () => _advisoriesFor(registry, name, info.advisories, current),
+                const [],
+              ),
+        _orDegrade(
+          () => registry.licenseFor(name, installed, info.latest),
+          PackageLicense.undetermined,
+        ),
+      ).wait;
+
+      final status = _status(installed, info.latest, advisories);
 
       return DepNode(
         name: name,
@@ -333,11 +363,57 @@ class DependencyAnalyzer {
     );
   }
 
+  /// Graph edges: this package's regular deps, kept only if they are also in
+  /// the project's set, so edges never dangle.
+  ///
+  /// The resolver already knows them for the versions it picked; otherwise ask
+  /// the registry, which can only answer for a real semver.
+  Future<List<String>> _childrenOf(
+    PackageRegistry registry,
+    ResolvedPackage? resolved,
+    String name,
+    String installed,
+    Set<String> names,
+    Version? current,
+  ) async {
+    if (resolved != null) {
+      return resolved.dependencies.where(names.contains).toList();
+    }
+    if (current == null) return const [];
+
+    final declared = await _orDegrade<List<String>>(
+      () => registry.dependencyNames(name, installed),
+      const [],
+    );
+    return declared.where(names.contains).toList();
+  }
+
+  /// Runs [lookup], answering [fallback] rather than failing the scan.
+  ///
+  /// Two things a scan has to survive, and both of them are the registry's
+  /// behaviour rather than this program's: a request that fails, and a request
+  /// that never comes back. The clients already bound a single request, but a
+  /// package costs several of them and a worker stuck on one is a worker doing
+  /// none of the rest — eight of those and the scan stalls with nothing said
+  /// about why. That is the shape of a big scan that dies midway.
+  ///
+  /// [fallback] must always be the value that means *not measured* — a null
+  /// size, an undetermined license, no latest version — and never one that
+  /// would read as a measured negative. A partial report that admits what it
+  /// could not reach is worth having; a 500 after four minutes is not.
+  Future<T> _orDegrade<T>(Future<T> Function() lookup, T fallback) async {
+    try {
+      return await lookup().timeout(_lookupBudget);
+    } on Object {
+      return fallback;
+    }
+  }
+
   /// Applies [task] to every item, running at most [concurrency] at a time and
   /// preserving input order.
   ///
   /// [onDone] is told as each item lands. This loop is where a large scan spends
-  /// nearly all of its time — two or three registry round trips per package —
+  /// nearly all of its time — a couple of registry round trips per package —
   /// so it is the only place a progress count means anything.
   static Future<List<R>> _mapConcurrently<T, R>(
     List<T> items,

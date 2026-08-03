@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../services/request_cache.dart';
 import 'package_registry.dart';
 
 /// Queries OSV.dev for a package's advisories.
@@ -23,6 +24,22 @@ class OsvClient {
   final String baseUrl;
 
   static const _timeout = Duration(seconds: 20);
+
+  /// Advisory lookups already made, keyed `ecosystem:package`.
+  ///
+  /// One query per package per *scan*, rather than per package per manifest.
+  /// An advisory list is a few small documents even for a package with a long
+  /// history, so this is cheap to hold and it removes a whole round trip from
+  /// every repeated package in a monorepo.
+  ///
+  /// Deliberately short-lived. An advisory appearing is the single most
+  /// consequential thing this application exists to notice, and a cache with
+  /// no expiry would mean a server that has been up for a week reports the
+  /// advisories that existed when it started.
+  final _queries = RequestCache<String, _Queried>(
+    capacity: 2000,
+    ttl: const Duration(minutes: 10),
+  );
 
   /// Every advisory OSV holds for [package] in [ecosystem], unfiltered.
   ///
@@ -45,22 +62,44 @@ class OsvClient {
     String package, {
     required String ecosystem,
   }) async {
-    final body = await _post('/v1/query', {
-      'package': {'name': package, 'ecosystem': ecosystem},
-    });
-    if (body == null) return const [];
-
-    final vulns = body['vulns'];
-    if (vulns is! List) return const [];
-
-    return vulns
-        .whereType<Map<String, dynamic>>()
-        .map(Advisory.fromJson)
-        .whereType<Advisory>()
-        .toList();
+    final result = await _queries.run(
+      '$ecosystem:$package',
+      () => _query(package, ecosystem),
+      // An unreachable OSV must not be remembered as a clean bill of health.
+      keep: (result) => result.answered,
+    );
+    return result.advisories;
   }
 
-  Future<Map<String, dynamic>?> _post(
+  Future<_Queried> _query(String package, String ecosystem) async {
+    final fetched = await _post('/v1/query', {
+      'package': {'name': package, 'ecosystem': ecosystem},
+    });
+    if (fetched.json == null) {
+      return (advisories: const <Advisory>[], answered: fetched.answered);
+    }
+
+    final vulns = fetched.json!['vulns'];
+    if (vulns is! List) return (advisories: const <Advisory>[], answered: true);
+
+    return (
+      advisories: vulns
+          .whereType<Map<String, dynamic>>()
+          .map(Advisory.fromJson)
+          .whereType<Advisory>()
+          .toList(),
+      answered: true,
+    );
+  }
+
+  /// POSTs [payload] to [path] and decodes the reply.
+  ///
+  /// Reports whether OSV answered as well as what it said. The distinction did
+  /// not matter while every query went to the network, because an empty list
+  /// was recomputed the next time somebody asked; now that answers are cached
+  /// it decides whether a moment of unreachability gets remembered as "this
+  /// package has no advisories" for the rest of the process's life.
+  Future<_Fetched> _post(
     String path,
     Map<String, dynamic> payload,
   ) async {
@@ -76,20 +115,30 @@ class OsvClient {
     } on TimeoutException {
       // One slow package must not fail a whole report; the node reports what
       // could not be established instead.
-      return null;
+      return (json: null, answered: false);
     } on http.ClientException {
-      return null;
+      return (json: null, answered: false);
     }
 
-    if (response.statusCode != 200) return null;
+    if (response.statusCode >= 500) return (json: null, answered: false);
+    if (response.statusCode != 200) return (json: null, answered: true);
 
     try {
       final decoded = jsonDecode(response.body);
-      return decoded is Map<String, dynamic> ? decoded : null;
+      return (
+        json: decoded is Map<String, dynamic> ? decoded : null,
+        answered: true,
+      );
     } on FormatException {
-      return null;
+      return (json: null, answered: true);
     }
   }
 
   void close() => _client.close();
 }
+
+/// One POST's outcome: what OSV said, and whether it said anything.
+typedef _Fetched = ({Map<String, dynamic>? json, bool answered});
+
+/// A cached advisory lookup, carrying whether OSV was reachable.
+typedef _Queried = ({List<Advisory> advisories, bool answered});

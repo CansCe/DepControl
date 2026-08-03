@@ -55,7 +55,11 @@ jobs:
         # database" and skip on, exactly as they do locally.
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: dart test
+        # `-P db` because the database tests are tagged and skipped by the
+        # everyday local run — they cost more wall clock than the other 600 put
+        # together, which is a price to pay once per push rather than once per
+        # save. CI is where that price belongs. See backend/dart_test.yaml.
+        run: dart test -P db
 
   deploy:
     needs: test

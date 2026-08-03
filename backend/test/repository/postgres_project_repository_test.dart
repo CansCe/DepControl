@@ -1,3 +1,6 @@
+@Tags(['db'])
+library;
+
 import 'package:backend/src/repository/postgres_project_repository.dart';
 import 'package:postgres/postgres.dart';
 import 'package:shared/shared.dart';
@@ -5,8 +8,12 @@ import 'package:test/test.dart';
 
 import '../support/test_env.dart';
 
-/// Integration test against a real Postgres. Skipped unless `DATABASE_URL` is
-/// available, so `dart test` stays green without a database.
+/// Integration test against a real Postgres. Tagged `db`, so it is skipped by
+/// the everyday `dart test` — these 19 cases cost more wall clock than the
+/// other 600 put together. `dart test -P db` runs them, and so does CI.
+///
+/// Skipped on its own terms too, when `DATABASE_URL` is not available at all,
+/// so `dart test -P db` stays green on a machine with no database.
 ///
 /// Read from the environment *or* `backend/.env` — see [TestEnv]. The server
 /// itself reads only the environment, deliberately; the tests also read the

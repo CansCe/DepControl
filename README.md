@@ -137,6 +137,81 @@ which is rate limited, is unavailable too, the scan falls back to the repository
 root and the report says so rather than implying the repository holds one
 package.
 
+## What a scan costs
+
+Enriching a package means asking a registry about it, and a large repository is
+where the arithmetic stops being free. A scan is bounded by round trips, so the
+two numbers worth watching are **how many requests it makes** and **how deep the
+serial chain is per package**.
+
+Both are held down at the client layer rather than in the analyzer, which is
+where `PackageRegistry` says request shaping belongs.
+
+**Each distinct package costs four requests**, not four per manifest. pub.dev's
+package document already embeds every listed version's pubspec, so the latest
+version, the resolution input and the graph edges all come out of one fetch; npm
+serves the same three from one abbreviated packument. What is left is the
+advisory query, the licence read and — for pub.dev, which publishes no size
+field anywhere — a `HEAD` on the archive. Answers are cached in the client, so a
+package reached from twenty manifests still costs those four.
+
+Measured against a synthetic repository, before and after that caching:
+
+| Repository | Requests before | After |
+|---|---|---|
+| 1 manifest × 10 packages | 50 | 40 |
+| 5 manifests × 10 packages | 250 | 40 |
+| 20 manifests × 20 packages | 2,000 | 80 |
+| 20 manifests × 400 packages | 40,000 | 1,600 |
+
+The shape is the point: the cost is now proportional to *distinct packages*,
+which is the same number the report counts, rather than to packages × manifests.
+
+**And against a real one.** `opengeos/GeoLibre` — 13 manifests, 1491 resolved
+packages — scanned end to end with `tool/measure_scan.dart`, compiled, on the
+same machine:
+
+| | before | after |
+|---|---|---|
+| analysis | 186 s | **94 s** |
+| peak RSS | **1035 MB** | **350 MB** |
+
+The memory is the number that mattered. `fly.toml` allocates **512 MB**, so this
+repository did not fail slowly — it was OOM-killed partway through, every time,
+which took the in-flight request and the in-memory scan progress with it and
+left the browser polling a machine that had already restarted. What fixed it was
+not the request count but keeping the *distilled* form of a registry document
+(see `_Packument`, `_PackageDoc`) rather than the decoded JSON it came from.
+
+Measure with a compiled binary or not at all: the same scan reads 574 MB under
+`dart run`, because the JIT VM carries machinery the deployment does not.
+`Dockerfile` ships `dart compile exe`, and only that number says anything about
+whether a scan fits.
+
+**Cached answers expire**, and the expiry is not a detail. Most of what a
+registry says is a fact about the rest of the world — the newest release moves
+when somebody else publishes, an advisory appears when somebody else files one —
+so a cache with no lifetime would turn a long-running server into one reporting
+whatever was true when it started, and a nightly rescan would never notice
+anything. Ten minutes, which is long enough that any one scan asks once. Facts
+about an already-published artefact cannot go stale that way — an archive's
+length, a released version's declared licence — and those are held for hours.
+
+**Nothing waits on an answer it does not need.** Size and graph edges depend
+only on the installed version, which the lockfile already gave us, so they go out
+alongside the request describing the package rather than after it; the advisory
+query and the version lookup are different hosts and go out together. Two waves
+instead of four hops.
+
+**A registry that will not answer degrades the node, not the scan.** Every
+lookup is bounded and falls back to *unmeasured* — no latest version, an
+undetermined licence, a null size — never to a value that would read as a
+measured negative. The per-request timeouts in the clients are the first line;
+the analyzer's own budget is the one that catches a socket which is open and
+simply never going to reply, which is the failure that used to strand eight
+workers and take a large scan down with them. A partial report that says what it
+could not reach is worth having. A 500 after four minutes is not.
+
 ## What the source says
 
 Reading the tarball means reading the Dart source, not just the manifests, and
@@ -489,12 +564,75 @@ works if you only touch the Dart members.)
 ## Run
 
 ```bash
-# backend
-cd backend && dart_frog dev                    # http://localhost:8080
+cd backend && dart run tool/dev.dart
+```
 
-# frontend (separate terminal)
+```bash
 cd frontend && flutter run -d chrome
 ```
+
+The backend reads its configuration from the **process environment and nothing
+else**, which is right for a container and wrong for a laptop — `.env.example`
+tells you to put your credentials in `backend/.env`, and a bare `dart_frog dev`
+would not read it. The result is a server that answers `GET /` and refuses
+everything after it with "Auth is not configured", which from the browser looks
+like a broken frontend rather than a missing variable.
+
+`tool/dev.dart` loads `backend/.env` into the environment and starts
+`dart_frog dev` with it, so the invariant inside `lib/` stays intact and the
+loading happens somewhere that only ever runs on a developer's machine. Anything
+already set in your shell wins over the file. It prints which names it loaded —
+names only, since a connection string carries a password — and says so plainly
+when auth or the database is missing rather than letting you find out three
+screens later.
+
+`dart_frog dev` still works directly if you would rather export the variables
+yourself.
+
+The frontend needs no flags: `kDefaultApiBaseUrl` falls back to
+`http://localhost:8080`, which is where the dev server is. Point it elsewhere
+with `--dart-define=API_BASE_URL=…`, or per-device from the settings screen.
+
+To drive it from a browser tab rather than a Chrome window — useful when you
+want to watch a large scan without a debugger attached:
+
+```bash
+cd frontend && flutter run -d web-server --web-port 5000
+```
+
+## Test
+
+The workspace resolves from the root, so one `flutter pub get` there covers all
+three packages.
+
+```bash
+cd backend && dart test
+```
+
+```bash
+cd packages/shared && dart test
+```
+
+```bash
+cd frontend && flutter test
+```
+
+**The backend suite is split in two, and the split is deliberate.** 601 tests
+run in about six seconds; 25 more talk to a real Postgres and take 42 seconds
+between them. That is 88% of the wall clock for 4% of the coverage, and paying
+it on every run is how a suite stops being something you run while you work. So
+those are tagged `db` and skipped by default:
+
+```bash
+cd backend && dart test -P db
+```
+
+CI runs that second form, not the first. Worth stating plainly, because the
+failure mode is silent: the point of those tests is that the repository layer
+meets real SQL rather than the in-memory double that shares none of its
+behaviour, and a suite that quietly stops covering the database is worse than
+one that goes red. They still skip on their own when `DATABASE_URL` is not
+configured at all — the tag is about cost, that check is about capability.
 
 ## Security
 

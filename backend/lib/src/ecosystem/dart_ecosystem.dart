@@ -159,14 +159,20 @@ class DartRegistry implements PackageRegistry {
   /// refuses them besides. Checked package by package before the switch: the
   /// two sources agree on every live advisory, field for field, and disagree
   /// only where pub.dev is serving something its own upstream has taken back.
+  ///
+  /// The two are asked at once. They are different hosts answering unrelated
+  /// questions, so awaiting one before starting the other spent a round trip
+  /// per package for nothing.
   @override
   Future<RegistryInfo> info(String package) async {
     if (!isValidPackageName(package)) return const RegistryInfo(latest: null);
 
-    return RegistryInfo(
-      latest: await _pub.latestVersion(package),
-      advisories: await _osv.advisoriesFor(package, ecosystem: osvEcosystem),
-    );
+    final (latest, advisories) = await (
+      _pub.latestVersion(package),
+      _osv.advisoriesFor(package, ecosystem: osvEcosystem),
+    ).wait;
+
+    return RegistryInfo(latest: latest, advisories: advisories);
   }
 
   @override

@@ -1,0 +1,35 @@
+# Which tests `dart test` runs by default, and why some of them it does not.
+#
+# The suite is a few seconds of pure computation plus a handful of integration
+# tests that talk to a real Postgres over the network. Measured on this machine:
+# 601 tests in 6 seconds, and 25 more that take 42 seconds between them. That is
+# 88% of the wall clock for 4% of the coverage, paid on every single run —
+# which is how a suite stops being something you run while you work.
+#
+# So the database tests are tagged and skipped by default, and are one flag
+# away:
+#
+#     dart test          # the fast loop
+#     dart test -P db    # everything, including the database layer
+#
+# CI runs the second one. That is deliberate and worth stating plainly, because
+# the failure mode here is silent: the point of these tests is that the
+# repository layer is exercised against real SQL rather than against the
+# in-memory double that shares none of its behaviour. A suite that quietly stops
+# covering the database is worse than one that goes red, so `deploy-backend.yml`
+# passes `-P db` and maps the DATABASE_URL secret into the environment.
+#
+# They still skip on their own when DATABASE_URL is not configured at all — see
+# `TestEnv.skipReasonFor` — which is the case for a contributor who has not set
+# one up. The tag is about cost; that check is about capability.
+tags:
+  db:
+    skip: >-
+      Database integration tests, skipped by default because they are slow.
+      Run them with `dart test -P db`.
+
+presets:
+  db:
+    tags:
+      db:
+        skip: false

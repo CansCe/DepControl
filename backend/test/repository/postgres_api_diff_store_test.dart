@@ -1,3 +1,6 @@
+@Tags(['db'])
+library;
+
 import 'package:backend/src/repository/postgres_api_diff_store.dart';
 import 'package:backend/src/repository/postgres_pool.dart';
 import 'package:postgres/postgres.dart';
@@ -6,8 +9,10 @@ import 'package:test/test.dart';
 
 import '../support/test_env.dart';
 
-/// Integration test against a real Postgres. Skipped unless `DATABASE_URL` is
-/// available, so `dart test` stays green without a database.
+/// Integration test against a real Postgres. Tagged `db`, so the everyday
+/// `dart test` skips it; `dart test -P db` runs it, and so does CI.
+///
+/// Skipped on its own terms too when `DATABASE_URL` is not available at all.
 ///
 /// Read from the environment *or* `backend/.env` — see [TestEnv], and the note
 /// on the sibling repository test for why the tests look in both places when

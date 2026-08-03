@@ -198,6 +198,22 @@ void main() {
       expect(license.category, LicenseCategory.unknown);
     });
 
+    // A version document is per version, so a package reached from twenty
+    // manifests would otherwise fetch the same one twenty times. Unlike the
+    // packument, nothing here can go stale — a published version's own
+    // metadata is fixed.
+    test('reads a version document once', () async {
+      final s = serving({
+        '/lodash/4.17.21': {'license': 'MIT'},
+      });
+
+      for (var i = 0; i < 3; i++) {
+        await s.registry.licenseFor('lodash', '4.17.21', '4.17.21');
+      }
+
+      expect(s.paths.where((p) => p == '/lodash/4.17.21'), hasLength(1));
+    });
+
     test('nothing published reads as undetermined, not as permissive', () async {
       final s = serving({
         '/d/1.0.0': <String, Object>{},

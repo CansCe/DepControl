@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:backend/src/ecosystem/ecosystems.dart';
@@ -36,14 +37,20 @@ packages:
 /// mirroring pub.dev's two score endpoints: analysis is published per version
 /// and dropped for old ones, so a package can have tags for its latest release
 /// and none for the version a project actually has installed.
+///
+/// [log] records every path asked for, which is the only regression test that
+/// holds for the number of requests a scan makes: a timing assertion is flaky
+/// and a stopwatch does not survive the next refactor.
 PubApiClient _stubPub(
   Map<String, String> latest, {
   Map<String, List<String>> published = const {},
   Map<String, List<String>> versionTags = const {},
   Map<String, List<String>> latestTags = const {},
+  List<String>? log,
 }) {
   final client = MockClient((request) async {
     final path = request.url.path;
+    log?.add(path);
 
     // Checked before the `/versions/` branch: the per-version score endpoint
     // matches both.
@@ -78,11 +85,15 @@ PubApiClient _stubPub(
 ///
 /// Dart advisories used to be read from pub.dev's `/advisories` and are not any
 /// more: that endpoint serves withdrawn advisories alongside live ones.
-OsvClient _stubOsv(Map<String, List<Map<String, dynamic>>> advisories) {
+OsvClient _stubOsv(
+  Map<String, List<Map<String, dynamic>>> advisories, {
+  List<String>? log,
+}) {
   final client = MockClient((request) async {
     if (request.url.path != '/v1/query') return http.Response('{}', 404);
     final body = jsonDecode(request.body) as Map<String, dynamic>;
     final name = (body['package'] as Map)['name'];
+    log?.add('osv:$name');
     return _ok({'vulns': advisories[name] ?? <dynamic>[]});
   });
   return OsvClient(client: client, baseUrl: 'https://osv.test');
@@ -923,6 +934,158 @@ packages:
       });
     });
 
+    // The failure this exists to prevent: a scan of a large repository that
+    // stops partway through and answers with a 500 — or with nothing at all,
+    // because the worker is still holding a socket that will never reply.
+    group('a registry that will not answer', () {
+      DependencyAnalyzer analyzerOver(
+        http.Client client, {
+        Duration budget = const Duration(seconds: 45),
+      }) =>
+          DependencyAnalyzer(
+            Ecosystems.dartOnly(
+              pub: PubApiClient(client: client, baseUrl: 'https://pub.test'),
+              osv: OsvClient(client: client, baseUrl: 'https://osv.test'),
+            ),
+            lookupBudget: budget,
+          );
+
+      Future<DepReport> report(DependencyAnalyzer analyzer) => analyzer.analyze(
+            'p',
+            const ManifestFiles(manifest: _pubspecYaml, lock: _pubspecLock),
+          );
+
+      test('still produces a report when every request fails', () async {
+        final analyzer = analyzerOver(
+          MockClient((_) async => throw http.ClientException('reset')),
+        );
+
+        final result = await report(analyzer);
+
+        expect(result.nodes, hasLength(2));
+        final node = result.nodes.firstWhere((n) => n.name == 'http');
+        // The installed version came from the lockfile, so it is still known;
+        // everything that needed the registry is unmeasured.
+        expect(node.installed, '1.2.0');
+        expect(node.latest, isNull);
+        expect(node.status, DepStatus.unknown);
+      });
+
+      // The distinction the codebase draws everywhere else: nobody looked is
+      // not the same as looked and found nothing. A size of zero or a licence
+      // of "none" here would be an invented measurement.
+      test('reports what it could not reach as unmeasured, not as absent',
+          () async {
+        final analyzer = analyzerOver(
+          MockClient((_) async => throw http.ClientException('reset')),
+        );
+
+        final node = (await report(analyzer))
+            .nodes
+            .firstWhere((n) => n.name == 'http');
+
+        expect(node.size, isNull);
+        expect(node.license?.source, LicenseSource.undetermined);
+        expect(node.advisories, isEmpty);
+      });
+
+      // A hung socket, which is the one the per-request timeout does not catch:
+      // the connection is open and the server is simply never going to reply.
+      // Eight of these and a scan stalls with nothing said about why.
+      test('gives up on a request that never comes back', () async {
+        final analyzer = analyzerOver(
+          MockClient((_) => Completer<http.Response>().future),
+          budget: const Duration(milliseconds: 50),
+        );
+
+        final result = await report(analyzer).timeout(
+          const Duration(seconds: 10),
+          onTimeout: () => fail('the scan hung instead of degrading'),
+        );
+
+        expect(result.nodes, hasLength(2));
+        expect(result.nodes.every((n) => n.status == DepStatus.unknown), isTrue);
+      });
+    });
+
+    // What a large scan costs, asserted as a request count rather than a
+    // duration. A repository is analysed one manifest at a time, so before the
+    // registry clients cached anything, a monorepo with twenty manifests all
+    // depending on `analyzer` fetched `analyzer` twenty times over — and each
+    // of those was four or five requests rather than one.
+    group('what a scan asks the registry for', () {
+      RepositoryManifest manifest(String directory) => RepositoryManifest(
+            directory: directory,
+            files: const ManifestFiles(
+              manifest: 'name: pkg\n'
+                  'environment:\n'
+                  '  sdk: ^3.6.0\n'
+                  'dependencies:\n'
+                  '  analyzer: any\n',
+              lock: 'packages:\n'
+                  '  analyzer:\n'
+                  '    dependency: "direct main"\n'
+                  '    version: "12.1.0"\n',
+            ),
+          );
+
+      Future<List<String>> requestsFor(int manifests) async {
+        final log = <String>[];
+        final analyzer = _stubAnalyzer(
+          {'analyzer': '12.1.0'},
+          published: {
+            'analyzer': ['12.1.0'],
+          },
+          log: log,
+        );
+
+        await analyzer.analyzeRepository(
+          'p',
+          FetchedRepository(
+            manifests: [
+              for (var i = 0; i < manifests; i++) manifest('pkg/$i'),
+            ],
+          ),
+        );
+        return log;
+      }
+
+      test('reads a package document once, however many manifests want it',
+          () async {
+        final requests = await requestsFor(5);
+
+        expect(
+          requests.where((p) => p == '/api/packages/analyzer'),
+          hasLength(1),
+        );
+      });
+
+      test('queries the advisory database once per package', () async {
+        final requests = await requestsFor(5);
+
+        expect(requests.where((p) => p == 'osv:analyzer'), hasLength(1));
+      });
+
+      // The document already carries every listed version's pubspec, so the
+      // graph edges cost nothing. This was its own request per package per
+      // manifest, and it was the single largest avoidable cost in a scan.
+      test('does not ask for a version the document already describes',
+          () async {
+        final requests = await requestsFor(5);
+
+        expect(
+          requests,
+          isNot(contains('/api/packages/analyzer/versions/12.1.0')),
+        );
+      });
+
+      // The property that matters, stated directly: the work is per distinct
+      // package, not per package per manifest.
+      test('costs the same whether one manifest wants it or five', () async {
+        expect(await requestsFor(5), await requestsFor(1));
+      });
+    });
+
     test('an unparseable locked version degrades to unknown', () async {
       final analyzer = _stubAnalyzer({'http': '1.3.0', 'test': '1.25.0'});
 
@@ -952,6 +1115,7 @@ DependencyAnalyzer _stubAnalyzer(
   Map<String, List<String>> published = const {},
   Map<String, List<String>> versionTags = const {},
   Map<String, List<String>> latestTags = const {},
+  List<String>? log,
 }) =>
     DependencyAnalyzer(
       Ecosystems.dartOnly(
@@ -960,7 +1124,8 @@ DependencyAnalyzer _stubAnalyzer(
           published: published,
           versionTags: versionTags,
           latestTags: latestTags,
+          log: log,
         ),
-        osv: _stubOsv(advisories),
+        osv: _stubOsv(advisories, log: log),
       ),
     );
