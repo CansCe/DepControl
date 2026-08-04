@@ -14,6 +14,13 @@ and tells you when the answer changes.
 Dart/Flutter and npm today. 100% Dart: Flutter Web front end, Dart Frog API,
 Postgres.
 
+### → [depcontrol.pages.dev](https://depcontrol.pages.dev)
+
+**It is already running. Sign in, paste a Git URL, and you have a report** — there
+is nothing to install, host or configure. An Android build is a command away
+([below](#the-android-app)), and running the whole stack yourself is documented
+too, but you do not need to do either to use it.
+
 ---
 
 ## What you get
@@ -163,17 +170,29 @@ More on all of it, and why, in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Roadmap
 
-| Phase | Scope | Status |
-|------:|-------|--------|
-| 0 | Monorepo, shared models, wiring | done |
-| 1 | Ingest Git URL → dependency report | done |
-| 2 | Resolve & simulate | done — from registry metadata, not by running the package manager |
-| 3 | Postgres registry, auth, history, alerts | done |
-| 4 | Sandbox hardening, rate limits | in progress |
-| 5 | **Local repository collector** | planned — not built |
-| 6 | **API health tracking** | planned — not built |
+Shipped so far: the monorepo and shared models, ingest by Git URL, resolve &
+simulate, the Postgres registry with auth, report history, change diffing and
+alerts, and the scan-cost work that made large repositories survive a scan.
 
-### Local repository collector *(planned)*
+What is planned, in order:
+
+| | Scope | Status |
+|---|-------|--------|
+| 0.6 | Stop the scan poller retrying a dead scan forever | planned |
+| 0.8 | Refresh stored report bodies for fields outside the change digest | planned |
+| 0.9 | Split manifest parsing into its own package, away from registry access | planned |
+| 1 | **NuGet** as a third ecosystem | planned |
+| 1.5 | **Local repository collector** | planned |
+| 2 | Cross-project search and version drift | planned |
+| 3 | Tags, owners, filters, health badges | planned |
+| 4 | Do-not-upgrade, snooze, approval history | planned |
+| 5 | Risk score, EOL and maintenance activity | planned |
+| 6 | Settings API card, and **API health tracking** | planned |
+| 7 | SBOM export, notification digests, per-package timeline, internal registries | sketched |
+
+The two features described below are 1.5 and 6. Neither is built yet.
+
+### Phase 1.5 — Local repository collector *(planned)*
 
 A remote scan sees only what your repository publishes, and that is regularly
 not what you run. Lockfiles are generated locally and frequently gitignored, so
@@ -202,7 +221,7 @@ hand to a service:
 - Uploading is a **separate, explicit step**. Collecting and sending are not the
   same command.
 
-### API health tracking *(planned)*
+### Phase 6 — API health tracking *(planned)*
 
 Dependencies are one half of what a project relies on; the services it calls are
 the other, and nothing in a manifest mentions them. The plan is to let you
@@ -216,7 +235,53 @@ is contacted that you did not enter.
 
 ---
 
-## Running it
+## Using it
+
+### The web app
+
+**[depcontrol.pages.dev](https://depcontrol.pages.dev)** — the recommended way in, and
+the one that stays current. It is a normal web app: sign in, add a project by Git URL,
+and the report is there. Installing nothing means never running a version older than
+the one being deployed, which for a tool whose job is telling you about newly published
+advisories is the point rather than a convenience.
+
+It talks to **`https://depcontrol-api.fly.dev`**, which is compiled into the build —
+the page is served as static files, so there is no server-side config to get wrong.
+
+It is also installable as a PWA: your browser's "Install app" / "Add to Home Screen"
+gives it a window and an icon without a store, and it stays auto-updating.
+
+### The Android app
+
+Not published to a store — build it once and install it. From `frontend/`:
+
+```bash
+flutter build apk --release --dart-define=API_BASE_URL=https://depcontrol-api.fly.dev
+```
+
+The APK lands at `frontend/build/app/outputs/flutter-apk/app-release.apk`. Copy it to
+the device and install it (Android will ask you to allow installs from this source).
+
+Two things worth knowing before you build:
+
+- **`--dart-define=API_BASE_URL` is not optional.** It defaults to
+  `http://localhost:8080`, and an APK carrying that default is an app that cannot
+  reach anything from a phone. Unlike the web build, nothing later can correct it —
+  the value is compiled in.
+- **It is signed with the debug keystore.** The APK installs and runs, but Play would
+  refuse it, and a debug-signed build cannot be upgraded in place by a release-signed
+  one later. Generating a real keystore is in
+  [docs/DEPLOY.md](docs/DEPLOY.md#what-the-apk-needs-that-the-web-build-does-not).
+
+Building needs the Android SDK — `flutter doctor` will say if it is missing. The
+scaffolding in `frontend/android/` is complete either way.
+
+---
+
+## Running it yourself
+
+Only if you are changing DepControl, or want your own deployment. Everything below is
+for that; none of it is needed to use the app.
 
 ### Prerequisites
 
