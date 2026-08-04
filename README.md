@@ -11,8 +11,8 @@ Point it at a Git repository. It reads every manifest in there, resolves the
 dependency tree, and produces a report you can act on — then keeps re-checking
 and tells you when the answer changes.
 
-Dart/Flutter and npm today. 100% Dart: Flutter Web front end, Dart Frog API,
-Postgres.
+Dart/Flutter, npm and .NET today. 100% Dart: Flutter Web front end, Dart Frog
+API, Postgres.
 
 ### → [depcontrol.pages.dev](https://depcontrol.pages.dev)
 
@@ -147,23 +147,31 @@ still recorded, and the next machine to look picks it up and runs it again.
 
 ## What it supports
 
-| | Dart / Flutter | npm |
-|---|---|---|
-| Manifest | `pubspec.yaml` | `package.json` |
-| Lockfile | `pubspec.lock` | `package-lock.json`, `npm-shrinkwrap.json` |
-| Registry | pub.dev | registry.npmjs.org |
-| Advisories | OSV.dev | OSV.dev |
-| Licenses | pub.dev's per-version detection | the publisher's `license` field |
-| Install weight | archive `Content-Length` | `dist.unpackedSize` |
-| Unused / undeclared imports | yes | yes |
-| Resolve & simulate | yes | not yet |
-| Public API diffs | yes | no |
-| Release notes | yes | thinner — many npm packages ship no changelog |
+| | Dart / Flutter | npm | .NET |
+|---|---|---|---|
+| Manifest | `pubspec.yaml` | `package.json` | `*.csproj`, `*.fsproj`, `*.vbproj` |
+| Also read | — | — | `Directory.Packages.props`, `packages.config` |
+| Lockfile | `pubspec.lock` | `package-lock.json`, `npm-shrinkwrap.json` | `packages.lock.json` |
+| Registry | pub.dev | registry.npmjs.org | nuget.org |
+| Advisories | OSV.dev | OSV.dev | OSV.dev |
+| Licenses | pub.dev's per-version detection | the publisher's `license` field | the published `licenseExpression` |
+| Install weight | archive `Content-Length` | `dist.unpackedSize` | `.nupkg` `Content-Length` |
+| Unused / undeclared imports | yes | yes | yes — `using`, `open`, `Imports` |
+| Resolve & simulate | yes | not yet | not yet |
+| Public API diffs | yes | no | no |
+| Release notes | yes | thinner — many npm packages ship no changelog | no |
 
-A repository can be both at once, and a Flutter app with a JavaScript front end
-is the ordinary shape of that. Package identity carries the ecosystem, because
-`path`, `http` and `crypto` exist on both registries as entirely different
-software.
+A repository can be all three at once, and a Flutter app with a JavaScript front
+end is the ordinary shape of that. Package identity carries the ecosystem,
+because `path`, `http` and `crypto` exist on more than one registry as entirely
+different software.
+
+**.NET is read the way .NET is actually written.** A project under central
+package management names its packages and keeps their versions in a
+`Directory.Packages.props` above it; a .NET Framework project in maintenance
+keeps them in a `packages.config` beside it. Both are read alongside the project
+file, so a report on either says what is installed rather than listing packages
+with no version.
 
 Repositories are read from **github.com and gitlab.com over https**. Public
 repositories today.
@@ -185,6 +193,15 @@ whether this covers you:
 - **`yarn.lock` and `pnpm-lock.yaml` are not read.** Those projects fall back to
   resolving declared constraints, which the report labels as inferred.
 - **`peerDependencies` are not counted**; `optionalDependencies` are.
+- **A .NET version's fourth number is shown as `+`.** `5.2.7.4000` is reported
+  as `5.2.7+4000` — the same release, written the way everything downstream can
+  compare. It sorts and matches advisories correctly; it just does not look like
+  what your `.csproj` says.
+- **NuGet packages are looked up on nuget.org only.** A `.csproj` does not say
+  which feed a package came from — that lives in a `NuGet.config` this server
+  does not read — so a package restored from an internal feed is either not
+  found, or found under the same name on the public registry and reported with
+  somebody else's licence and advisories. Internal feeds are phase 7.
 - **No private or self-hosted Git.** Public GitHub and GitLab only.
 
 More on all of it, and why, in [docs/DESIGN.md](docs/DESIGN.md).
@@ -198,14 +215,14 @@ simulate, the Postgres registry with auth, report history, change diffing and
 alerts, the scan-cost work that made large repositories survive a scan, scans
 that run on the server rather than inside the request that asked for them,
 stored report bodies that refresh for the fields the change digest deliberately
-ignores, and manifest parsing extracted into `packages/ecosystem` so a scan can
-be read without a registry behind it.
+ignores, manifest parsing extracted into `packages/ecosystem` so a scan can be
+read without a registry behind it, and **.NET** as a third ecosystem — project
+files, central package management and legacy `packages.config` alike.
 
 What is planned, in order:
 
 | | Scope | Status |
 |---|-------|--------|
-| 1 | **NuGet** as a third ecosystem | planned |
 | 1.5 | **Local repository collector** | planned |
 | 2 | Cross-project search and version drift | planned |
 | 3 | Tags, owners, filters, health badges | planned |

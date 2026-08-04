@@ -19,7 +19,7 @@ class NpmEcosystem implements Ecosystem {
   @override
   ManifestNaming get naming => const ManifestNaming(
         ecosystem: 'npm',
-        manifest: 'package.json',
+        manifests: ['package.json'],
         // Only the two this can actually read. `yarn.lock` and
         // `pnpm-lock.yaml` are deliberately absent: listing a file the parser
         // does not understand would have the scan find it, read nothing out of

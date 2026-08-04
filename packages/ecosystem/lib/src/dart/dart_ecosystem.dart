@@ -22,7 +22,7 @@ class DartEcosystem implements Ecosystem {
   @override
   ManifestNaming get naming => const ManifestNaming(
         ecosystem: 'dart',
-        manifest: 'pubspec.yaml',
+        manifests: ['pubspec.yaml'],
         lockFiles: ['pubspec.lock'],
         sourceExtensions: ['.dart'],
         // A lint set is pulled in by `include:` and imported by nothing, which

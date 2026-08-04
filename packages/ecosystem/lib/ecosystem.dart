@@ -14,3 +14,7 @@ export 'src/manifest.dart';
 export 'src/npm/js_source_scanner.dart';
 export 'src/npm/npm_ecosystem.dart';
 export 'src/npm/npm_version_range.dart';
+export 'src/nuget/dotnet_source_scanner.dart';
+export 'src/nuget/nuget_ecosystem.dart';
+export 'src/nuget/nuget_version.dart';
+export 'src/nuget/nuget_version_range.dart';

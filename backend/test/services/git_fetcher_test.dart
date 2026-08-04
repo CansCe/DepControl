@@ -628,6 +628,201 @@ void main() {
         throwsA(isA<StateError>()),
       );
     });
+
+    test('finds a .NET project, which has no fixed file name', () async {
+      // The root fetch cannot guess `Acme.csproj`, so a project at the root is
+      // found by the listing or not at all.
+      final fetcher = repoWith(
+        paths: ['Acme.csproj', 'Directory.Packages.props'],
+        bodies: {
+          '/acme/demo/HEAD/Acme.csproj': '<Project />',
+          '/acme/demo/HEAD/Directory.Packages.props': '<Project />',
+        },
+      );
+
+      final repo = await fetcher.fetchAll('https://github.com/acme/demo');
+
+      expect(repo.manifests, hasLength(1));
+      expect(repo.primary.ecosystem, 'nuget');
+      expect(repo.primary.label, 'Acme.csproj');
+      expect(repo.primary.files.companions, contains('Directory.Packages.props'));
+    });
+
+    test('asks only for companions the listing showed to exist', () async {
+      final requested = <String>[];
+      final client = MockClient((request) async {
+        if (request.url.host == 'api.github.com') {
+          return http.Response(
+            jsonEncode({
+              'tree': [
+                for (final path in ['src/Acme/Acme.csproj'])
+                  {'path': path, 'type': 'blob'},
+              ],
+            }),
+            200,
+          );
+        }
+        requested.add(request.url.path);
+        return request.url.path.endsWith('Acme.csproj')
+            ? http.Response('<Project />', 200)
+            : http.Response('not found', 404);
+      });
+
+      final repo = await GitFetcher(client: client)
+          .fetchAll('https://github.com/acme/demo');
+
+      expect(repo.manifests, hasLength(1));
+      expect(repo.primary.files.companions, isEmpty);
+      // Walking up from `src/Acme` speculatively would be three requests per
+      // companion per project, nearly all of them 404s.
+      expect(
+        requested.where((p) => p.contains('Directory.Packages.props')),
+        isEmpty,
+      );
+    });
+  });
+
+  group('.NET repositories', () {
+    const project = '''
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup><PackageReference Include="Serilog" /></ItemGroup>
+</Project>
+''';
+
+    ({GitFetcher fetcher, List<Uri> requested}) serving(Uint8List archive) {
+      final requested = <Uri>[];
+      final client = MockClient((request) async {
+        requested.add(request.url);
+        return http.Response.bytes(archive, 200);
+      });
+      return (fetcher: GitFetcher(client: client), requested: requested);
+    }
+
+    test('a project is found by extension and named after its file', () async {
+      final f = serving(
+        _tarGz({
+          'src/Acme/Acme.csproj': project,
+          'src/Acme/Program.cs': 'using Serilog;\n',
+        }),
+      );
+
+      final repo = await f.fetcher.fetchAll('https://github.com/acme/demo');
+
+      expect(repo.manifests, hasLength(1));
+      expect(repo.primary.ecosystem, 'nuget');
+      expect(repo.primary.directory, 'src/Acme');
+      expect(repo.primary.label, 'src/Acme/Acme.csproj');
+      expect(repo.primary.importedPackages, contains('Serilog'));
+    });
+
+    test('the central versions file is read from above the project', () async {
+      // The whole point of companions: without the props file the project
+      // parses cleanly and every dependency it has is version-less.
+      final f = serving(
+        _tarGz({
+          'Directory.Packages.props': '''
+<Project><ItemGroup>
+  <PackageVersion Include="Serilog" Version="3.1.1" />
+</ItemGroup></Project>
+''',
+          'src/Acme/Acme.csproj': project,
+        }),
+      );
+
+      final repo = await f.fetcher.fetchAll('https://github.com/acme/demo');
+
+      expect(
+        repo.primary.files.companions['Directory.Packages.props'],
+        contains('3.1.1'),
+      );
+    });
+
+    test('the nearest companion wins, as MSBuild resolves it', () async {
+      final f = serving(
+        _tarGz({
+          'Directory.Packages.props': '<Project><!-- root --></Project>',
+          'src/Acme/Directory.Packages.props': '<Project><!-- nearer --></Project>',
+          'src/Acme/Acme.csproj': project,
+        }),
+      );
+
+      final repo = await f.fetcher.fetchAll('https://github.com/acme/demo');
+
+      expect(
+        repo.primary.files.companions['Directory.Packages.props'],
+        contains('nearer'),
+      );
+    });
+
+    test('a legacy packages.config comes along beside its project', () async {
+      final f = serving(
+        _tarGz({
+          'src/Acme/Acme.csproj': '<Project ToolsVersion="15.0" />',
+          'src/Acme/packages.config':
+              '<packages><package id="NHibernate" version="5.2.7.4000" />'
+                  '</packages>',
+        }),
+      );
+
+      final repo = await f.fetcher.fetchAll('https://github.com/acme/demo');
+
+      expect(
+        repo.primary.files.companions['packages.config'],
+        contains('NHibernate'),
+      );
+    });
+
+    test('two projects in one directory stay distinguishable', () async {
+      // The directory alone identifies a package in every other ecosystem here,
+      // and does not in this one.
+      final f = serving(
+        _tarGz({
+          'src/Acme.csproj': project,
+          'src/Acme.Tests.csproj': project,
+        }),
+      );
+
+      final repo = await f.fetcher.fetchAll('https://github.com/acme/demo');
+
+      expect(repo.manifests, hasLength(2));
+      expect(
+        repo.manifests.map(repo.labelOf),
+        ['src/Acme.csproj', 'src/Acme.Tests.csproj'],
+      );
+    });
+
+    test('a repository holding .NET and Dart reports both', () async {
+      final f = serving(
+        _tarGz({
+          'pubspec.yaml': 'name: demo\n',
+          'src/Acme/Acme.csproj': project,
+        }),
+      );
+
+      final repo = await f.fetcher.fetchAll('https://github.com/acme/demo');
+
+      expect(repo.ecosystems, containsAll(['dart', 'nuget']));
+    });
+
+    test('a .cs file belongs to the nearest project, not to the root',
+        () async {
+      final f = serving(
+        _tarGz({
+          'Root.csproj': project,
+          'src/Acme/Acme.csproj': project,
+          'src/Acme/Program.cs': 'using Newtonsoft.Json.Linq;\n',
+        }),
+      );
+
+      final repo = await f.fetcher.fetchAll('https://github.com/acme/demo');
+      final byLabel = {for (final m in repo.manifests) m.label: m};
+
+      expect(
+        byLabel['src/Acme/Acme.csproj']!.importedPackages,
+        contains('Newtonsoft.Json'),
+      );
+      expect(byLabel['Root.csproj']!.importedPackages, isEmpty);
+    });
   });
 
   test('decodes a pubspec that is not valid UTF-8 rather than throwing',

@@ -33,16 +33,17 @@ cache and, in time, credentials for an internal feed, all of which belong to
 the process that owns them. So `Ecosystem` carries no registry, and whoever
 needs both asks the lookup for the second by the first's `id`.
 
-| | Dart | npm |
-|---|---|---|
-| Manifest | `pubspec.yaml` | `package.json` |
-| Lockfile | `pubspec.lock` | `package-lock.json`, `npm-shrinkwrap.json` |
-| Registry | pub.dev | registry.npmjs.org |
-| Advisories | OSV.dev | OSV.dev |
-| Licenses | pub.dev's detection | the publisher's `license` field |
-| Imports | `import 'package:…'` | `import`/`require`, `/// <reference types>` |
-| Size | the archive's `Content-Length` | `dist.unpackedSize` |
-| Resolve & simulate | yes | not yet |
+| | Dart | npm | NuGet |
+|---|---|---|---|
+| Manifest | `pubspec.yaml` | `package.json` | `*.csproj`, `*.fsproj`, `*.vbproj` |
+| Companions | — | — | `Directory.Packages.props`, `packages.config` |
+| Lockfile | `pubspec.lock` | `package-lock.json`, `npm-shrinkwrap.json` | `packages.lock.json` |
+| Registry | pub.dev | registry.npmjs.org | nuget.org registration |
+| Advisories | OSV.dev | OSV.dev | OSV.dev |
+| Licenses | pub.dev's detection | the publisher's `license` field | the published `licenseExpression` |
+| Imports | `import 'package:…'` | `import`/`require`, `/// <reference types>` | `using`, `open`, `Imports` |
+| Size | the archive's `Content-Length` | `dist.unpackedSize` | the `.nupkg`'s `Content-Length` |
+| Resolve & simulate | yes | not yet | not yet |
 
 **A repository can be more than one.** A Flutter app with a JavaScript front
 end is the ordinary shape of that. Source files are attributed to the nearest
@@ -55,8 +56,83 @@ Package identity carries the ecosystem, because `path`, `args`, `crypto`,
 doing different things. Merging those on name and version would attribute one's
 advisories to the other.
 
+### What .NET broke, and what it cost to fit it
+
+The first two ecosystems agreed on more than they disagreed on: one manifest,
+with one fixed name, stating every dependency and every version. .NET agrees
+with none of that, and each disagreement changed something above it.
+
+- **A project file is named after the project.** There is no `*.csproj` to
+  request over HTTP, so discovery matches by extension and carries the file name
+  it found. `ManifestNaming.manifest` became the first of a list, and a manifest
+  is now identified by its path rather than by its directory — one directory can
+  hold `Acme.csproj` and `Acme.Tests.csproj`, and those are two projects.
+- **The versions are regularly not in the manifest.** Under central package
+  management a `.csproj` names its packages and a `Directory.Packages.props`
+  somewhere above it says what they resolve to; a .NET Framework project keeps
+  them in a `packages.config` beside it. Neither is a manifest in its own right
+  — reporting the props file as a package would double every dependency in the
+  repository — so `ManifestFiles` gained **companions**: files found at or above
+  the manifest's own directory and parsed as part of it, nearest first, which is
+  how MSBuild resolves them. Without this the parse succeeds and every
+  dependency comes out with no version, which is the failure that looks like a
+  clean report.
+- **`packages.config` is a lockfile as well as a manifest.** It states the exact
+  installed version of everything, so a legacy project needs no resolution.
+  Treating it as unlocked would have re-resolved constraints the project settled
+  years ago and reported versions nobody has installed.
+
 ### What differs, and why it is not smoothed over
 
+- **NuGet versions are not semver, and this is the one that fails quietly.**
+  `NHibernate 5.2.7.4000` is an ordinary published version and `Version.parse`
+  throws on it. Every consumer of a version string here parses it tolerantly and
+  returns null rather than throwing, so an unnormalised four-part version does
+  not break a scan — it produces a node that is never outdated, never matched by
+  an advisory and never risk-banded. A report that says nothing looks exactly
+  like a report that says everything is fine.
+
+  The revision becomes build metadata: `5.2.7.4000` is stored and shown as
+  `5.2.7+4000`. That works because **`pub_semver` orders build metadata and the
+  semver specification does not** — `5.2.7 < 5.2.7+4000 < 5.2.7+5000`, which is
+  the order NuGet puts those releases in, and an advisory range of
+  `>=5.2.0 <5.3.0` still admits all of them. The cost is cosmetic and real: the
+  report does not spell the version the way the `.csproj` does. Storing the
+  original text alongside would mean a new field on `DepNode`, a decision about
+  whether a display string belongs in the change digest, and a frontend change —
+  none of which buys a correct answer, only a prettier one.
+- **A bare NuGet version is a minimum, not a pin.** `Version="1.0"` means 1.0 or
+  anything above it. Every other ecosystem here reads a bare version as exact,
+  and reading NuGet's that way produces a constraint that rejects the version
+  actually installed — the report would then disagree with the machine it is
+  describing. Bracket notation (`[1.0,2.0)`, `[1.0]`, `(,2.0]`) is translated
+  rather than handed to pub's parser, which cannot read it at all.
+- **A .NET namespace is not a package id.** `using Newtonsoft.Json.Linq;` is the
+  package `Newtonsoft.Json`. Every dotted prefix of a namespace is reported, so
+  the true id is one of them and the extras match nothing. That is deliberately
+  the over-reporting direction: claiming a package is unused when the code
+  reaches it through a nested namespace is a wrong answer somebody acts on,
+  while a prefix matching no package costs nothing. The price is that a package
+  whose id is a prefix of an unrelated namespace can read as used — 
+  `System.Text.Json` is the realistic case.
+- **F# and Visual Basic are scanned too**, and not for completeness. An
+  ecosystem whose scanner reads none of a project's source returns the *empty*
+  set, and empty means "looked and found nothing" — which reports every
+  dependency of every F# project as unused. A scanner covering one language of
+  three is worse than no scanner at all.
+- **`licenseUrl` is not read as a licence.** It is the deprecated field and it
+  is a link, frequently to a repository file that has since moved. Turning
+  `https://github.com/x/y/blob/master/LICENSE` into an SPDX id would invent the
+  one field a compliance report exists to be sure of, so a package publishing
+  only a URL reads as undetermined and goes to a human.
+- **The registration index is read, not the catalog.** One document per package
+  answers versions, dependencies and licences between them, which keeps a scan's
+  request count proportional to packages rather than to releases. The
+  SemVer 2.0 aware resource is the one asked for: the plain one silently omits
+  every version with build metadata or a dotted pre-release, which is exactly
+  the four-part versions .NET is full of. A package with a very long release
+  history has its oldest pages left unfetched, which shows up as an ancient pin
+  failing to resolve rather than as a wrong answer.
 - **npm's `^` is not pub's.** `^0.0.3` admits nothing but 0.0.3 on npm; pub
   reads the same text as `>=0.0.3 <0.1.0` and admits 0.0.4. npm also has `||`
   unions, `x` wildcards and hyphen ranges, none of which pub has. The ranges are

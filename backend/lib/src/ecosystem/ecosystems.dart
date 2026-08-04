@@ -3,6 +3,7 @@ import 'package:ecosystem/ecosystem.dart';
 import '../services/pub_api_client.dart';
 import 'dart/dart_registry.dart';
 import 'npm/npm_registry.dart';
+import 'nuget/nuget_registry.dart';
 import 'osv_client.dart';
 import 'package_registry.dart';
 
@@ -15,6 +16,7 @@ export 'package:ecosystem/ecosystem.dart';
 
 export 'dart/dart_registry.dart';
 export 'npm/npm_registry.dart';
+export 'nuget/nuget_registry.dart';
 export 'osv_client.dart';
 export 'package_registry.dart';
 
@@ -45,13 +47,15 @@ class Ecosystems {
   factory Ecosystems.standard({
     PubApiClient? pub,
     NpmRegistry? npm,
+    NuGetRegistry? nuget,
     OsvClient? osv,
   }) =>
       Ecosystems(
-        const [DartEcosystem(), NpmEcosystem()],
+        const [DartEcosystem(), NpmEcosystem(), NuGetEcosystem()],
         registries: {
           'dart': DartRegistry(pub ?? PubApiClient(), osv: osv ?? OsvClient()),
           'npm': npm ?? NpmRegistry(),
+          'nuget': nuget ?? NuGetRegistry(),
         },
       );
 

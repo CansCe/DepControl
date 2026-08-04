@@ -14,8 +14,9 @@ library;
 class ManifestNaming {
   const ManifestNaming({
     required this.ecosystem,
-    required this.manifest,
+    required this.manifests,
     required this.lockFiles,
+    this.companionFiles = const [],
     this.sourceExtensions = const [],
     this.auxiliaryFiles = const [],
   });
@@ -29,11 +30,37 @@ class ManifestNaming {
   /// ordinary case, not the exotic one.
   final String ecosystem;
 
-  /// The manifest's file name — `pubspec.yaml`, `package.json`.
+  /// What this ecosystem's manifests are called — `pubspec.yaml`,
+  /// `package.json`, `*.csproj`.
   ///
-  /// A directory holding one of these is a package, and that is the whole rule
-  /// discovery applies.
-  final String manifest;
+  /// A file matching one of these is a package, and that is the whole rule
+  /// discovery applies. An entry beginning with `*` matches by suffix; anything
+  /// else is an exact file name.
+  ///
+  /// A list because .NET names its project file after the project rather than
+  /// after the tool — there is no fixed name to look for, and a repository
+  /// holds `.csproj`, `.fsproj` and `.vbproj` side by side. Where pub and npm
+  /// answer "is this directory a package" from the directory listing alone,
+  /// .NET only answers it from the file names.
+  final List<String> manifests;
+
+  /// The canonical manifest name, for messages and for the single-manifest
+  /// endpoints.
+  ///
+  /// The first entry, which is the one worth naming when a repository has none:
+  /// "no `pubspec.yaml` found" is a useful sentence and "no `*.csproj`" is at
+  /// least an honest one.
+  String get manifest => manifests.first;
+
+  /// Files a manifest needs read alongside it, found at or above its own
+  /// directory — `Directory.Packages.props` holds the versions a `.csproj`
+  /// under central package management deliberately omits.
+  ///
+  /// Distinct from [auxiliaryFiles], which are scanned for *imports*. These are
+  /// parsed as part of the manifest itself: without them the manifest is not
+  /// merely less informative, it is incomplete in a way that would be reported
+  /// as packages with no version.
+  final List<String> companionFiles;
 
   /// Lockfile names in order of preference.
   ///
@@ -54,8 +81,27 @@ class ManifestNaming {
   /// pulls in a lint set through `include:` without any import mentioning it.
   final List<String> auxiliaryFiles;
 
+  /// Whether [fileName] is one of this ecosystem's manifests.
+  bool isManifest(String fileName) {
+    for (final name in manifests) {
+      if (name.startsWith('*')) {
+        final suffix = name.substring(1);
+        // `.csproj` alone is a hidden file, not a project called nothing.
+        if (fileName.length > suffix.length && fileName.endsWith(suffix)) {
+          return true;
+        }
+      } else if (fileName == name) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// Whether [fileName] is a lockfile for this ecosystem.
   bool isLockFile(String fileName) => lockFiles.contains(fileName);
+
+  /// Whether [fileName] is one of the companion files above.
+  bool isCompanion(String fileName) => companionFiles.contains(fileName);
 
   /// Whether [path] names source code worth scanning for imports.
   bool isSource(String path) =>
@@ -70,13 +116,26 @@ class ManifestNaming {
 /// Text rather than a parsed structure: fetching and parsing are separate
 /// concerns, and the fetcher has no business knowing YAML from JSON.
 class ManifestFiles {
-  const ManifestFiles({required this.manifest, this.lock});
+  const ManifestFiles({
+    required this.manifest,
+    this.lock,
+    this.companions = const {},
+  });
 
   final String manifest;
 
   /// The lockfile's contents, or null when the repository does not commit one —
   /// which is ordinary for a library and near-universal for a Dart package.
   final String? lock;
+
+  /// The [ManifestNaming.companionFiles] that were found, by file name.
+  ///
+  /// Empty for pub and npm, whose manifests state everything themselves. A
+  /// `.csproj` under central package management does not: it names its packages
+  /// and leaves every version in a `Directory.Packages.props` somewhere above
+  /// it, and a parser handed only the project file would report a dozen
+  /// dependencies whose version is unknown.
+  final Map<String, String> companions;
 
   bool get hasLock => lock != null;
 }

@@ -17,11 +17,21 @@ class RepositoryManifest {
     required this.directory,
     required this.files,
     this.ecosystem = 'dart',
+    this.fileName,
     this.importedPackages,
   });
 
   /// Path from the repository root, empty for the root itself.
   final String directory;
+
+  /// The manifest's own file name, where knowing it adds something.
+  ///
+  /// Null for the ecosystems whose manifest has one fixed name: saying
+  /// `packages/shared/pubspec.yaml` where `packages/shared` will do is noise.
+  /// A .NET project is named after itself, so a directory can hold
+  /// `Acme.csproj` and `Acme.Tests.csproj` and the directory alone stops
+  /// identifying which report line came from which project.
+  final String? fileName;
 
   /// The [Ecosystem.id] whose manifest this is. Defaults to Dart, which is
   /// what every manifest was before there was a choice.
@@ -39,7 +49,12 @@ class RepositoryManifest {
   final Set<String>? importedPackages;
 
   /// What to call this manifest in a report.
-  String get label => directory.isEmpty ? 'repository root' : directory;
+  String get label {
+    if (fileName == null) {
+      return directory.isEmpty ? 'repository root' : directory;
+    }
+    return directory.isEmpty ? fileName! : '$directory/$fileName';
+  }
 }
 
 /// Every manifest in a repository, root first.
@@ -82,9 +97,11 @@ class FetchedRepository {
   /// naming the same origin for two unrelated dependency trees is unreadable.
   /// Where directories are unique the plain path is clearer, so it is kept.
   String labelOf(RepositoryManifest manifest) {
-    final shared = manifests
-        .where((other) => other.directory == manifest.directory)
-        .length;
+    // Compared on the label rather than the directory: two .NET projects in one
+    // directory already have distinct labels, since each is named after its own
+    // file, and qualifying both with `(nuget)` would say nothing.
+    final shared =
+        manifests.where((other) => other.label == manifest.label).length;
     return shared > 1
         ? '${manifest.label} (${manifest.ecosystem})'
         : manifest.label;
@@ -256,9 +273,16 @@ class GitFetcher {
     // The root can hold a manifest for more than one ecosystem — a Flutter app
     // with a JavaScript web front end is the ordinary shape of that, not an
     // exotic one — so every configured ecosystem is asked.
+    // The root can hold a manifest for more than one ecosystem — a Flutter app
+    // with a JavaScript web front end is the ordinary shape of that, not an
+    // exotic one — so every configured ecosystem is asked. Only the ones whose
+    // manifest has a fixed name can be asked this way: a `.csproj` is named
+    // after its project, so there is no URL to guess and it is found by the
+    // listing below or not at all.
     final rootManifests = <RepositoryManifest>[];
     for (final ecosystem in _ecosystems.all) {
       final names = ecosystem.naming;
+      if (names.manifest.startsWith('*')) continue;
       final manifest = await _get(raw.resolve(names.manifest));
       if (manifest == null) continue;
       rootManifests.add(
@@ -273,15 +297,9 @@ class GitFetcher {
       );
     }
 
-    if (rootManifests.isEmpty) {
-      throw StateError(
-        'No ${_ecosystems.all.map((e) => e.naming.manifest).join(' or ')} '
-        'found at $gitUrl ($ref).',
-      );
-    }
-
-    final found = await _discoverManifests(gitUrl, ref);
-    if (found == null) {
+    final discovered = await _discoverManifests(gitUrl, ref);
+    if (discovered == null) {
+      if (rootManifests.isEmpty) throw _nothingFound(gitUrl, ref);
       return FetchedRepository(
         manifests: rootManifests,
         discoveryNote: 'Could not list this repository, so only the '
@@ -290,28 +308,58 @@ class GitFetcher {
       );
     }
 
-    var nested = found.where((m) => m.directory.isNotEmpty).toList();
+    // Discovery sees the root too, so anything already fetched above is
+    // dropped rather than fetched twice. One root manifest per ecosystem, since
+    // only the fixed-name ecosystems were fetched that way.
+    final alreadyRead = {for (final m in rootManifests) m.ecosystem};
+    var rest = discovered.manifests
+        .where((m) => !(m.directory.isEmpty && alreadyRead.contains(m.ecosystem)))
+        .toList();
+
+    if (rootManifests.isEmpty && rest.isEmpty) throw _nothingFound(gitUrl, ref);
+
     final budget = maxManifests - rootManifests.length;
-    final note = nested.length > budget
-        ? 'This repository has ${nested.length + rootManifests.length} '
+    final note = rest.length > budget
+        ? 'This repository has ${rest.length + rootManifests.length} '
             'manifests; the first $maxManifests were read.'
         : null;
-    nested = nested.take(budget < 0 ? 0 : budget).toList();
+    rest = rest.take(budget < 0 ? 0 : budget).toList();
+
+    // Companions are fetched once per path rather than once per manifest: a
+    // repository-root `Directory.Packages.props` is the companion of every
+    // project in it, and asking for it twenty times would spend twenty requests
+    // saying the same thing.
+    final companionCache = <String, String?>{};
+    Future<String?> companionAt(String path) async {
+      if (!discovered.companionPaths.contains(path)) return null;
+      if (companionCache.containsKey(path)) return companionCache[path];
+      final content = await _get(raw.resolve(path));
+      companionCache[path] = content;
+      return content;
+    }
 
     final manifests = <RepositoryManifest>[...rootManifests];
-    for (final location in nested) {
+    for (final location in rest) {
       final names = _ecosystems.require(location.ecosystem).naming;
-      final base = raw.resolve('${location.directory}/');
-      final manifest = await _get(base.resolve(names.manifest));
+      final base = location.directory.isEmpty
+          ? raw
+          : raw.resolve('${location.directory}/');
+      final manifest = await _get(raw.resolve(location.path));
       if (manifest == null) continue; // listed but unreadable; not fatal
 
       manifests.add(
         RepositoryManifest(
           directory: location.directory,
           ecosystem: location.ecosystem,
+          fileName: location.fileName,
           files: ManifestFiles(
             manifest: manifest,
             lock: await _firstLock(base, names),
+            companions: await _fetchCompanions(
+              names,
+              location.directory,
+              companionAt,
+            ),
           ),
         ),
       );
@@ -319,6 +367,41 @@ class GitFetcher {
 
     return FetchedRepository(manifests: manifests, discoveryNote: note);
   }
+
+  /// The companions of a manifest in [directory], over HTTP.
+  ///
+  /// The same nearest-at-or-above walk [_companionsFor] does for an archive,
+  /// except that a miss here would be a request. Only paths the listing already
+  /// showed to exist are asked for, which is why this path needs the listing
+  /// and cannot speculate.
+  static Future<Map<String, String>> _fetchCompanions(
+    ManifestNaming naming,
+    String directory,
+    Future<String?> Function(String path) read,
+  ) async {
+    if (naming.companionFiles.isEmpty) return const {};
+
+    final found = <String, String>{};
+    for (final name in naming.companionFiles) {
+      var at = directory;
+      while (true) {
+        final content = await read(at.isEmpty ? name : '$at/$name');
+        if (content != null) {
+          found[name] = content;
+          break;
+        }
+        if (at.isEmpty) break;
+        final slash = at.lastIndexOf('/');
+        at = slash < 0 ? '' : at.substring(0, slash);
+      }
+    }
+    return found;
+  }
+
+  StateError _nothingFound(String gitUrl, String ref) => StateError(
+        'No ${_ecosystems.all.map((e) => e.naming.manifest).join(' or ')} '
+        'found at $gitUrl ($ref).',
+      );
 
   /// Reads the whole repository out of one tarball, or null when the archive
   /// could not be downloaded or decoded and the caller should fall back.
@@ -432,7 +515,7 @@ class GitFetcher {
       final prefix =
           location.directory.isEmpty ? '' : '${location.directory}/';
 
-      final manifest = _decode(entries['$prefix${naming.manifest}']!);
+      final manifest = _decode(entries[location.path]);
       if (manifest == null) continue;
 
       String? lock;
@@ -445,7 +528,16 @@ class GitFetcher {
         RepositoryManifest(
           directory: location.directory,
           ecosystem: location.ecosystem,
-          files: ManifestFiles(manifest: manifest, lock: lock),
+          fileName: location.fileName,
+          files: ManifestFiles(
+            manifest: manifest,
+            lock: lock,
+            companions: _companionsFor(
+              naming,
+              location.directory,
+              (path) => _decode(entries[path]),
+            ),
+          ),
           importedPackages: imports[location.key],
         ),
       );
@@ -506,14 +598,47 @@ class GitFetcher {
   _ManifestLocation? _manifestAt(String path) {
     final fileName = _fileName(path);
     for (final naming in _ecosystems.naming) {
-      if (fileName != naming.manifest) continue;
+      if (!naming.isManifest(fileName)) continue;
       final slash = path.lastIndexOf('/');
       return _ManifestLocation(
         directory: slash < 0 ? '' : path.substring(0, slash),
         ecosystem: naming.ecosystem,
+        fileName: fileName,
       );
     }
     return null;
+  }
+
+  /// The companion files [naming] asks for, read from [read] at or above
+  /// [directory], nearest first.
+  ///
+  /// Nearest wins and the search walks upward, because that is how MSBuild
+  /// finds a `Directory.Packages.props`: the one in the project's own directory
+  /// beats the one at the repository root. A companion nobody committed is
+  /// simply absent, which the parser is expected to cope with — it is a file
+  /// the manifest may need, not one it must have.
+  static Map<String, String> _companionsFor(
+    ManifestNaming naming,
+    String directory,
+    String? Function(String path) read,
+  ) {
+    if (naming.companionFiles.isEmpty) return const {};
+
+    final found = <String, String>{};
+    for (final name in naming.companionFiles) {
+      var at = directory;
+      while (true) {
+        final content = read(at.isEmpty ? name : '$at/$name');
+        if (content != null) {
+          found[name] = content;
+          break;
+        }
+        if (at.isEmpty) break;
+        final slash = at.lastIndexOf('/');
+        at = slash < 0 ? '' : at.substring(0, slash);
+      }
+    }
+    return found;
   }
 
   /// The deepest manifest of [ecosystem] in [locations] whose directory
@@ -616,11 +741,15 @@ class GitFetcher {
     return bytes == null ? null : utf8.decode(bytes, allowMalformed: true);
   }
 
-  /// Every manifest in the repository, or null when it could not be listed.
+  /// Every manifest in the repository — and where its companions are — or null
+  /// when it could not be listed.
   ///
   /// Uses each forge's tree API, which returns the whole file list in one
-  /// request rather than walking directories.
-  Future<List<_ManifestLocation>?> _discoverManifests(
+  /// request rather than walking directories. Companion *paths* rather than
+  /// contents: this is a listing, and knowing which exist is what turns the
+  /// nearest-companion walk from a series of speculative 404s into one request
+  /// for a file that is definitely there.
+  Future<_Discovery?> _discoverManifests(
     String gitUrl,
     String ref,
   ) async {
@@ -651,6 +780,7 @@ class GitFetcher {
     };
 
     final found = <String, _ManifestLocation>{};
+    final companions = <String>{};
     for (final entry in entries.whereType<Map<String, dynamic>>()) {
       final path = entry['path']?.toString();
       if (path == null) continue;
@@ -667,14 +797,28 @@ class GitFetcher {
       }
 
       final location = _manifestAt(path);
-      if (location != null) found[location.key] = location;
+      if (location != null) {
+        found[location.key] = location;
+        continue;
+      }
+
+      final fileName = _fileName(path);
+      if (_ecosystems.naming.any((n) => n.isCompanion(fileName))) {
+        companions.add(path);
+      }
     }
 
-    return found.values.toList()
+    final manifests = found.values.toList()
       ..sort((a, b) {
         final byPath = a.directory.compareTo(b.directory);
-        return byPath != 0 ? byPath : a.ecosystem.compareTo(b.ecosystem);
+        if (byPath != 0) return byPath;
+        final byEcosystem = a.ecosystem.compareTo(b.ecosystem);
+        return byEcosystem != 0
+            ? byEcosystem
+            : a.fileName.compareTo(b.fileName);
       });
+
+    return (manifests: manifests, companionPaths: companions);
   }
 
   /// The endpoint serving a gzipped tar of the repository at [ref], or null for
@@ -879,8 +1023,19 @@ class _ArchiveUnavailable implements Exception {
 }
 
 /// Where a manifest sits in a repository, and which ecosystem's it is.
+/// What a tree listing turned up: the manifests, and where the files some of
+/// them need to be read alongside are.
+typedef _Discovery = ({
+  List<_ManifestLocation> manifests,
+  Set<String> companionPaths,
+});
+
 class _ManifestLocation {
-  const _ManifestLocation({required this.directory, required this.ecosystem});
+  const _ManifestLocation({
+    required this.directory,
+    required this.ecosystem,
+    required this.fileName,
+  });
 
   /// Path from the repository root, empty for the root itself.
   final String directory;
@@ -888,8 +1043,20 @@ class _ManifestLocation {
   /// The [Ecosystem.id] whose manifest was found here.
   final String ecosystem;
 
+  /// The manifest's own file name.
+  ///
+  /// Carried rather than derived from the ecosystem, because .NET names its
+  /// project file after the project: there is no `naming.manifest` to look up
+  /// once the file has been found, and one directory can legitimately hold
+  /// `Acme.csproj` and `Acme.Tests.csproj`.
+  final String fileName;
+
+  /// The full path of the manifest, root-relative.
+  String get path => directory.isEmpty ? fileName : '$directory/$fileName';
+
   /// Identity within a repository. The directory alone will not do: one
   /// directory can hold a `pubspec.yaml` and a `package.json`, and those are
-  /// two packages with two dependency trees.
-  String get key => '$ecosystem:$directory';
+  /// two packages with two dependency trees. Nor will directory and ecosystem,
+  /// for the .NET reason above.
+  String get key => '$ecosystem:$path';
 }
