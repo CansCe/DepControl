@@ -1,567 +1,247 @@
-# DepControl (project_cloud)
+# DepControl
 
-A **100% Dart** hosted web app that ingests a project by **Git URL** and lets you
-**inspect & report**, **resolve & simulate** dependency changes, and track a
-**registry of many projects** over time.
+**Know what your projects depend on, and what it is going to cost you.**
 
-Scans **Dart/Flutter** (`pubspec.yaml`, pub.dev) and **npm**
-(`package.json`, registry.npmjs.org) — see [Ecosystems](#ecosystems).
+DepControl tracks a registry of software projects and keeps a standing answer to
+the questions that only get asked after something goes wrong: which packages are
+we actually running, which of them have known vulnerabilities, what licenses did
+we agree to, what changed since last week, and what breaks if we upgrade.
 
-- **Frontend:** Flutter Web
-- **Backend:** Dart Frog (file-based routing, compiles to a single binary)
-- **Shared:** a plain-Dart `shared` package of DTOs used by both sides
-- **DB (Phase 3+):** Postgres
+Point it at a Git repository. It reads every manifest in there, resolves the
+dependency tree, and produces a report you can act on — then keeps re-checking
+and tells you when the answer changes.
 
-## Layout
+Dart/Flutter and npm today. 100% Dart: Flutter Web front end, Dart Frog API,
+Postgres.
 
-`project_cloud/` is the pub workspace **umbrella** — it is not itself an app. It ties
-the members together under one lockfile / `.dart_tool/`. The runnable app is the
-`frontend` member; `backend` and `shared` are its peers.
+---
 
-```
-project_cloud/            # repo root = pub workspace umbrella (not an app)
-├── packages/shared/      # DTOs: Project, DepNode, DepReport, ResolutionResult
-├── backend/              # Dart Frog API
-│   ├── routes/           # file-based routes -> HTTP endpoints
-│   ├── sql/              # schema for tables not created through a route
-│   ├── tool/             # operator CLIs (smoke test, API-diff pipeline)
-│   └── lib/src/          # services (git fetch, pub.dev, analyzer, resolver) + repo
-├── frontend/             # Flutter Web app  <-- the runnable app
-└── tools/api_differ/     # NOT a workspace member — see "Public API diffs"
-```
+## What you get
 
-> Native (mobile/desktop) targets, when needed, get added to `frontend` (via
-> `flutter create --platforms=...`) or a new workspace member — not to the root.
+### A complete inventory
 
-## Roadmap
+Every package the project resolves, direct and transitive, with the version
+actually in use and the manifests it was reached from. A repository is not
+assumed to be one package — a monorepo's every `pubspec.yaml` and
+`package.json` is read, including the directories deliberately kept out of the
+workspace that resolve to different versions of the same thing.
 
-| Phase | Scope | Status |
-|------:|-------|--------|
-| 0 | Monorepo + shared models + wiring | done |
-| 1 | Ingest Git URL -> dependency report | done |
-| 2 | Resolve & simulate | done — resolved from pub.dev metadata, not by running pub |
-| 3 | Postgres registry + auth | done — background drift check still TODO |
-| 4 | Sandbox hardening, rate limits | TODO |
+Packages that are declared but never imported are flagged as dead weight, and
+packages imported but never declared are flagged as the build break waiting to
+happen. Each dependency carries its install weight, and the report can tell you
+what dropping a set of them actually reclaims — including the transitive tail
+that comes out with them.
 
-Upgrade reporting sits on top of these: what a version jump changes in published
-metadata (`UpgradeImpact`), and what it changes in the package's public API
-(`ApiDiff`, see below).
+### Known vulnerabilities, with a fix that was verified
 
-## Ecosystems
+Advisories from OSV.dev, matched against the version you are running rather than
+the package name, scored from the published CVSS vector and banded
+critical→low. For a vulnerable transitive package the report names the direct
+dependency that pulls it in, because that is the only thing you can bump.
 
-A dependency report is the same document whichever ecosystem produced it —
-which packages, at which versions, with which advisories and licenses,
-reachable from which manifests. None of that is a question about pub.dev, so
-only four things are per-ecosystem (`backend/lib/src/ecosystem/`): the file
-names, the manifest syntax, the registry protocol, and the constraint dialect.
-Advisories are OSV documents and versions are semver on both sides, so scoring,
-banding, blame assignment, license classification, resolution and remediation
-are shared code that never learns which ecosystem it is serving.
+Then it gives you the fix. Not constraint arithmetic that looks plausible —
+every candidate is run through the resolver and kept only if the vulnerable
+package lands on a fixed version. Raise a constraint, bump the parent, or
+promote to a direct dependency, in that order, with the knock-on version changes
+listed. Where nothing works, it distinguishes "no fix has been published" from
+"no change to this manifest can reach one".
 
-| | Dart | npm |
+Delivered as a manifest diff. DepControl holds no write credentials to your
+repositories and does not open pull requests.
+
+### License compliance you can hand to somebody
+
+Every dependency's license, classified by the obligation it creates —
+permissive, weak copyleft, strong copyleft, network copyleft, not open source —
+and judged against a policy you set per obligation family, with per-license
+exceptions. A license nobody recognises is never filed under "probably fine";
+it goes to review.
+
+Export the whole tree as CSV or JSON, including the permissive majority, because
+a compliance manifest is an inventory first and an exception list second. The
+export carries the policy it was evaluated under, so it still reads six months
+later.
+
+Dev dependencies are excluded by default — worked out from the graph, not just
+from the `dev_dependencies` block — and included on request if you redistribute
+your toolchain.
+
+### An upgrade assessment before you commit to it
+
+For any package, what a version jump actually changes:
+
+- **Published metadata** — new and dropped dependencies, constraint widening,
+  SDK requirements.
+- **The public API** — the declarations your code calls, compared between the
+  two versions' real sources. Semver tells you whether the author *considered*
+  the release breaking; this tells you whether the function you use still
+  exists.
+- **The author's release notes**, verbatim, filtered to just the sections your
+  jump crosses rather than a link to twelve releases and the job of working out
+  which apply.
+
+### History, and what changed
+
+Every scan is kept, but a revision is written only when something is actually
+different — so a nightly re-scan of an untouched project gives you the four
+entries that matter, not three hundred and sixty-five. Each entry records both
+when that state was first seen and when it was last confirmed, because
+"unchanged for six months" and "nobody has looked in six months" are different
+facts.
+
+Compare any two revisions in either direction and get: how far each version
+moved (breaking/minor/patch, direction kept separate), advisories that newly
+apply, advisories that cleared, relicensing, and dependencies that changed from
+direct to transitive. A newly published advisory against a version that never
+moved counts as a change — that is most of the reason to re-scan at all.
+
+### Being told, without watching
+
+Register a Slack or Teams incoming webhook, scoped to one project or all of
+them, and set a bar: a new advisory at or above a severity you choose, a
+breaking version move, or both. A daily sweep re-scans everything, compares, and
+announces what clears the bar.
+
+Each change is announced at most once per target, guaranteed through the
+database rather than through hope — a sweep that runs twice, or a machine that
+dies mid-send, cannot produce a duplicate alert.
+
+### A registry that stays manageable
+
+Projects can be archived — kept, with their reports, out of the default listing
+and frozen against further scanning — or deleted outright. Archiving offers an
+undo; deleting asks first, because nothing is kept and there is nothing to
+restore.
+
+---
+
+## What it supports
+
+| | Dart / Flutter | npm |
 |---|---|---|
 | Manifest | `pubspec.yaml` | `package.json` |
 | Lockfile | `pubspec.lock` | `package-lock.json`, `npm-shrinkwrap.json` |
 | Registry | pub.dev | registry.npmjs.org |
 | Advisories | OSV.dev | OSV.dev |
-| Licenses | pub.dev's detection | the publisher's `license` field |
-| Imports | `import 'package:…'` | `import`/`require`, `/// <reference types>` |
-| Size | the archive's `Content-Length` | `dist.unpackedSize` |
+| Licenses | pub.dev's per-version detection | the publisher's `license` field |
+| Install weight | archive `Content-Length` | `dist.unpackedSize` |
+| Unused / undeclared imports | yes | yes |
 | Resolve & simulate | yes | not yet |
+| Public API diffs | yes | no |
+| Release notes | yes | thinner — many npm packages ship no changelog |
 
-**A repository can be more than one.** A Flutter app with a JavaScript front
-end is the ordinary shape of that. Source files are attributed to the nearest
-manifest *of their own kind* — in a repository holding both, the nearest
-manifest of any kind is regularly the wrong one — and where two manifests share
-a directory the report names the ecosystem alongside it.
+A repository can be both at once, and a Flutter app with a JavaScript front end
+is the ordinary shape of that. Package identity carries the ecosystem, because
+`path`, `http` and `crypto` exist on both registries as entirely different
+software.
 
-Package identity carries the ecosystem, because `path`, `args`, `crypto`,
-`http` and `stack_trace` are published on both registries, by different people,
-doing different things. Merging those on name and version would attribute one's
-advisories to the other.
+Repositories are read from **github.com and gitlab.com over https**. Public
+repositories today.
 
-### What differs, and why it is not smoothed over
+## What it will not tell you
 
-- **npm's `^` is not pub's.** `^0.0.3` admits nothing but 0.0.3 on npm; pub
-  reads the same text as `>=0.0.3 <0.1.0` and admits 0.0.4. npm also has `||`
-  unions, `x` wildcards and hyphen ranges, none of which pub has. The ranges are
-  translated rather than handed to pub's parser, which would be wrong in the
-  direction that matters — admitting versions the manifest excludes.
-- **npm licenses are weaker evidence.** pub.dev analyses each version's
-  published LICENSE file; npm reports whatever the publisher typed in a field,
-  and frequently that is an SPDX *expression* like `(MIT OR Apache-2.0)`. Those
-  keep their text and get no family, which under the standard policy means a
-  human looks at them.
-- **`yarn.lock` and `pnpm-lock.yaml` are not read.** They are deliberately not
-  listed as lockfiles either, because a lockfile the parser finds and cannot
-  read would have a project report as having no locked versions at all. Their
-  absence instead falls to resolving the declared constraints, which the report
-  labels as inferred.
-- **npm installs one package at several versions; this reports one.** The
-  hoisted copy — the shallowest `node_modules/` path, which is what the tree
-  resolves to unless something forced otherwise. A nested copy at a different
-  version is missing from the report, along with any advisory that applies only
+Stated plainly, because these are the gaps that matter when you are deciding
+whether this covers you:
+
+- **An empty advisory list is not a clean bill of health.** OSV does not
+  distinguish "nothing published" from "the database could not be reached", and
+  a report currently reads both as no advisories.
+- **Install weight is not bundle size.** What survives tree-shaking into your
+  production bundle depends on your symbols and your bundler, and no registry
+  knows either.
+- **npm packages are reported at one version.** The hoisted copy. A nested copy
+  at a different version is missing, along with any advisory that applies only
   to it.
-- **`peerDependencies` are not counted.** A peer is a requirement a package
-  makes of whoever installs it, not something it brings along.
-  `optionalDependencies` *are* counted, because they ship when they install.
+- **`yarn.lock` and `pnpm-lock.yaml` are not read.** Those projects fall back to
+  resolving declared constraints, which the report labels as inferred.
+- **`peerDependencies` are not counted**; `optionalDependencies` are.
+- **No private or self-hosted Git.** Public GitHub and GitLab only.
 
-## What a scan covers
+More on all of it, and why, in [docs/DESIGN.md](docs/DESIGN.md).
 
-A repository is not always one package. Adding a project reads **every**
-`pubspec.yaml` in the repository, not only the one at its root: a pub workspace
-resolves its members into a single root lockfile, but a directory deliberately
-kept *out* of the workspace resolves independently.
+---
 
-Packages are merged on **name and version, not name**. This repository is its
-own example — the root lockfile has `analyzer 12.1.0` while
-`tools/api_differ/pubspec.lock` has `7.7.1`, and those are two different things
-to assess, because an advisory applies to a version. Each entry records which
-pubspecs it came from.
+## Roadmap
 
-That makes the count *distinct resolved packages*. GitHub's dependency graph
-counts dependency edges per manifest and does not deduplicate across them, so
-its number for a monorepo is legitimately higher — it counts a shared package
-once per manifest.
+| Phase | Scope | Status |
+|------:|-------|--------|
+| 0 | Monorepo, shared models, wiring | done |
+| 1 | Ingest Git URL → dependency report | done |
+| 2 | Resolve & simulate | done — from registry metadata, not by running the package manager |
+| 3 | Postgres registry, auth, history, alerts | done |
+| 4 | Sandbox hardening, rate limits | in progress |
+| 5 | **Local repository collector** | planned — not built |
+| 6 | **API health tracking** | planned — not built |
 
-A scan downloads the repository's source tarball — one request to
-`codeload.github.com` or GitLab's archive endpoint — and reads everything out of
-it. Where a repository holds more packages than a single report is worth, the
-libraries are read before the example apps, since the cap has to fall somewhere.
+### Local repository collector *(planned)*
 
-When the tarball cannot be had (the ref is gone, the download is oversized, the
-bytes do not decode) the scan falls back to the older path: list the tree, then
-fetch each `pubspec.yaml` over raw HTTP. That still produces a complete
-dependency report — it just cannot say anything about imports. If the tree API,
-which is rate limited, is unavailable too, the scan falls back to the repository
-root and the report says so rather than implying the repository holds one
-package.
+A remote scan sees only what your repository publishes, and that is regularly
+not what you run. Lockfiles are generated locally and frequently gitignored, so
+the resolved versions — the ones an advisory actually applies to — never reach
+the server, and the report falls back to inferring them from declared
+constraints. Repositories that are private or self-hosted cannot be scanned at
+all.
 
-## What a scan costs
-
-Enriching a package means asking a registry about it, and a large repository is
-where the arithmetic stops being free. A scan is bounded by round trips, so the
-two numbers worth watching are **how many requests it makes** and **how deep the
-serial chain is per package**.
-
-Both are held down at the client layer rather than in the analyzer, which is
-where `PackageRegistry` says request shaping belongs.
-
-**Each distinct package costs four requests**, not four per manifest. pub.dev's
-package document already embeds every listed version's pubspec, so the latest
-version, the resolution input and the graph edges all come out of one fetch; npm
-serves the same three from one abbreviated packument. What is left is the
-advisory query, the licence read and — for pub.dev, which publishes no size
-field anywhere — a `HEAD` on the archive. Answers are cached in the client, so a
-package reached from twenty manifests still costs those four.
-
-Measured against a synthetic repository, before and after that caching:
-
-| Repository | Requests before | After |
-|---|---|---|
-| 1 manifest × 10 packages | 50 | 40 |
-| 5 manifests × 10 packages | 250 | 40 |
-| 20 manifests × 20 packages | 2,000 | 80 |
-| 20 manifests × 400 packages | 40,000 | 1,600 |
-
-The shape is the point: the cost is now proportional to *distinct packages*,
-which is the same number the report counts, rather than to packages × manifests.
-
-**And against a real one.** `opengeos/GeoLibre` — 13 manifests, 1491 resolved
-packages — scanned end to end with `tool/measure_scan.dart`, compiled, on the
-same machine:
-
-| | before | after |
-|---|---|---|
-| analysis | 186 s | **94 s** |
-| peak RSS | **1035 MB** | **350 MB** |
-
-The memory is the number that mattered. `fly.toml` allocates **512 MB**, so this
-repository did not fail slowly — it was OOM-killed partway through, every time,
-which took the in-flight request and the in-memory scan progress with it and
-left the browser polling a machine that had already restarted. What fixed it was
-not the request count but keeping the *distilled* form of a registry document
-(see `_Packument`, `_PackageDoc`) rather than the decoded JSON it came from.
-
-Measure with a compiled binary or not at all: the same scan reads 574 MB under
-`dart run`, because the JIT VM carries machinery the deployment does not.
-`Dockerfile` ships `dart compile exe`, and only that number says anything about
-whether a scan fits.
-
-**Cached answers expire**, and the expiry is not a detail. Most of what a
-registry says is a fact about the rest of the world — the newest release moves
-when somebody else publishes, an advisory appears when somebody else files one —
-so a cache with no lifetime would turn a long-running server into one reporting
-whatever was true when it started, and a nightly rescan would never notice
-anything. Ten minutes, which is long enough that any one scan asks once. Facts
-about an already-published artefact cannot go stale that way — an archive's
-length, a released version's declared licence — and those are held for hours.
-
-**Nothing waits on an answer it does not need.** Size and graph edges depend
-only on the installed version, which the lockfile already gave us, so they go out
-alongside the request describing the package rather than after it; the advisory
-query and the version lookup are different hosts and go out together. Two waves
-instead of four hops.
-
-**A registry that will not answer degrades the node, not the scan.** Every
-lookup is bounded and falls back to *unmeasured* — no latest version, an
-undetermined licence, a null size — never to a value that would read as a
-measured negative. The per-request timeouts in the clients are the first line;
-the analyzer's own budget is the one that catches a socket which is open and
-simply never going to reply, which is the failure that used to strand eight
-workers and take a large scan down with them. A partial report that says what it
-could not reach is worth having. A 500 after four minutes is not.
-
-## What the source says
-
-Reading the tarball means reading the Dart source, not just the manifests, and
-the gap between the two is worth reporting:
-
-- **Imported but not declared.** The package resolves today only because
-  something else pulls it in. Nothing in the pubspec warns before the upgrade
-  that stops it, so the build breaks for a reason that is nowhere in the diff.
-- **Declared but never imported.** Dead weight: a package whose advisories
-  somebody triages, whose version constrains everything else's resolution, and
-  which buys nothing. Build tooling, lint sets and code generators are excluded,
-  since those are used without ever being imported — `analysis_options.yaml`
-  `include:` lines are read for the same reason.
-
-Both are silent — not empty — on a report whose source was never read. "Nobody
-looked" and "nothing uses it" are different claims, and only one of them is
-worth acting on.
-
-## What a dependency weighs
-
-Each package carries the size its registry publishes, and the report totals
-them. The number that makes an unused dependency worth deleting is not what
-that package weighs — it is what comes out **with** it: the transitive tail
-nothing else pulls in. A 40 KB helper that is the only thing holding up eleven
-other packages costs the tree all twelve, and that is the figure the report
-gives for dropping it.
-
-Asked about a *set* of packages rather than one at a time, because the answers
-do not add up. Two unused packages that both pull in the same helper each
-reclaim nothing of it alone, and dropping both reclaims it.
-
-**This is install weight, not bundle size.** What survives tree-shaking and
-minification into a production bundle depends on which symbols the project
-imports and which bundler runs over them, and no registry knows either — the
-tools that report bundle size run a bundler to find out. Reporting a download
-figure under that name would be wrong in the direction people act on.
-
-The two registries are also not answering the same question, so the report
-keeps their totals apart rather than adding them:
-
-- **npm states installed bytes.** `dist.unpackedSize` is recorded at publish
-  time and arrives in the abbreviated packument the scan already fetches, so it
-  costs no request. It is absent for anything published before npm began
-  recording it — `sax` carries it on 9 of its 54 releases — and those small old
-  packages are what a tree is full of.
-- **pub.dev publishes no size at all,** so the figure is the `Content-Length` of
-  the `.tar.gz`, taken with a HEAD. That is the compressed download. Source
-  expands several times over, by a factor that depends on what the package is
-  made of, so a multiplier would turn a measurement into an invention.
-
-A package with no published size reports none, never zero, and every total says
-how many it had to leave out. A tree that reported its unmeasured half as
-weightless would understate itself in exactly the direction this exists to
-expose.
-
-## Managing the registry
-
-Projects can be **archived** (reversible — the project and its report are kept,
-and it leaves the default listing) or **deleted** (the project and its report,
-with nothing kept). In the list, swipe left to archive and right to delete; the
-same two actions are in each row's menu, since a swipe is invisible with a
-mouse and this is a web app.
-
-Archiving offers an undo. Deleting asks first: the server keeps no copy, so an
-"undo" would mean re-adding and re-analyzing under a new id, which is not the
-same thing and is not presented as if it were.
-
-**An archived project is frozen.** Re-analysis, simulation, upgrade detail and
-remediation all refuse with `409` — a snapshot that keeps re-fetching a
-repository and re-querying pub.dev is not archived in any sense that matters. It
-still serves its stored report, showing what the project depended on: no
-`Latest` or `Status` columns, no upgrade assessment, no remediation. Advisories
-and licenses stay, because they are facts about the versions in the snapshot
-rather than a comparison with today. Restoring the project makes all of it work
-again.
-
-## Report history
-
-Every analysis is kept, so a project's dependencies can be compared with what
-they were. `GET /projects/<id>/history` lists the states they have been in,
-newest first; `?revision=<id>` returns one of them in full.
-
-**A revision per change, not per scan.** A project re-scanned nightly and never
-touched would otherwise produce three hundred identical entries a year with the
-four that matter somewhere inside them. A scan that finds no difference marks
-the newest revision seen again, so each row carries both when that state was
-first seen and when it was last confirmed — "unchanged for six months" and
-"nobody has looked in six months" are different facts about a project, and the
-difference is usually the point.
-
-What counts as a difference is decided by a digest over the packages, their
-resolved versions and kinds, the advisories against them, their licenses, and
-the manifests the scan read (`backend/lib/src/repository/report_digest.dart`).
-Two things are deliberately excluded:
-
-- **`latest` and `status`.** Those move whenever anybody else publishes a
-  release. A project whose own dependencies have not moved has not changed, and
-  recording that would file the rest of the ecosystem's activity under this
-  project's history.
-- **When the scan ran.** Otherwise every scan is a change and the history is a
-  log of scans.
-
-A newly published advisory against an unchanged version *is* a change, and so is
-a relicensing — those are the two things a re-scan of an untouched project
-exists to find.
-
-Comparison is against the newest revision only, so a project that goes A → B → A
-has three revisions rather than two. Folding the second A into the first would
-stretch one row's window across the period when B held, which is a claim about
-the project that nobody checked.
-
-Revisions are capped per project (`maxRevisionsPerProject`), oldest dropped
-first, since each holds a full node list. The table is in
-`backend/sql/report_history.sql`, which also carries the existing `dep_reports`
-rows over as each project's first revision.
-
-## What changed
-
-`GET /projects/<id>/changes` compares two of a project's stored reports. With
-no arguments, the two newest — "what changed last time anything did".
-`?from=<revision>&to=<revision>` compares any two, in either order, since
-"what would reverting look like" is a legitimate question.
-
-Packages are matched on **ecosystem and name**: the version is the thing being
-compared, so it cannot also be part of the identity, and npm and pub.dev both
-publish `path`, `http` and `crypto`.
-
-What a change carries:
-
-- **How far the version moved**, in the same vocabulary as the upgrade
-  assessment — breaking, minor, patch — with the direction kept separate,
-  because a downgrade across a major boundary is as breaking as the upgrade
-  was. The pre-1.0 rules are each ecosystem's own: both treat a minor change
-  below 1.0.0 as breaking, and npm goes further, treating the patch as breaking
-  at `0.0.x`.
-- **Advisories that newly apply.** Three ways that happens — newly published,
-  the package moved into an affected range, or a new package arrived carrying
-  it — and they are not distinguished, because they are the same news.
-- **Advisories that no longer apply**, called *cleared* rather than *fixed*. An
-  advisory clears because the package moved to a fixed version, because it left
-  the project, or because it was **withdrawn** — and a withdrawal means the
-  finding was never right rather than that anybody repaired anything. Two
-  reports cannot tell those apart, so the name does not claim to.
-- **Relicensing**, but only on a package that did not move. A different licence
-  on a different version is part of that move rather than a separate event.
-- **How the package is reached**, when a direct dependency becomes transitive
-  or the reverse.
-
-A repository can resolve one package at two versions at once — this one does.
-Where that happens there is no single "it moved from here to there", so the
-differing versions are listed as additions and removals rather than an invented
-bump.
-
-The diff is derived, never stored: two reports and this endpoint always produce
-the same answer, so nothing has to be migrated when the comparison learns to
-notice something new.
-
-## Being told
-
-A change nobody reads is a change nobody acts on. `tool/rescan.dart` re-scans
-every tracked project, stores what it finds, compares it with the previous
-revision, and announces anything that clears a bar you set.
+The plan is a small CLI you run inside your own checkout, which produces the
+same report from local files:
 
 ```bash
-cd backend && dart run tool/rescan.dart --all
+depcontrol collect            # writes a dependency bundle from the working tree
 ```
 
-It is a CLI rather than a timer inside the server, because the API is deployed
-with `min_machines_running = 0` and stops between requests — an in-process
-schedule would fire only while somebody happened to be using the app, which is
-exactly when they do not need to be told. `.github/workflows/rescan.yml` runs it
-daily; cron or a Fly scheduled machine would do as well. It needs `DATABASE_URL`,
-the same string the server uses.
+**Sealed by construction**, because it runs against a repository you would not
+hand to a service:
 
-### What gets announced
+- It reads an **explicit allowlist of manifest and lockfile names** and nothing
+  else. Not your source, not your `.env`, not your history.
+- It **executes nothing** — no `pub get`, no `npm install`, no build hooks, no
+  subprocess of any kind.
+- Its output is a **plain JSON bundle you can read before it goes anywhere**:
+  package names, versions, kinds, and the manifest paths they came from. That
+  is the whole contents.
+- Uploading is a **separate, explicit step**. Collecting and sending are not the
+  same command.
 
-`POST /notifications` registers a Slack or Teams incoming webhook, optionally
-scoped to one project. Two rules, both opt-in, either sufficient:
+### API health tracking *(planned)*
 
-- **A new advisory**, at or above `minSeverity`. Compared against the *worst*
-  new advisory in the change, so one critical among nine lows clears a
-  threshold of critical. An advisory nobody has rated clears every threshold —
-  "we do not know how bad this is" is not a reason to stay quiet, the same
-  rule that stops it being reported as low.
-- **A breaking version move**, in either direction, advisory or not.
+Dependencies are one half of what a project relies on; the services it calls are
+the other, and nothing in a manifest mentions them. The plan is to let you
+register endpoints against a tracked project **by hand** — URL, method, expected
+status, check interval — and have DepControl poll them and report availability,
+latency and status history alongside the dependency report, with the same
+notification targets.
 
-A target with both rules off is refused rather than saved: one that can never
-fire is indistinguishable from one that works, until the day it matters.
+Manual registration only. Nothing is discovered from your code, and no endpoint
+is contacted that you did not enter.
 
-### At most once
+---
 
-A change is announced at most once per target. The claim is written to the
-database *before* the request goes out, keyed on the revision rather than on
-the run, so a sweep that fires twice — or a machine that dies mid-send — cannot
-produce a second alert. The cost is that a genuinely lost send is not retried,
-which is the right way round: an alert repeated days later, about a change
-already dealt with, does more damage to a channel's credibility than a missed
-one does. A failed send stays claimed for the same reason — retrying on a
-schedule is how a broken webhook becomes a loop.
+## Running it
 
-Archived projects are not swept. Re-analysis already refuses them with `409`,
-and a background job that quietly re-fetched them would be doing the one thing
-archiving exists to stop.
+### Prerequisites
 
-### The webhook URL is a credential
-
-Anything holding an incoming-webhook URL can post to the channel, so:
-
-- **It is never returned.** A stored target reads back as its host and the last
-  few characters of its path — enough to tell two apart, not enough to use.
-  There is deliberately no "reveal" parameter.
-- **Only known hosts.** `hooks.slack.com`, `*.webhook.office.com` and
-  `*.logic.azure.com`. Everything else this application fetches is from a host
-  *it* chose; a notification target is a URL a user supplies that the server
-  then requests from inside its own network, which is a server-side request
-  forgery primitive unless it is constrained. The constraint is an allowlist,
-  because a denylist of private ranges loses to DNS rebinding, redirects, and
-  the several spellings of `127.0.0.1` that parse as something else.
-- **Re-validated on every send**, rather than trusted from storage: the
-  allowlist can narrow, and a row can be edited by something other than this
-  application.
-
-Nothing is ever delivered from a request — only `tool/rescan.dart` posts to a
-webhook — so no caller can use these endpoints to make the server reach an
-address on demand.
-
-**A Teams caveat.** Messages are sent as a MessageCard, which the Office 365
-connector renders. Microsoft is retiring that in favour of Power Automate
-workflows, which want an Adaptive Card; a workflow using the stock template
-will not render these properly. Email is not implemented — it needs a provider
-and credentials, and neither has been chosen.
-
-## Release notes
-
-A version moved; what did its author say about it? `GET
-/projects/<id>/changes?changelogs=true` answers that for every package in a
-diff, with the sections covering `(from, to]` — the ones the move actually
-crosses, rather than a link to twelve releases' worth of notes and the job of
-working out which apply.
-
-The notes are kept **verbatim**. They are the author's account of their own
-release, and paraphrasing them would be this application making claims about
-somebody else's software.
-
-Nothing is fetched in a request. A lookup that misses records what it wanted
-and the backlog is drained out of process, exactly as the API diffs are:
-
-```bash
-cd backend && dart run tool/fill_changelogs.dart
-```
-
-**One archive answers many questions.** A changelog is cumulative, so reading
-`foo 3.0.0` stores the sections for 2.x and 1.x too — and the aggregator checks
-what is stored *before* asking whether a particular archive was read, so a
-project moving to 2.0.0 is served from an archive somebody else's upgrade
-already pulled.
-
-**Empty is two different answers**, and they are not shown alike: nobody has
-read the archive yet (queued — check back), or it was read and nothing covers
-this range (the package ships no changelog, or did not write about these
-versions). A changelog nobody has read must never render as a release that
-said nothing.
-
-### What it reads, and what it will not
-
-The archive is fetched from a **constructed** URL — never from the registry's
-own metadata, since npm publishes a `dist.tarball` field and following it would
-let a package's publisher choose which host this server contacts. It is
-decompressed in memory, so a crafted entry path has nowhere to escape to; the
-compressed size, expanded size, file count and the changelog's own size are all
-capped; and only the changelog is decoded.
-
-Only a changelog at the archive root counts. One under `example/` or
-`test/fixtures/` belongs to something else, and npm packages ship other
-projects' files more often than one would like.
-
-There is no changelog *format*, only a convention, so the heading parser is
-permissive — `## 1.2.3`, `# [1.2.3]`, `## v1.2.3 (2024-05-01)` all read. Two
-things it deliberately refuses: a heading that merely mentions a version
-(`## Upgrading to 2.0.0` is prose in somebody's notes, and treating it as a
-release boundary splits that release in half), and anything inside a fenced
-code block (migration instructions routinely paste a manifest containing what
-looks exactly like a heading).
-
-**npm coverage is thinner than pub's**, and not because of this code: many npm
-packages ship no `CHANGELOG.md` in their tarball at all. `lodash` publishes to
-GitHub Releases instead, and `@babel/core` keeps one changelog at its monorepo
-root rather than per package. Both read successfully and yield nothing, which
-is reported as what it is.
-
-## Public API diffs
-
-Semver says whether an author *considers* a release breaking. It cannot say
-whether the declarations your code calls still exist. `tools/api_differ` answers
-that by comparing the public API of two published versions, read from their own
-sources.
-
-It is **deliberately outside the pub workspace**: parsing Dart needs an analyzer
-version this workspace cannot resolve (it is shared with `dart_frog_cli` and
-`test`), and a path dependency would join the same resolution. It also keeps
-archive fetching and source parsing out of the request path — the API only ever
-reads diffs the tool already produced.
-
-```bash
-# compare two versions by hand
-cd tools/api_differ && dart run api_differ http 0.13.6 1.0.0
-```
-
-The pipeline into the app:
-
-1. Someone opens a package in the UI. If no diff is stored for that exact
-   version pair, the API records the pair as wanted and says so — a missing diff
-   never renders as "nothing changed".
-2. An operator drains that backlog. Each pair runs the differ and is stored:
-
-```bash
-cd backend && dart run tool/fill_api_diffs.dart
-```
-
-3. Every project depending on that package now gets the answer, since a diff is
-   keyed by package and versions rather than by project.
-
-To store a single diff directly (`--dry-run` on the filler shows the backlog
-without computing anything):
-
-```bash
-dart run api_differ yaml 3.1.2 3.1.3 --json | dart run tool/import_api_diff.dart
-```
-
-Both CLIs need `DATABASE_URL`, the same connection string the server uses. The
-tables they use are in `backend/sql/api_diffs.sql`.
-
-## Prerequisites
-
-- **Dart SDK >= 3.6** (required for pub workspaces) and Flutter **>= 3.27** (workspace support)
+- **Dart SDK ≥ 3.6** (pub workspaces) and **Flutter ≥ 3.27**
 - Dart Frog CLI: `dart pub global activate dart_frog_cli`
+- A Supabase project for auth; Postgres for persistence (optional — the API
+  falls back to an in-memory store)
 
-## Setup (pub workspace)
+### Setup
 
-This repo is a single pub workspace, so you resolve everything **once from the root**:
+The repo is a single pub workspace, so everything resolves **once from the
+root**:
 
 ```bash
-# from C:\ProjectCloud\project_cloud — resolves shared + backend + frontend together
 flutter pub get
 ```
 
-(`flutter pub get` at the root covers the Flutter members too; plain `dart pub get`
-works if you only touch the Dart members.)
+(`flutter pub get` at the root covers the Flutter members too; plain
+`dart pub get` works if you only touch the Dart members.)
 
-## Run
+Then copy `backend/.env.example` to `backend/.env` and fill it in. It documents
+every variable; the two that matter are `SUPABASE_URL` (auth) and `DATABASE_URL`
+(persistence).
+
+### Run
 
 ```bash
 cd backend && dart run tool/dev.dart
@@ -571,39 +251,24 @@ cd backend && dart run tool/dev.dart
 cd frontend && flutter run -d chrome
 ```
 
-The backend reads its configuration from the **process environment and nothing
-else**, which is right for a container and wrong for a laptop — `.env.example`
-tells you to put your credentials in `backend/.env`, and a bare `dart_frog dev`
-would not read it. The result is a server that answers `GET /` and refuses
-everything after it with "Auth is not configured", which from the browser looks
-like a broken frontend rather than a missing variable.
+The backend reads configuration from the **process environment and nothing
+else** — correct for a container, wrong for a laptop, which is why `tool/dev.dart`
+exists: it loads `backend/.env` into the environment and starts `dart_frog dev`
+with it, prints which names it loaded (names only — a connection string carries
+a password), and says so plainly when auth or the database is missing. Anything
+already set in your shell wins over the file. Plain `dart_frog dev` still works
+if you would rather export the variables yourself.
 
-`tool/dev.dart` loads `backend/.env` into the environment and starts
-`dart_frog dev` with it, so the invariant inside `lib/` stays intact and the
-loading happens somewhere that only ever runs on a developer's machine. Anything
-already set in your shell wins over the file. It prints which names it loaded —
-names only, since a connection string carries a password — and says so plainly
-when auth or the database is missing rather than letting you find out three
-screens later.
-
-`dart_frog dev` still works directly if you would rather export the variables
-yourself.
-
-The frontend needs no flags: `kDefaultApiBaseUrl` falls back to
-`http://localhost:8080`, which is where the dev server is. Point it elsewhere
-with `--dart-define=API_BASE_URL=…`, or per-device from the settings screen.
-
-To drive it from a browser tab rather than a Chrome window — useful when you
-want to watch a large scan without a debugger attached:
+The frontend needs no flags — it defaults to `http://localhost:8080`. Point it
+elsewhere with `--dart-define=API_BASE_URL=…`, or per-device from the settings
+screen. To drive it from a browser tab instead of a Chrome window, useful for
+watching a large scan without a debugger attached:
 
 ```bash
 cd frontend && flutter run -d web-server --web-port 5000
 ```
 
-## Test
-
-The workspace resolves from the root, so one `flutter pub get` there covers all
-three packages.
+### Test
 
 ```bash
 cd backend && dart test
@@ -617,191 +282,98 @@ cd packages/shared && dart test
 cd frontend && flutter test
 ```
 
-**The backend suite is split in two, and the split is deliberate.** 601 tests
-run in about six seconds; 25 more talk to a real Postgres and take 42 seconds
-between them. That is 88% of the wall clock for 4% of the coverage, and paying
-it on every run is how a suite stops being something you run while you work. So
-those are tagged `db` and skipped by default:
+**The backend suite is split, deliberately.** 601 tests run in about six
+seconds; 25 more talk to a real Postgres and take 42 seconds — 88% of the wall
+clock for 4% of the coverage, which is how a suite stops being something you run
+while you work. Those are tagged `db` and skipped by default:
 
 ```bash
 cd backend && dart test -P db
 ```
 
-CI runs that second form, not the first. Worth stating plainly, because the
-failure mode is silent: the point of those tests is that the repository layer
-meets real SQL rather than the in-memory double that shares none of its
-behaviour, and a suite that quietly stops covering the database is worse than
-one that goes red. They still skip on their own when `DATABASE_URL` is not
-configured at all — the tag is about cost, that check is about capability.
+**CI runs the second form.** Worth stating plainly: the point of those tests is
+that the repository layer meets real SQL rather than the in-memory double that
+shares none of its behaviour, and a suite that quietly stops covering the
+database is worse than one that goes red.
 
-## Security
+### Operator CLIs
 
-### Vulnerability scanning
-
-Advisories come from **OSV.dev**, for both ecosystems — GHSA identifiers, CVE
-aliases, affected ranges and CVSS vectors. One source, one code path, and every
-test in either ecosystem exercises the same version matching, scoring and
-banding.
-
-Dart's used to come from pub.dev's `/advisories` endpoint. Two reasons they no
-longer do. npm publishes nothing comparable per package, so OSV had to be
-spoken to regardless; and pub.dev's endpoint **serves withdrawn advisories**.
-Asking it about `dio` returns `GHSA-jwpw-q68h-r678`, retracted in October 2023,
-with nothing in the response marking it as different from the live advisory
-beside it — so `dio` was reported vulnerable to a finding its own database had
-taken back. OSV excludes withdrawn entries from a query, and `Advisory.affects`
-refuses them besides.
-
-The two sources were compared package by package before the switch. They agree
-on every live advisory, field for field, and disagree only where pub.dev is
-serving something withdrawn.
-
-**An empty advisory list is not a clean bill of health.** OSV does not
-distinguish "nothing published" from "the database could not be reached", and a
-report presently reads both as no advisories. That is a real weakness of this
-design and it is stated here rather than papered over.
-
-What the report does with it:
-
-- **Matched by version, not by package.** An advisory applies to the version
-  actually in use, so a package with a historical CVE is not reported vulnerable
-  forever.
-- **Scored.** The published CVSS v3 vector is parsed to a base score and banded
-  critical/high/medium/low (`backend/lib/src/services/cvss.dart`, checked
-  against published scores). Where an advisory ships no vector, the database's
-  own band is used; where it ships neither, the severity reads *unrated* — never
-  "low".
-- **Ordered.** Packages are listed worst-first and the card leads with a
-  breakdown, because the reader deals with the top of the list.
-- **Fixed version named.** Taken from the advisory range covering your version,
-  or failing that from the release history. Where no fix is published, that is
-  said outright — "no fix listed" and "no fix needed" are not the same thing.
-- **Blame assigned.** For a vulnerable *transitive* package, the report names
-  the direct dependency that pulls it in, because that is the only thing you can
-  actually bump.
-
-### Remediation
-
-`GET /projects/<id>/remediation` returns a **verified** fix for each advisory.
-Nothing is offered on the strength of the constraint arithmetic looking right:
-every candidate is put through the resolver, and kept only if the vulnerable
-package actually lands on a fixed version. Three shapes, in order of preference:
-
-1. **Raise the constraint** — the project declares the package.
-2. **Bump the parent** — it does not, but bumping what pulls it in reaches the
-   fix. The right fix for a transitive problem: the tree keeps its shape.
-3. **Promote to direct** — nothing declared owns it, so the package is declared
-   with a floor. Flagged as a pin somebody will have to remove.
-
-Where none of those resolve, the response says whether no fix is *published* or
-no change to this pubspec can *reach* one — different problems with different
-next steps. Each plan reports the knock-on version changes too, since one
-advisory can drag a dozen packages with it.
-
-Remediations are shown as a pubspec diff. Opening pull requests would need
-GitHub write credentials, which this app deliberately does not hold.
-
-## License compliance
-
-Every dependency's license, judged against a policy, with a manifest to hand to
-whoever signs off on shipping.
-
-Licenses come from **pub.dev's own detection** — it analyses each published
-version's `LICENSE` file and publishes the result as tags (`license:mit`,
-`license:osi-approved`, `license:fsf-libre`, or `license:unknown`). That is the
-same answer shown on the package page, so a report here matches what a reviewer
-sees if they look the package up by hand.
-
-- **Read per version, and it says when it could not be.** pub.dev keeps one
-  analysis per version and drops the old ones, so a project pinned to an old
-  release has none. The scan then reads the latest release instead and labels
-  the finding as such — relicensing between the pinned version and today is
-  exactly what this exists to catch, so the substitution is printed rather than
-  smoothed over.
-- **Classified by obligation, not by name.** A policy is decided on whether a
-  dependency can oblige you to publish your own source, so licenses are grouped
-  into permissive, weak copyleft, strong copyleft, network copyleft (AGPL — the
-  one that catches a hosted service that never ships a binary), and not-open-
-  source. The table is `backend/lib/src/services/license_catalog.dart`.
-- **Never guessed.** A license the catalog does not recognise keeps its SPDX id
-  and gets no family, which under the standard policy means a human looks at it.
-  Filing an unrecognised license under "probably fine" is the one error that
-  gets a package shipped.
-- **"Unidentified" is a finding, not a clearance.** Code with no identifiable
-  grant is not licensed to you by default, so it is never reported as clean.
-- **Packages that are not on pub.dev are not looked up there.** An SDK, path or
-  git dependency has no published analysis, and pub.dev *does* serve packages
-  under some of those names — `flutter` and `sky_engine` there are discontinued
-  placeholders with a few dozen downloads a month. Reading a license off one of
-  those and printing it beside the SDK's name would be a fabricated answer that
-  happens to look plausible. They are listed as unchecked, with where they come
-  from, alongside packages from reports that predate this feature. Neither is a
-  finding: "we could not check this" is not "somebody must review this", and
-  filing them together buries the ones that are.
-
-### Policy
-
-`GET`/`PUT`/`DELETE` `/policy/licenses` holds one policy per user. Until someone
-writes one, the standard policy applies: permissive allowed, weak copyleft
-needs review, strong/network copyleft and non-open-source forbidden, and
-anything unidentified needs review. The report says which of the two you are
-reading — "your policy forbids this" and "nobody here has written a policy and
-the default forbids this" send you to different places.
-
-Rules are written per obligation family, with per-license exceptions
-(`{"licenses": {"SSPL-1.0": "allowed"}}`) for the ones every policy accumulates.
-The UI edits the families; the exceptions go through the API.
-
-**Dev dependencies are not checked by default.** A GPL code generator is not
-linked into what you ship. Which packages those are is worked out from the
-graph, not from `dev_dependencies` alone: a package that only a dev dependency
-pulls in is marked transitive and still does not ship. Set
-`checkDevDependencies` if you redistribute your toolchain.
-
-### Manifest
+Some work is deliberately kept out of the request path — the API only ever
+serves results these have already produced. All of them need `DATABASE_URL`.
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" \
-  "$API/projects/$ID/licenses?format=csv" -OJ
+cd backend && dart run tool/rescan.dart --all        # re-scan everything, then announce
+cd backend && dart run tool/fill_changelogs.dart     # drain the release-notes backlog
+cd backend && dart run tool/fill_api_diffs.dart      # drain the API-diff backlog
 ```
 
-One row per dependency — including the permissive majority, because a manifest
-is an inventory first and an exception list second, and a reviewer needs to see
-that the whole tree was examined. Unchecked packages stay in the same table,
-each with the reason, so filtering cannot hide them. Drop `?format=csv` for
-JSON; the response carries
-the policy it was evaluated under, so the document is still readable six months
-later.
+```bash
+cd tools/api_differ && dart run api_differ http 0.13.6 1.0.0   # compare two versions by hand
+```
 
-The endpoint reads the stored report and runs the policy over it. It makes no
-outbound calls, so it is not rate limited and it works for an archived project —
-a license is a fact about the versions in the snapshot, the same way an advisory
-is. Re-analyze first if you want today's dependencies.
+`rescan.dart` is a CLI rather than a timer inside the server because the API is
+deployed with `min_machines_running = 0` and stops between requests — an
+in-process schedule would fire only while somebody happened to be using the app,
+which is exactly when they do not need to be told.
+`.github/workflows/rescan.yml` runs it daily.
 
-The table it needs is in `backend/sql/license_policies.sql`.
+---
 
-### What the server assumes about its inputs
+## API
 
-Every project URL, ref and pubspec comes from a user, so:
+Every endpoint is authenticated with a Supabase JWT and scoped to its owner. A
+project owned by someone else is a `404`, not a `403`.
 
-- **Repository fetches are constrained.** Only `github.com` and `gitlab.com`
-  over https; owner, repo and ref are validated before any request. A ref like
-  `../../someone/else/main` normalises the repository out of the raw-content URL
-  and would fetch a different project's pubspec — it is rejected rather than
-  escaped.
-- **Responses are bounded.** Size caps and timeouts on repository fetches and
-  pub.dev calls; a remote host is under no obligation to be small or prompt.
-- **Package names are validated, not escaped.** They arrive from fetched
-  pubspecs and are interpolated into pub.dev request paths.
-- **Nothing fetched is executed.** Resolution is computed from pub.dev metadata;
-  no subprocess, no `dart pub get`, no build hooks. `tools/api_differ` parses
-  package sources but never runs them, and decompresses archives in memory with
-  caps on compressed size, expanded size and file count.
-- **Projects are owner-scoped.** Reads are filtered by the JWT's `sub` in the
-  query rather than after the fact, and a project owned by someone else is a 404
-  rather than a 403, which would confirm the id exists.
-- **Expensive endpoints are rate limited** per user — see
-  `RATE_LIMIT_PER_MINUTE` in `.env.example`.
+| | |
+|---|---|
+| `GET /` | health |
+| `GET /me` | the authenticated user |
+| `GET` `POST` `/projects` | list, add |
+| `GET` `PATCH` `DELETE` `/projects/{id}` | fetch, archive/restore, delete |
+| `POST /projects/{id}/refresh` | re-scan |
+| `GET /scans/{id}` | scan progress |
+| `GET /projects/{id}/history` | revisions; `?revision=` for one in full |
+| `GET /projects/{id}/changes` | diff two revisions; `?changelogs=true` for release notes |
+| `POST /projects/{id}/resolve` | simulate a constraint change |
+| `GET /projects/{id}/upgrade/{package}` | upgrade impact and API diff |
+| `GET /projects/{id}/remediation` | verified fixes for every advisory |
+| `GET /projects/{id}/licenses` | license report; `?format=csv` to export |
+| `GET` `PUT` `DELETE` `/policy/licenses` | your license policy |
+| `GET` `POST` `/notifications`, `DELETE /notifications/{id}` | webhook targets |
 
-Still run the backend in a locked-down container with no outbound access except
-pub.dev and the git hosts.
+Expensive endpoints — the ones that fetch a repository and query a registry —
+are rate limited per user (`RATE_LIMIT_PER_MINUTE`). Reading stored reports is
+not counted.
+
+---
+
+## Layout
+
+```
+project_cloud/            # repo root = pub workspace umbrella (not an app)
+├── packages/shared/      # DTOs shared by both sides
+├── backend/              # Dart Frog API
+│   ├── routes/           # file-based routes → HTTP endpoints
+│   ├── sql/              # schema for tables not created through a route
+│   ├── tool/             # operator CLIs
+│   └── lib/src/          # git fetch, registries, analyzer, resolver, repositories
+├── frontend/             # Flutter Web app  ← the runnable app
+└── tools/api_differ/     # NOT a workspace member — needs its own analyzer version
+```
+
+The root is the workspace umbrella, not an app; it ties the members together
+under one lockfile. Native targets, when needed, get added to `frontend` or a
+new workspace member — not to the root.
+
+## More
+
+- **[docs/DESIGN.md](docs/DESIGN.md)** — why it behaves the way it does: what a
+  scan reads and costs, how the two ecosystems differ and why that is not
+  smoothed over, what is never guessed, and the security assumptions the server
+  makes about its inputs.
+- **[docs/DEPLOY.md](docs/DEPLOY.md)** — deploying the API and the front end.
+
+Nothing DepControl fetches is ever executed. Resolution is computed from
+registry metadata — no subprocess, no `pub get`, no build hooks — and archives
+are decompressed in memory under caps on compressed size, expanded size and file
+count.
