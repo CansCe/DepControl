@@ -67,6 +67,9 @@ IdleWatchdog? _startWatchdog() {
   final watchdog = IdleWatchdog(
     idleAfter: idleAfter,
     pendingWork: deps.scanJobs.pendingCount,
+    // The local half, which needs nothing that can fail. `pendingCount` reads
+    // the database and so has an answer of "cannot say"; this never does.
+    localWork: () => deps.scanRunner.isBusy,
     exit: exit,
   )..start();
   return watchdog;

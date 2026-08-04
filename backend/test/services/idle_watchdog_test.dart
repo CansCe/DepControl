@@ -8,11 +8,15 @@ void main() {
     ({IdleWatchdog watchdog, List<int> exits}) watchdogFor(
       Future<int> Function() pendingWork, {
       Duration idleAfter = const Duration(milliseconds: 20),
+      Duration unreadableGrace = const Duration(milliseconds: 60),
+      bool Function()? localWork,
     }) {
       final exits = <int>[];
       final watchdog = IdleWatchdog(
         pendingWork: pendingWork,
+        localWork: localWork ?? () => false,
         idleAfter: idleAfter,
+        unreadableGrace: unreadableGrace,
         checkInterval: const Duration(milliseconds: 10),
         exit: exits.add,
       );
@@ -78,15 +82,86 @@ void main() {
       expect(subject.exits, isEmpty);
     });
 
-    test('stays up when it cannot tell whether there is work', () async {
-      final subject = watchdogFor(() async => throw StateError('no database'));
+    group('when the queue cannot be read', () {
+      test('stays up at first, in case it is a blip', () async {
+        final subject = watchdogFor(
+          () async => throw StateError('no database'),
+          unreadableGrace: const Duration(seconds: 30),
+        );
+        addTearDown(subject.watchdog.stop);
+
+        subject.watchdog.start();
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+
+        expect(subject.exits, isEmpty);
+      });
+
+      // The bug this replaced: an unreadable queue meant "stay up", full stop.
+      // A missing table never comes back, so the machine ran for ever and said
+      // so only as a bill — the one outcome the watchdog exists to prevent.
+      test('stops once it is clearly not a blip', () async {
+        final subject = watchdogFor(
+          () async => throw StateError('relation "scan_jobs" does not exist'),
+          unreadableGrace: const Duration(milliseconds: 50),
+        );
+        addTearDown(subject.watchdog.stop);
+
+        subject.watchdog.start();
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+
+        expect(subject.exits, [0]);
+      });
+
+      // The safety this trades against, and the reason the local check comes
+      // first: a scan running *here* is work that stopping would destroy, and
+      // knowing about it depends on nothing that can fail.
+      test('never stops while a scan is running here', () async {
+        final subject = watchdogFor(
+          () async => throw StateError('relation "scan_jobs" does not exist'),
+          unreadableGrace: const Duration(milliseconds: 20),
+          localWork: () => true,
+        );
+        addTearDown(subject.watchdog.stop);
+
+        subject.watchdog.start();
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+
+        expect(subject.exits, isEmpty);
+      });
+
+      test('a queue that comes back resets the patience', () async {
+        var broken = true;
+        final subject = watchdogFor(
+          () async {
+            if (broken) throw StateError('briefly away');
+            return 1;
+          },
+          unreadableGrace: const Duration(milliseconds: 50),
+        );
+        addTearDown(subject.watchdog.stop);
+
+        subject.watchdog.start();
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        broken = false;
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+        broken = true;
+
+        // Without the reset, the two outages would add up to more than the
+        // grace and stop a machine that had been answering in between.
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        expect(subject.exits, isEmpty);
+      });
+    });
+
+    test('a scan running here keeps the machine up on its own', () async {
+      final subject = watchdogFor(() async => 0, localWork: () => true);
       addTearDown(subject.watchdog.stop);
 
       subject.watchdog.start();
       await Future<void>.delayed(const Duration(milliseconds: 120));
 
-      // Staying up costs money. Stopping on top of a running scan costs the
-      // scan, and the scan is what somebody is waiting for.
+      // The queue says nothing is outstanding — which it would, for a job this
+      // machine has already claimed and is part-way through.
       expect(subject.exits, isEmpty);
     });
 

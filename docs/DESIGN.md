@@ -207,6 +207,26 @@ is — harmless while the scan *was* the request, fatal now. It is off, and
 which under an `on-failure` restart policy leaves the machine stopped until the
 next request starts it. Unset means never, which is what every local run gets.
 
+**It asks two questions, not one, and the order matters.** First, is a scan
+running *in this process* — which needs no database and is therefore always
+answerable. Only then, is anything outstanding in the queue.
+
+The first version asked only the second, and treated "cannot read the queue" as a
+reason to stay up: staying up costs money, stopping on top of a running scan
+costs the scan. That is right for a blip and wrong for anything that does not
+clear. A missing table, a revoked credential or a mistyped `DATABASE_URL` never
+comes back on its own, so the machine stayed up for ever and announced it only as
+a bill — the exact outcome the watchdog exists to prevent, arrived at by the
+watchdog. It happened on the first deploy, against a database the migration had
+not been applied to.
+
+So the uncertainty is bounded. After a minute of consecutive failures with
+nothing running here, the machine stops: it cannot claim a job it cannot read, so
+there is nothing left to stay up *for*. The next request starts it again, and if
+the queue is still unreadable it stops again — a loop paced by traffic rather
+than a machine running all night. A single successful read resets the patience,
+so two blips either side of a working minute do not add up.
+
 **Progress is written twice, on purpose.** The in-memory `ScanProgressStore` is
 the live copy and stays the hot path; the row is flushed about once a second and
 is the durable one. `packageDone()` fires once per package — 1,491 times on the

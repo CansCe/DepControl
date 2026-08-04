@@ -27,13 +27,25 @@ import 'logger.dart';
 class IdleWatchdog {
   IdleWatchdog({
     required Future<int> Function() pendingWork,
+    required bool Function() localWork,
     required this.idleAfter,
     // Required rather than defaulted to `dart:io`'s: this ends the process, and
     // a default would let a test that wandered into it take the runner down.
     required void Function(int code) exit,
     this.checkInterval = const Duration(seconds: 15),
+    this.unreadableGrace = const Duration(minutes: 1),
   })  : _pendingWork = pendingWork,
+        _localWork = localWork,
         _exit = exit;
+
+  /// Whether a scan is running **in this process** right now.
+  ///
+  /// Asked first, and separately from [_pendingWork], because it is the one
+  /// question that needs no database. It is also the only one whose answer must
+  /// never be overridden: stopping on top of a scan running here destroys work
+  /// in progress, where stopping on top of a job merely queued costs a cold
+  /// start when somebody next asks.
+  final bool Function() _localWork;
 
   /// How much work is outstanding, across every owner.
   ///
@@ -48,12 +60,33 @@ class IdleWatchdog {
   /// keeps the cold-start behaviour people are used to.
   final Duration idleAfter;
 
+  /// How long an unreadable queue may keep the machine up.
+  ///
+  /// Not being able to read the queue used to mean "stay up", full stop — on
+  /// the reasoning that staying up costs money and stopping on top of a running
+  /// scan costs the scan. That is right for a blip and wrong for anything that
+  /// does not resolve. A missing table, a revoked credential or a bad
+  /// `DATABASE_URL` never comes back on its own, so the machine stayed up for
+  /// ever, which is the one outcome this whole arrangement exists to avoid, and
+  /// it announced itself only as a bill.
+  ///
+  /// So the uncertainty is bounded. Past this, with nothing running here, the
+  /// machine stops: it cannot claim a job it cannot read, so there is nothing
+  /// left for it to be staying up *for*. The next request starts it again — and
+  /// if the queue is still unreadable, it stops again, which is a loop paced by
+  /// traffic rather than a machine running all night.
+  final Duration unreadableGrace;
+
   final Duration checkInterval;
   final void Function(int code) _exit;
 
   static final _log = log.tagged('idle');
 
   DateTime _lastRequest = DateTime.now();
+
+  /// When the queue first became unreadable in the current run of failures.
+  DateTime? _unreadableSince;
+
   Timer? _timer;
 
   /// Reads `IDLE_SHUTDOWN_SECONDS`, or null when it is unset, zero or
@@ -84,15 +117,39 @@ class IdleWatchdog {
   Future<void> _check() async {
     if (DateTime.now().difference(_lastRequest) < idleAfter) return;
 
+    // Asked before the database, and it settles the case the database cannot:
+    // a scan running here is work that would be destroyed by stopping, and
+    // knowing about it depends on nothing that can fail.
+    if (_localWork()) {
+      _unreadableSince = null;
+      _log.info('Idle, but a scan is running here — staying up.');
+      return;
+    }
+
     final int pending;
     try {
       pending = await _pendingWork();
     } catch (e) {
-      // Cannot tell whether there is work, so do not stop. Staying up costs
-      // money; stopping on top of a running scan costs the scan.
-      _log.warn('Could not read the scan queue, staying up: $e');
+      final now = DateTime.now();
+      final since = _unreadableSince ??= now;
+      if (now.difference(since) < unreadableGrace) {
+        _log.warn('Could not read the scan queue, staying up for now: $e');
+        return;
+      }
+      // Long enough that this is not a blip. Nothing is running here — checked
+      // above, without the database — and nothing can start, because claiming a
+      // job needs the same queue that will not answer. Staying up would buy
+      // nobody anything and would go on buying it indefinitely.
+      _log.error(
+        'The scan queue has been unreadable for '
+        '${unreadableGrace.inSeconds}s and no scan is running here — stopping '
+        'rather than staying up indefinitely. Fix the cause and the next '
+        'request will start this again. Last error: $e',
+      );
+      _shutDown();
       return;
     }
+    _unreadableSince = null;
 
     if (pending > 0) {
       _log.info('Idle, but $pending scan(s) outstanding — staying up.');
@@ -104,6 +161,10 @@ class IdleWatchdog {
 
     _log.info('No requests for ${idleAfter.inSeconds}s and nothing queued — '
         'stopping. The proxy will start this again on the next request.');
+    _shutDown();
+  }
+
+  void _shutDown() {
     stop();
     _exit(0);
   }

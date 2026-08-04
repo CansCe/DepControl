@@ -126,14 +126,44 @@ class ScanRunner {
           staleAfter: staleAfter,
           maxAttempts: maxAttempts,
         );
-        if (job == null) return;
+        if (job == null) {
+          _lastFailure = null;
+          return;
+        }
         await _run(job);
       }
     } catch (e) {
       // A drain that throws must not leave the runner wedged: the sweep will
       // come back. Most likely cause is the database being briefly unreachable,
       // which is not this job's fault and not worth failing anything over.
-      _log.warn('Drain stopped early: $e');
+      _reportDrainFailure(e);
+    }
+  }
+
+  /// The last drain failure, so a permanent one is said once rather than every
+  /// [sweepInterval] for as long as the machine lives.
+  ///
+  /// The failure worth designing for is not the blip: it is a cause that never
+  /// clears — a table that was never created, a credential that was revoked —
+  /// where the same line every twenty seconds buries everything else in the log
+  /// and still says nothing new. Repeats are dropped until the error changes or
+  /// a drain succeeds.
+  String? _lastFailure;
+
+  void _reportDrainFailure(Object error) {
+    final message = '$error';
+    if (message == _lastFailure) return;
+    _lastFailure = message;
+
+    _log.warn('Drain stopped early: $message');
+    if (message.contains('scan_jobs') && message.contains('does not exist')) {
+      // Worth naming, because the symptom is a 500 on every scan and an error
+      // code, and the cause is one file nobody has run yet.
+      _log.error(
+        'The scan queue table is missing. Apply backend/sql/scan_jobs.sql to '
+        'the database DATABASE_URL points at; until then no scan can be '
+        'queued or run.',
+      );
     }
   }
 
