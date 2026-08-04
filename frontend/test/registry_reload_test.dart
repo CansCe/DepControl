@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -32,47 +31,83 @@ final _report = DepReport(
   ],
 );
 
-/// A backend whose project list only starts returning [added] once the add has
-/// been made — so a screen that never re-reads the list keeps showing nothing,
-/// exactly as reported.
+/// A backend whose project list only starts returning the project once the scan
+/// has finished — so a screen that never re-reads the list keeps showing
+/// nothing, exactly as reported.
+///
+/// Speaks the queued-scan protocol: the POST is answered at once with a job
+/// that is merely written down, and [finishAdd] is what a worker on the other
+/// side eventually does to it.
 ({ApiClient api, void Function() finishAdd, int Function() listCalls})
     _backend() {
   var added = false;
   var listCalls = 0;
-  Completer<http.Response>? pending;
+  String? scanId;
 
-  http.Response json(Object body) => http.Response(
+  http.Response json(Object body, [int status = 200]) => http.Response(
         jsonEncode(body),
-        200,
+        status,
         headers: {'content-type': 'application/json'},
+      );
+
+  ScanProgress progress(ScanPhase phase) => ScanProgress(
+        phase: phase,
+        startedAt: DateTime.utc(2026, 1, 1),
+        phaseStartedAt: DateTime.utc(2026, 1, 1),
       );
 
   final api = ApiClient(
     accessToken: () async => 'token',
-    client: MockClient((request) {
+    client: MockClient((request) async {
+      final path = request.url.path;
+
       if (request.method == 'POST') {
-        added = true;
-        return (pending ??= Completer<http.Response>()).future;
+        scanId = (jsonDecode(request.body) as Map)['scanId'] as String;
+        return json(
+          ScanStatus(
+            scanId: scanId!,
+            state: ScanJobState.queued,
+            progress: progress(ScanPhase.queued),
+            gitUrl: 'https://github.com/acme/demo',
+          ).toJson(),
+          202,
+        );
       }
+
+      if (path == '/scans') return json({'scans': <Object>[]});
+
+      if (path.startsWith('/scans/')) {
+        if (scanId == null) return json({'error': 'no such scan'}, 404);
+        return json(
+          ScanStatus(
+            scanId: scanId!,
+            state: added ? ScanJobState.done : ScanJobState.running,
+            progress: progress(added ? ScanPhase.done : ScanPhase.analyzing),
+            gitUrl: 'https://github.com/acme/demo',
+            projectId: added ? 'p-demo' : null,
+          ).toJson(),
+        );
+      }
+
+      if (path.startsWith('/projects/')) {
+        return json({
+          'project': _project('demo').toJson(),
+          'report': _report.toJson(),
+        });
+      }
+
       listCalls++;
-      return Future.value(
-        json({
-          'projects': [
-            if (added) _project('demo').toJson(),
-          ],
-        }),
-      );
+      return json({
+        'projects': [
+          if (added) _project('demo').toJson(),
+        ],
+      });
     }),
   );
 
   return (
     api: api,
-    finishAdd: () => pending?.complete(
-          json({
-            'project': _project('demo').toJson(),
-            'report': _report.toJson(),
-          }),
-        ),
+    finishAdd: () => added = true,
     listCalls: () => listCalls,
   );
 }
@@ -88,7 +123,10 @@ void main() {
   group('RegistryScreen', () {
     testWidgets('reloads the list when a scan lands', (tester) async {
       final backend = _backend();
-      final scans = ScanQueue(successLinger: Duration.zero);
+      final scans = ScanQueue(
+        successLinger: Duration.zero,
+        pollInterval: const Duration(milliseconds: 10),
+      );
       addTearDown(scans.dispose);
 
       await tester.pumpWidget(_app(backend.api, scans));
@@ -119,7 +157,10 @@ void main() {
     // one.
     testWidgets('reloads for a scan it never saw start', (tester) async {
       final backend = _backend();
-      final scans = ScanQueue(successLinger: Duration.zero);
+      final scans = ScanQueue(
+        successLinger: Duration.zero,
+        pollInterval: const Duration(milliseconds: 10),
+      );
       addTearDown(scans.dispose);
 
       // Started before the screen exists, as happens when the user is on a
@@ -129,9 +170,12 @@ void main() {
       // Pumped rather than settled: the scan is already in flight, so the
       // panel is spinning an indicator that by design never comes to rest.
       await tester.pump();
-      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 20));
 
       backend.finishAdd();
+      // Long enough for the next poll to see it, which is how a finished scan
+      // reaches this client at all now.
+      await tester.pump(const Duration(milliseconds: 20));
       await tester.pumpAndSettle();
 
       expect(find.text('demo'), findsOneWidget);

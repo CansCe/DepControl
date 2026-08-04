@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -30,67 +29,180 @@ Project _project(String id, String name) => Project(
       ownerId: 'u1',
     );
 
-String _body(String id, String name) => jsonEncode({
-      'project': _project(id, name).toJson(),
-      'report': _report.toJson(),
-    });
-
-/// An API whose responses land only when the test says so, so a scan can be
-/// held mid-flight and inspected.
-///
-/// [progress] is what `GET /scans/<id>` answers with; null means the server
-/// cannot say, which is the fallback path clients must survive.
-({ApiClient api, Map<String, Completer<http.Response>> gates}) _gatedApi({
-  ScanProgress Function()? progress,
-}) {
-  final gates = <String, Completer<http.Response>>{};
-  final api = ApiClient(
-    accessToken: () async => 'token',
-    client: MockClient((request) {
-      final key = request.url.path;
-      if (key.startsWith('/scans/')) {
-        return Future.value(
-          progress == null
-              ? http.Response('{}', 404)
-              : http.Response(
-                  jsonEncode(progress().toJson()),
-                  200,
-                  headers: {'content-type': 'application/json'},
-                ),
-        );
-      }
-      return (gates[key] ??= Completer<http.Response>()).future;
-    }),
+ScanProgress _analyzing({int done = 20, int total = 100}) {
+  final started = DateTime.now().toUtc().subtract(const Duration(seconds: 10));
+  return ScanProgress(
+    phase: ScanPhase.analyzing,
+    startedAt: started,
+    phaseStartedAt: started,
+    analysisStartedAt: started,
+    packagesDone: done,
+    packagesTotal: total,
+    manifestsSeen: 1,
+    manifestsTotal: 1,
   );
-  return (api: api, gates: gates);
 }
 
-ApiClient _immediateApi({int status = 200, String? error}) => ApiClient(
+ScanProgress _queued() {
+  final now = DateTime.now().toUtc();
+  return ScanProgress(
+    phase: ScanPhase.queued,
+    startedAt: now,
+    phaseStartedAt: now,
+  );
+}
+
+/// A server that speaks the queued-scan protocol.
+///
+/// A scan is a job now: submitting one answers 202 immediately and the work
+/// happens somewhere this client cannot see. So the fake keeps every submitted
+/// scan running until the test says otherwise — [finish] and [failScan] are
+/// what a worker on the other side would eventually do — and counts the polls,
+/// because how often this client asks is itself a thing worth asserting.
+class _FakeApi {
+  _FakeApi({this.answersStatus = true});
+
+  /// When false, `GET /scans/<id>` 404s — a scan this account does not own, or
+  /// a server that cannot be reached. Both mean "no news" rather than a
+  /// failure, and the client has to survive either.
+  final bool answersStatus;
+
+  /// What every scan here eventually produces.
+  static const projectName = 'demo';
+  static const projectId = 'p1';
+
+  final Map<String, ScanStatus> statuses = {};
+  final List<String> submitted = [];
+  var polls = 0;
+
+  /// Scans the server already had before this client asked anything, for the
+  /// case that matters most: opening the app onto work started elsewhere.
+  final List<ScanStatus> preexisting = [];
+
+  late final ApiClient api = ApiClient(
+    accessToken: () async => 'token',
+    client: MockClient(_handle),
+  );
+
+  void finish(String scanId) {
+    final current = statuses[scanId]!;
+    statuses[scanId] = ScanStatus(
+      scanId: scanId,
+      state: ScanJobState.done,
+      progress: ScanProgress(
+        phase: ScanPhase.done,
+        startedAt: current.progress.startedAt,
+        phaseStartedAt: DateTime.now().toUtc(),
+      ),
+      gitUrl: current.gitUrl,
+      projectId: projectId,
+    );
+  }
+
+  void failScan(String scanId, String error) {
+    final current = statuses[scanId]!;
+    statuses[scanId] = ScanStatus(
+      scanId: scanId,
+      state: ScanJobState.failed,
+      progress: current.progress,
+      gitUrl: current.gitUrl,
+      error: error,
+    );
+  }
+
+  void report(String scanId, ScanProgress progress) {
+    final current = statuses[scanId]!;
+    statuses[scanId] = ScanStatus(
+      scanId: scanId,
+      state: ScanJobState.running,
+      progress: progress,
+      gitUrl: current.gitUrl,
+      projectId: current.projectId,
+    );
+  }
+
+  Future<http.Response> _handle(http.Request request) async {
+    final path = request.url.path;
+
+    if (request.method == 'POST') {
+      final body = jsonDecode(request.body) as Map<String, dynamic>;
+      final scanId = body['scanId'] as String;
+      submitted.add(scanId);
+      final status = statuses[scanId] ??= ScanStatus(
+        scanId: scanId,
+        state: ScanJobState.queued,
+        progress: _queued(),
+        gitUrl: body['gitUrl'] as String? ??
+            'https://github.com/acme/$projectName',
+        projectId: path == '/projects' ? null : path.split('/')[2],
+      );
+      return _json(status.toJson(), 202);
+    }
+
+    if (path == '/scans') {
+      return _json({
+        'scans': [for (final scan in preexisting) scan.toJson()],
+      });
+    }
+
+    if (path.startsWith('/scans/')) {
+      polls++;
+      final status = statuses[path.substring('/scans/'.length)];
+      if (!answersStatus || status == null) {
+        return _json({'error': 'no such scan'}, 404);
+      }
+      return _json(status.toJson());
+    }
+
+    if (path.startsWith('/projects/')) {
+      return _json({
+        'project': _project(projectId, projectName).toJson(),
+        'report': _report.toJson(),
+      });
+    }
+
+    return _json({'error': 'unexpected $path'}, 500);
+  }
+
+  static http.Response _json(Object body, [int status = 200]) => http.Response(
+        jsonEncode(body),
+        status,
+        headers: {'content-type': 'application/json'},
+      );
+}
+
+/// An API that refuses the submission itself, which is the one step a client
+/// can still lose.
+ApiClient _refusingApi({int status = 400, String error = 'nope'}) => ApiClient(
       accessToken: () async => 'token',
-      client: MockClient((request) async {
-        if (error != null) {
-          return http.Response(
+      client: MockClient((request) async => http.Response(
             jsonEncode({'error': error}),
             status,
             headers: {'content-type': 'application/json'},
-          );
-        }
-        return http.Response(
-          _body('p1', 'demo'),
-          status,
-          headers: {'content-type': 'application/json'},
-        );
-      }),
+          )),
     );
+
+/// Pumps until [test] holds, or gives up. Real timers, so the poll interval
+/// has to actually elapse.
+Future<void> _until(bool Function() test, {int tries = 60}) async {
+  for (var i = 0; i < tries && !test(); i++) {
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+}
 
 void main() {
   group('ScanQueue', () {
-    test('a queued add reports itself before it finishes', () async {
-      final queue = ScanQueue();
-      addTearDown(queue.dispose);
-      final gated = _gatedApi();
+    ScanQueue queueFor() => ScanQueue(
+          pollInterval: const Duration(milliseconds: 10),
+          successLinger: const Duration(minutes: 1),
+        );
 
-      final task = queue.addProject(gated.api, 'https://github.com/acme/demo');
+    test('a queued add reports itself before it finishes', () async {
+      final queue = queueFor();
+      addTearDown(queue.dispose);
+      final server = _FakeApi();
+
+      final task = queue.addProject(server.api, 'https://github.com/acme/demo');
 
       expect(task.kind, ScanKind.add);
       // Named from the URL, because the server has not said what the project
@@ -100,67 +212,37 @@ void main() {
       expect(queue.isBusy, isTrue);
     });
 
-    test('a second project can be added without waiting for the first',
-        () async {
-      final queue = ScanQueue();
+    // The change this phase makes, from the client's side: submitting is the
+    // only step that waits on anything here. Adding five repositories used to
+    // hold three of them behind a local concurrency cap, which now would mean
+    // three scans that do not exist on the server and would not survive the tab
+    // closing.
+    test('every added project is submitted at once', () async {
+      final queue = queueFor();
       addTearDown(queue.dispose);
-      final gated = _gatedApi();
+      final server = _FakeApi();
 
-      queue.addProject(gated.api, 'https://github.com/acme/one');
-      queue.addProject(gated.api, 'https://github.com/acme/two');
-
-      expect(queue.activeCount, 2);
-      expect(queue.tasks.map((t) => t.label), ['one', 'two']);
-    });
-
-    test('scans past the concurrency cap wait their turn', () async {
-      final queue = ScanQueue(maxConcurrent: 2);
-      addTearDown(queue.dispose);
-      final gated = _gatedApi();
-
-      for (final name in ['one', 'two', 'three']) {
-        queue.addProject(gated.api, 'https://github.com/acme/$name');
+      for (final name in ['one', 'two', 'three', 'four', 'five']) {
+        queue.addProject(server.api, 'https://github.com/acme/$name');
       }
-      await pumpEventQueue();
+      await _until(() => server.submitted.length == 5);
 
+      expect(server.submitted, hasLength(5));
+      expect(queue.activeCount, 5);
       expect(
-        queue.tasks.map((t) => t.state),
-        [ScanState.running, ScanState.running, ScanState.queued],
+        queue.tasks.every((t) => t.state == ScanState.running),
+        isTrue,
       );
-    });
-
-    test('finishing one scan starts the one behind it', () async {
-      final queue = ScanQueue(maxConcurrent: 1);
-      addTearDown(queue.dispose);
-      final gated = _gatedApi();
-
-      queue.addProject(gated.api, 'https://github.com/acme/one');
-      queue.addProject(gated.api, 'https://github.com/acme/two');
-      await pumpEventQueue();
-
-      expect(queue.tasks[1].state, ScanState.queued);
-
-      gated.gates['/projects']!.complete(
-        http.Response(
-          _body('p1', 'one'),
-          200,
-          headers: {'content-type': 'application/json'},
-        ),
-      );
-      await pumpEventQueue();
-
-      // Not asserted as `running`: both adds hit the same path, so the one
-      // gate releases the second scan as well as the first. What matters is
-      // that it left the queue rather than sitting behind a finished scan.
-      expect(queue.tasks[1].state, isNot(ScanState.queued));
     });
 
     test('a completed scan carries its project and report', () async {
-      final queue = ScanQueue(successLinger: const Duration(minutes: 1));
+      final queue = queueFor();
       addTearDown(queue.dispose);
+      final server = _FakeApi();
 
-      final task =
-          queue.addProject(_immediateApi(), 'https://github.com/acme/demo');
+      final task = queue.addProject(server.api, 'https://github.com/acme/demo');
+      await _until(() => server.submitted.isNotEmpty);
+      server.finish(task.id);
       await queue.finished.first;
 
       expect(task.state, ScanState.done);
@@ -171,12 +253,26 @@ void main() {
       expect(queue.isBusy, isFalse);
     });
 
-    test('a failed scan keeps the reason and can be retried', () async {
-      final queue = ScanQueue();
+    test('a scan the server reports as failed says why', () async {
+      final queue = queueFor();
+      addTearDown(queue.dispose);
+      final server = _FakeApi();
+
+      final task = queue.addProject(server.api, 'https://github.com/acme/demo');
+      await _until(() => server.submitted.isNotEmpty);
+      server.failScan(task.id, 'repository not found');
+      await queue.finished.first;
+
+      expect(task.state, ScanState.failed);
+      expect(task.error, 'repository not found');
+    });
+
+    test('a submission the server refuses fails immediately', () async {
+      final queue = queueFor();
       addTearDown(queue.dispose);
 
       final task = queue.addProject(
-        _immediateApi(status: 400, error: 'repository not found'),
+        _refusingApi(error: 'repository not found'),
         'https://github.com/acme/demo',
       );
       await queue.finished.first;
@@ -190,30 +286,78 @@ void main() {
       await queue.finished.first;
     });
 
-    test('a successful scan clears itself; a failure stays', () async {
-      final queue = ScanQueue(successLinger: const Duration(milliseconds: 20));
-      addTearDown(queue.dispose);
-
-      queue.addProject(_immediateApi(), 'https://github.com/acme/ok');
-      queue.addProject(
-        _immediateApi(status: 400, error: 'nope'),
-        'https://github.com/acme/bad',
+    // Losing sight of a scan is not the scan failing, and the message has to
+    // say which of the two happened — the work is still going on the server,
+    // and telling somebody it failed would invite them to start it again.
+    test('losing contact says the scan is still running', () async {
+      final queue = ScanQueue(
+        pollInterval: const Duration(milliseconds: 10),
+        pollBackoffLimit: const Duration(milliseconds: 20),
+        pollGiveUpAfter: const Duration(milliseconds: 60),
       );
-      await queue.finished.take(2).toList();
-      await Future<void>.delayed(const Duration(milliseconds: 60));
+      addTearDown(queue.dispose);
+      final server = _FakeApi(answersStatus: false);
 
-      expect(queue.tasks, hasLength(1));
-      expect(queue.tasks.single.state, ScanState.failed);
+      final task = queue.addProject(server.api, 'https://github.com/acme/demo');
+      await queue.finished.first;
+
+      expect(task.state, ScanState.failed);
+      expect(task.error, contains('still running'));
+      expect(task.error, isNot(contains('failed')));
+    });
+
+    test('an unanswerable scan stops being asked about', () async {
+      final queue = ScanQueue(
+        pollInterval: const Duration(milliseconds: 10),
+        pollBackoffLimit: const Duration(milliseconds: 20),
+        pollGiveUpAfter: const Duration(milliseconds: 60),
+      );
+      addTearDown(queue.dispose);
+      final server = _FakeApi(answersStatus: false);
+
+      queue.addProject(server.api, 'https://github.com/acme/demo');
+      await queue.finished.first;
+      final asked = server.polls;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      expect(
+        server.polls,
+        asked,
+        reason: 'a 404 that will never change should not be asked for again',
+      );
+      // A flat 10ms interval would have made twenty in that window alone.
+      expect(asked, lessThan(10), reason: 'the interval should have stretched');
+    });
+
+    test('a scan the server can describe is polled at the flat interval',
+        () async {
+      final queue = ScanQueue(
+        pollInterval: const Duration(milliseconds: 10),
+        // Short enough that a poller counting the *scan* as silent, rather than
+        // the run of unanswered polls, would have given up long ago.
+        pollGiveUpAfter: const Duration(milliseconds: 40),
+      );
+      addTearDown(queue.dispose);
+      final server = _FakeApi();
+
+      final task = queue.addProject(server.api, 'https://github.com/acme/demo');
+      await _until(() => server.submitted.isNotEmpty);
+      server.report(task.id, _analyzing());
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      expect(server.polls, greaterThan(8));
+      expect(task.state, ScanState.running);
+      expect(task.progress?.packagesDone, 20);
     });
 
     test('re-analyzing twice does not start two scans', () async {
-      final queue = ScanQueue();
+      final queue = queueFor();
       addTearDown(queue.dispose);
-      final gated = _gatedApi();
+      final server = _FakeApi();
       final project = _project('p1', 'demo');
 
-      final first = queue.reanalyze(gated.api, project);
-      final second = queue.reanalyze(gated.api, project);
+      final first = queue.reanalyze(server.api, project);
+      final second = queue.reanalyze(server.api, project);
 
       expect(identical(first, second), isTrue);
       expect(queue.activeCount, 1);
@@ -221,26 +365,78 @@ void main() {
     });
 
     test('a running scan cannot be dismissed', () async {
-      final queue = ScanQueue();
+      final queue = queueFor();
       addTearDown(queue.dispose);
-      final gated = _gatedApi();
+      final server = _FakeApi();
 
-      final task = queue.addProject(gated.api, 'https://github.com/acme/demo');
+      final task = queue.addProject(server.api, 'https://github.com/acme/demo');
       queue.dismiss(task.id);
 
       expect(queue.tasks, hasLength(1));
     });
 
-    test('queued time does not count as scan time', () async {
-      final queue = ScanQueue(maxConcurrent: 1);
-      addTearDown(queue.dispose);
-      final gated = _gatedApi();
+    group('reattaching', () {
+      // The point of the whole phase, from the app's side: the work carried on
+      // while nobody was looking, and a client that showed an empty panel would
+      // invite the person to start the same scan again.
+      test('picks up a scan started before the app was opened', () async {
+        final queue = queueFor();
+        addTearDown(queue.dispose);
+        final server = _FakeApi()
+          ..preexisting.add(
+            ScanStatus(
+              scanId: 'scan-elsewhere',
+              state: ScanJobState.running,
+              progress: _analyzing(),
+              gitUrl: 'https://github.com/acme/widget.git',
+            ),
+          );
+        server.statuses['scan-elsewhere'] = server.preexisting.single;
 
-      queue.addProject(gated.api, 'https://github.com/acme/one');
-      final waiting = queue.addProject(gated.api, 'https://github.com/acme/two');
+        await queue.reattach(server.api);
 
-      expect(waiting.state, ScanState.queued);
-      expect(waiting.elapsed, Duration.zero);
+        expect(queue.tasks, hasLength(1));
+        final task = queue.tasks.single;
+        expect(task.id, 'scan-elsewhere');
+        expect(task.label, 'widget');
+        expect(task.attached, isTrue);
+
+        // And it is genuinely watched, not just listed.
+        await _until(() => task.progress != null);
+        expect(task.progress?.packagesDone, 20);
+
+        server.finish('scan-elsewhere');
+        await queue.finished.first;
+        expect(task.state, ScanState.done);
+        expect(task.report?.total, 1);
+      });
+
+      test('does not double up on a scan this client already has', () async {
+        final queue = queueFor();
+        addTearDown(queue.dispose);
+        final server = _FakeApi();
+
+        final task =
+            queue.addProject(server.api, 'https://github.com/acme/demo');
+        await _until(() => server.submitted.isNotEmpty);
+        server.preexisting.add(server.statuses[task.id]!);
+
+        await queue.reattach(server.api);
+
+        expect(queue.tasks, hasLength(1));
+      });
+
+      test('a server that cannot be reached is silent, not an error', () async {
+        final queue = queueFor();
+        addTearDown(queue.dispose);
+
+        // This runs on launch, and an account with nothing running — which is
+        // nearly always — must not be shown an error because the network was
+        // briefly away.
+        await queue.reattach(_refusingApi(status: 500, error: 'down'));
+
+        expect(queue.tasks, isEmpty);
+      });
     });
   });
 
@@ -251,9 +447,14 @@ void main() {
           home: const Scaffold(body: Text('behind')),
         );
 
+    ScanQueue queueFor() => ScanQueue(
+          pollInterval: const Duration(milliseconds: 10),
+          successLinger: const Duration(minutes: 1),
+        );
+
     testWidgets('stays out of the way when nothing is scanning',
         (tester) async {
-      final queue = ScanQueue();
+      final queue = queueFor();
       addTearDown(queue.dispose);
 
       await tester.pumpWidget(host(queue));
@@ -263,90 +464,43 @@ void main() {
     });
 
     testWidgets('names what is being scanned', (tester) async {
-      final queue = ScanQueue();
+      final queue = queueFor();
       addTearDown(queue.dispose);
-      final gated = _gatedApi();
+      final server = _FakeApi();
 
       await tester.pumpWidget(host(queue));
-      queue.addProject(gated.api, 'https://github.com/acme/demo');
+      final task = queue.addProject(server.api, 'https://github.com/acme/demo');
       await tester.pump();
+      await tester.pump(const Duration(milliseconds: 30));
 
       expect(find.text('Scanning'), findsOneWidget);
       expect(find.text('demo'), findsOneWidget);
-      expect(find.textContaining('Adding'), findsOneWidget);
+      // "Starting", not "Adding": the server has accepted the scan and says it
+      // is queued, which is a more specific thing to know than the kind of
+      // scan it is — and it is what the row has always shown for that phase.
+      expect(find.textContaining('Starting'), findsOneWidget);
       expect(find.byType(LinearProgressIndicator), findsOneWidget);
 
       // Leaves nothing running behind it.
-      gated.gates['/projects']!.complete(
-        http.Response(
-          _body('p1', 'demo'),
-          200,
-          headers: {'content-type': 'application/json'},
-        ),
-      );
+      server.finish(task.id);
       await tester.pumpAndSettle();
       queue.clearFinished();
       await tester.pump();
     });
 
-    testWidgets('collapses to a pill and back', (tester) async {
-      final queue = ScanQueue(successLinger: Duration.zero);
-      addTearDown(queue.dispose);
-      final gated = _gatedApi();
-
-      await tester.pumpWidget(host(queue));
-      queue.addProject(gated.api, 'https://github.com/acme/demo');
-      await tester.pump();
-
-      // Pumped by hand rather than settled: a running scan spins a progress
-      // indicator, and `pumpAndSettle` waits for an animation that by design
-      // never ends.
-      await tester.tap(find.byIcon(Icons.expand_more));
-      await tester.pump(const Duration(milliseconds: 300));
-
-      expect(find.text('Scanning 1 repository'), findsOneWidget);
-      expect(find.text('demo'), findsNothing);
-
-      await tester.tap(find.text('Scanning 1 repository'));
-      await tester.pump(const Duration(milliseconds: 300));
-
-      expect(find.text('demo'), findsOneWidget);
-
-      gated.gates['/projects']!.complete(
-        http.Response(
-          _body('p1', 'demo'),
-          200,
-          headers: {'content-type': 'application/json'},
-        ),
-      );
-      await tester.pumpAndSettle();
-    });
-
     testWidgets('shows the count and the time left once the server can say',
         (tester) async {
-      final queue = ScanQueue(pollInterval: const Duration(milliseconds: 20));
+      final queue = queueFor();
       addTearDown(queue.dispose);
-      final started = DateTime.now().toUtc().subtract(
-            const Duration(seconds: 10),
-          );
-      // 20 packages in 10s, 100 to do: 40 seconds left.
-      final gated = _gatedApi(
-        progress: () => ScanProgress(
-          phase: ScanPhase.analyzing,
-          startedAt: started,
-          phaseStartedAt: started,
-          analysisStartedAt: started,
-          packagesDone: 20,
-          packagesTotal: 100,
-          manifestsSeen: 1,
-          manifestsTotal: 1,
-        ),
-      );
+      final server = _FakeApi();
 
       await tester.pumpWidget(host(queue));
-      queue.addProject(gated.api, 'https://github.com/acme/demo');
+      final task = queue.addProject(server.api, 'https://github.com/acme/demo');
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 40));
+      await tester.pump(const Duration(milliseconds: 30));
+      // 20 packages in 10s, 100 to do: 40 seconds left.
+      server.report(task.id, _analyzing());
+      await tester.pump(const Duration(milliseconds: 30));
       await tester.pump();
 
       expect(find.textContaining('20 of 100 packages'), findsOneWidget);
@@ -357,33 +511,26 @@ void main() {
       );
       expect(bar.value, closeTo(0.2, 0.001));
 
-      gated.gates['/projects']!.complete(
-        http.Response(
-          _body('p1', 'demo'),
-          200,
-          headers: {'content-type': 'application/json'},
-        ),
-      );
+      server.finish(task.id);
       await tester.pumpAndSettle();
       queue.clearFinished();
       await tester.pump();
     });
 
-    // An older server, or one behind a load balancer that routed the poll to a
-    // machine not running the scan. The panel has to stay useful.
+    // A scan the server will not describe — one still queued, or a poll that
+    // could not get through. The panel has to stay useful.
     testWidgets('falls back to an indeterminate bar when progress is unknown',
         (tester) async {
-      final queue = ScanQueue(pollInterval: const Duration(milliseconds: 20));
+      final queue = queueFor();
       addTearDown(queue.dispose);
-      final gated = _gatedApi();
+      final server = _FakeApi();
 
       await tester.pumpWidget(host(queue));
-      queue.addProject(gated.api, 'https://github.com/acme/demo');
+      final task = queue.addProject(server.api, 'https://github.com/acme/demo');
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 40));
-      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 30));
 
-      expect(find.textContaining('Adding'), findsOneWidget);
+      expect(find.textContaining('Starting'), findsOneWidget);
       expect(find.textContaining('left'), findsNothing);
 
       final bar = tester.widget<LinearProgressIndicator>(
@@ -395,25 +542,19 @@ void main() {
         reason: 'an unknown position must not be drawn as zero',
       );
 
-      gated.gates['/projects']!.complete(
-        http.Response(
-          _body('p1', 'demo'),
-          200,
-          headers: {'content-type': 'application/json'},
-        ),
-      );
+      server.finish(task.id);
       await tester.pumpAndSettle();
       queue.clearFinished();
       await tester.pump();
     });
 
     testWidgets('says why a scan failed and offers a retry', (tester) async {
-      final queue = ScanQueue();
+      final queue = queueFor();
       addTearDown(queue.dispose);
 
       await tester.pumpWidget(host(queue));
       queue.addProject(
-        _immediateApi(status: 400, error: 'repository not found'),
+        _refusingApi(error: 'repository not found'),
         'https://github.com/acme/demo',
       );
       await tester.pumpAndSettle();

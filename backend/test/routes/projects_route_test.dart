@@ -52,6 +52,19 @@ void main() {
   Future<Map<String, dynamic>> jsonOf(Response response) async =>
       jsonDecode(await response.body()) as Map<String, dynamic>;
 
+  /// Runs the queue the way the worker does — **not** through a request.
+  ///
+  /// That is the whole point of these tests now. A scan is a job, and the
+  /// request that asks for one only writes it down; driving the runner from
+  /// here is what proves the work does not depend on anybody still holding a
+  /// connection.
+  Future<void> runQueuedScans() => deps.scanRunner.drain();
+
+  Future<ScanStatus> statusOf(String scanId, AuthUser user) async {
+    final job = await deps.scanJobs.byId(scanId, ownerId: user.id);
+    return job!.toStatus();
+  }
+
   Project projectFor(AuthUser user, {String id = 'p1', String name = 'demo'}) =>
       Project(
         id: id,
@@ -96,7 +109,99 @@ void main() {
   });
 
   group('POST /projects', () {
-    test('creates a project owned by the caller', () async {
+    test('accepts the scan and creates nothing yet', () async {
+      final response = await projects_route.onRequest(
+        contextFor(
+          method: HttpMethod.post,
+          user: alice,
+          body: {
+            'gitUrl': 'https://github.com/acme/widget.git',
+            'scanId': 'scan-1',
+          },
+        ),
+      );
+
+      expect(response.statusCode, HttpStatus.accepted);
+      final status = ScanStatus.fromJson(await jsonOf(response));
+      expect(status.scanId, 'scan-1');
+      expect(status.state, ScanJobState.queued);
+      expect(status.projectId, isNull);
+
+      // Nothing exists until the work has actually been done. A git URL nobody
+      // can clone must not leave a project behind, which is exactly what
+      // creating one here to hang the scan off would do.
+      expect(await repository.allForOwner(alice.id), isEmpty);
+    });
+
+    test('the queued scan creates the project when the worker runs it',
+        () async {
+      await projects_route.onRequest(
+        contextFor(
+          method: HttpMethod.post,
+          user: alice,
+          body: {
+            'gitUrl': 'https://github.com/acme/widget.git',
+            'scanId': 'scan-1',
+          },
+        ),
+      );
+
+      await runQueuedScans();
+
+      final projects = await repository.allForOwner(alice.id);
+      expect(projects, hasLength(1));
+      expect(projects.single.ownerId, alice.id);
+      expect(projects.single.gitUrl, 'https://github.com/acme/widget.git');
+      expect(projects.single.name, 'widget');
+      expect(projects.single.ref, 'HEAD');
+      expect(await repository.reportFor(projects.single.id), isNotNull);
+      expect(await repository.allForOwner(bob.id), isEmpty);
+
+      final status = await statusOf('scan-1', alice);
+      expect(status.state, ScanJobState.done);
+      expect(status.projectId, projects.single.id);
+    });
+
+    test('honours an explicit ref', () async {
+      await projects_route.onRequest(
+        contextFor(
+          method: HttpMethod.post,
+          user: alice,
+          body: {
+            'gitUrl': 'https://github.com/acme/widget.git',
+            'ref': 'develop',
+            'scanId': 'scan-1',
+          },
+        ),
+      );
+      await runQueuedScans();
+
+      final projects = await repository.allForOwner(alice.id);
+      expect(projects.single.ref, 'develop');
+    });
+
+    test('asking for the same scan twice queues one', () async {
+      Future<Response> submit() => projects_route.onRequest(
+            contextFor(
+              method: HttpMethod.post,
+              user: alice,
+              body: {
+                'gitUrl': 'https://github.com/acme/widget.git',
+                'scanId': 'scan-1',
+              },
+            ),
+          );
+
+      expect((await submit()).statusCode, HttpStatus.accepted);
+      expect((await submit()).statusCode, HttpStatus.accepted);
+      await runQueuedScans();
+
+      // A retried request, or a client that did not hear the first answer.
+      // Neither is a second repository to clone.
+      expect(await repository.allForOwner(alice.id), hasLength(1));
+    });
+
+    test('rejects a missing scanId with 400', () async {
       final response = await projects_route.onRequest(
         contextFor(
           method: HttpMethod.post,
@@ -105,36 +210,27 @@ void main() {
         ),
       );
 
-      expect(response.statusCode, HttpStatus.created);
-      final body = await jsonOf(response);
-      final project = body['project'] as Map<String, dynamic>;
-
-      expect(project['ownerId'], alice.id);
-      expect(project['gitUrl'], 'https://github.com/acme/widget.git');
-      expect(project['name'], 'widget');
-      expect(project['ref'], 'HEAD');
-      expect(body['report'], isNotNull);
-
-      // and it is actually persisted against that owner
-      expect(await repository.allForOwner(alice.id), hasLength(1));
-      expect(await repository.allForOwner(bob.id), isEmpty);
+      // A scan nobody can name is a scan nobody can find again after closing
+      // the page, which is the one thing this is all for.
+      expect(response.statusCode, HttpStatus.badRequest);
+      expect((await jsonOf(response))['error'], contains('scanId'));
     });
 
-    test('honours an explicit ref', () async {
+    test('rejects a host it cannot read, before queueing anything', () async {
       final response = await projects_route.onRequest(
         contextFor(
           method: HttpMethod.post,
           user: alice,
           body: {
-            'gitUrl': 'https://github.com/acme/widget.git',
-            'ref': 'develop',
+            'gitUrl': 'https://example.com/acme/widget.git',
+            'scanId': 'scan-1',
           },
         ),
       );
 
-      final project =
-          (await jsonOf(response))['project'] as Map<String, dynamic>;
-      expect(project['ref'], 'develop');
+      expect(response.statusCode, HttpStatus.badRequest);
+      expect((await jsonOf(response))['error'], contains('github.com'));
+      expect(await deps.scanJobs.pendingCount(), 0);
     });
 
     test('rejects a missing gitUrl with 400', () async {
@@ -142,7 +238,7 @@ void main() {
         contextFor(
           method: HttpMethod.post,
           user: alice,
-          body: <String, dynamic>{},
+          body: {'scanId': 'scan-1'},
         ),
       );
 
@@ -164,14 +260,14 @@ void main() {
         contextFor(
           method: HttpMethod.post,
           user: alice,
-          body: {'gitUrl': ''},
+          body: {'gitUrl': '', 'scanId': 'scan-1'},
         ),
       );
 
       expect(response.statusCode, HttpStatus.badRequest);
     });
 
-    test('reports an unreachable repo as 400, not 500', () async {
+    test('an unreachable repo fails the scan, and leaves no project', () async {
       deps = Deps.forTesting(
         repository: repository,
         gitFetcher: FakeGitFetcher(
@@ -184,12 +280,55 @@ void main() {
         contextFor(
           method: HttpMethod.post,
           user: alice,
-          body: {'gitUrl': 'https://github.com/acme/missing.git'},
+          body: {
+            'gitUrl': 'https://github.com/acme/missing.git',
+            'scanId': 'scan-1',
+          },
         ),
       );
+      // Accepted: whether a repository exists is not knowable without the
+      // network, so it stops being a thing the request can answer.
+      expect(response.statusCode, HttpStatus.accepted);
 
-      expect(response.statusCode, HttpStatus.badRequest);
-      expect((await jsonOf(response))['error'], 'repository not found');
+      await runQueuedScans();
+
+      final status = await statusOf('scan-1', alice);
+      expect(status.state, ScanJobState.failed);
+      expect(status.error, 'repository not found');
+      expect(status.progress.phase, ScanPhase.failed);
+      expect(await repository.allForOwner(alice.id), isEmpty);
+    });
+
+    test('a failed scan is not retried', () async {
+      var fetches = 0;
+      deps = Deps.forTesting(
+        repository: repository,
+        gitFetcher: FakeGitFetcher(
+          onFetch: (_, __) {
+            fetches++;
+            throw StateError('repository not found');
+          },
+        ),
+        analyzer: FakeAnalyzer(),
+      );
+
+      await projects_route.onRequest(
+        contextFor(
+          method: HttpMethod.post,
+          user: alice,
+          body: {
+            'gitUrl': 'https://github.com/acme/missing.git',
+            'scanId': 'scan-1',
+          },
+        ),
+      );
+      await runQueuedScans();
+      await runQueuedScans();
+
+      // Retries exist for a worker that died holding a job, not for a scan
+      // that ran and found the repository private. Cloning it twice more would
+      // not change the answer.
+      expect(fetches, 1);
     });
   });
 
@@ -211,23 +350,33 @@ void main() {
   });
 
   group('POST /projects/<id>/refresh', () {
+    _MockRequestContext refreshContext(AuthUser user, {String? scanId}) =>
+        contextFor(
+          method: HttpMethod.post,
+          user: user,
+          body: {if (scanId != null) 'scanId': scanId},
+        );
+
     test('re-analyzes in place instead of creating a second project',
         () async {
       await repository.add(projectFor(alice, id: 'p-alice'));
 
       final response = await project_refresh_route.onRequest(
-        contextFor(method: HttpMethod.post, user: alice),
+        refreshContext(alice, scanId: 'scan-1'),
         'p-alice',
       );
 
-      expect(response.statusCode, HttpStatus.ok);
-      final body = await jsonOf(response);
-      expect((body['project'] as Map)['id'], 'p-alice');
-      expect(body['report'], isNotNull);
+      expect(response.statusCode, HttpStatus.accepted);
+      final queued = ScanStatus.fromJson(await jsonOf(response));
+      // A refresh knows its project from the start, unlike an add.
+      expect(queued.projectId, 'p-alice');
+
+      await runQueuedScans();
 
       // Still exactly one project, with a fresh report.
       expect(await repository.allForOwner(alice.id), hasLength(1));
       expect(await repository.reportFor('p-alice'), isNotNull);
+      expect((await statusOf('scan-1', alice)).state, ScanJobState.done);
     });
 
     test('stamps lastCheckedAt', () async {
@@ -236,9 +385,10 @@ void main() {
           isNull);
 
       await project_refresh_route.onRequest(
-        contextFor(method: HttpMethod.post, user: alice),
+        refreshContext(alice, scanId: 'scan-1'),
         'p-alice',
       );
+      await runQueuedScans();
 
       final updated = await repository.byId('p-alice', ownerId: alice.id);
       expect(updated!.lastCheckedAt, isNotNull);
@@ -256,22 +406,79 @@ void main() {
       );
 
       await project_refresh_route.onRequest(
-        contextFor(method: HttpMethod.post, user: alice),
+        refreshContext(alice, scanId: 'scan-1'),
+        'p-alice',
+      );
+      await runQueuedScans();
+
+      expect(fetcher.calls.single.ref, 'develop');
+    });
+
+    test('a second refresh returns the one already queued', () async {
+      final fetcher = FakeGitFetcher();
+      deps = Deps.forTesting(
+        repository: repository,
+        gitFetcher: fetcher,
+        analyzer: FakeAnalyzer(),
+      );
+      await repository.add(projectFor(alice, id: 'p-alice'));
+
+      await project_refresh_route.onRequest(
+        refreshContext(alice, scanId: 'scan-1'),
+        'p-alice',
+      );
+      final second = await project_refresh_route.onRequest(
+        refreshContext(alice, scanId: 'scan-2'),
+        'p-alice',
+      );
+      await runQueuedScans();
+
+      // Pressing Re-analyze twice is somebody checking whether the first press
+      // registered. The client has always guarded this; now that the queue
+      // outlives the client, a second device can be the one asking.
+      expect(ScanStatus.fromJson(await jsonOf(second)).scanId, 'scan-1');
+      expect(fetcher.calls, hasLength(1));
+    });
+
+    test('refuses a scan for a project archived after it was queued', () async {
+      await repository.add(projectFor(alice, id: 'p-alice'));
+      await project_refresh_route.onRequest(
+        refreshContext(alice, scanId: 'scan-1'),
         'p-alice',
       );
 
-      expect(fetcher.calls.single.ref, 'develop');
+      // A job can sit in the queue across a restart, and archiving means "do
+      // not re-fetch this" — which a scan queued beforehand would otherwise go
+      // on to do.
+      await repository.setArchived('p-alice', ownerId: alice.id, archived: true);
+      await runQueuedScans();
+
+      final status = await statusOf('scan-1', alice);
+      expect(status.state, ScanJobState.failed);
+      expect(status.error, contains('archived'));
     });
 
     test('404s for a project owned by another user', () async {
       await repository.add(projectFor(alice, id: 'p-alice'));
 
       final response = await project_refresh_route.onRequest(
-        contextFor(method: HttpMethod.post, user: bob),
+        refreshContext(bob, scanId: 'scan-1'),
         'p-alice',
       );
 
       expect(response.statusCode, HttpStatus.notFound);
+    });
+
+    test('rejects a missing scanId with 400', () async {
+      await repository.add(projectFor(alice, id: 'p-alice'));
+
+      final response = await project_refresh_route.onRequest(
+        refreshContext(alice),
+        'p-alice',
+      );
+
+      expect(response.statusCode, HttpStatus.badRequest);
+      expect((await jsonOf(response))['error'], contains('scanId'));
     });
 
     test('GET is rejected with 405', () async {
@@ -283,8 +490,7 @@ void main() {
       expect(response.statusCode, HttpStatus.methodNotAllowed);
     });
 
-    test('a repository that can no longer be fetched is 400, not 500',
-        () async {
+    test('a repository that can no longer be fetched fails the scan', () async {
       await repository.add(projectFor(alice, id: 'p-alice'));
       deps = Deps.forTesting(
         repository: repository,
@@ -295,12 +501,19 @@ void main() {
       );
 
       final response = await project_refresh_route.onRequest(
-        contextFor(method: HttpMethod.post, user: alice),
+        refreshContext(alice, scanId: 'scan-1'),
         'p-alice',
       );
+      expect(response.statusCode, HttpStatus.accepted);
 
-      expect(response.statusCode, HttpStatus.badRequest);
-      expect((await jsonOf(response))['error'], 'repository not found');
+      await runQueuedScans();
+
+      final status = await statusOf('scan-1', alice);
+      expect(status.state, ScanJobState.failed);
+      expect(status.error, 'repository not found');
+      // The project it was refreshing is untouched — a failed re-scan must not
+      // cost somebody the report they already had.
+      expect(await repository.byId('p-alice', ownerId: alice.id), isNotNull);
     });
   });
 

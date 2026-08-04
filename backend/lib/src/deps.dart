@@ -11,7 +11,9 @@ import 'repository/postgres_changelog_store.dart';
 import 'repository/postgres_notification_store.dart';
 import 'repository/postgres_pool.dart';
 import 'repository/postgres_project_repository.dart';
+import 'repository/postgres_scan_job_store.dart';
 import 'repository/project_repository.dart';
+import 'repository/scan_job_store.dart';
 import 'ecosystem/ecosystems.dart';
 import 'services/git_fetcher.dart';
 import 'services/logger.dart';
@@ -20,6 +22,7 @@ import 'services/dependency_analyzer.dart';
 import 'services/rate_limiter.dart';
 import 'services/remediation_planner.dart';
 import 'services/scan_progress_store.dart';
+import 'services/scan_runner.dart';
 import 'services/resolver.dart';
 import 'services/upgrade_inspector.dart';
 
@@ -38,6 +41,7 @@ class Deps {
       licensePolicies: stores.licensePolicies,
       notifications: stores.notifications,
       changelogs: stores.changelogs,
+      scanJobs: stores.scanJobs,
       ecosystems: ecosystems,
       gitFetcher: GitFetcher(ecosystems: ecosystems),
       pubApi: pubApi,
@@ -66,6 +70,7 @@ class Deps {
     LicensePolicyStore? licensePolicies,
     NotificationStore? notifications,
     ChangelogStore? changelogs,
+    ScanJobStore? scanJobs,
     PubApiClient? pubApi,
     Resolver? resolver,
     UpgradeInspector? inspector,
@@ -80,6 +85,7 @@ class Deps {
       licensePolicies: licensePolicies ?? InMemoryLicensePolicyStore(),
       notifications: notifications ?? InMemoryNotificationStore(),
       changelogs: changelogs ?? InMemoryChangelogStore(),
+      scanJobs: scanJobs ?? InMemoryScanJobStore(),
       ecosystems: eco,
       gitFetcher: gitFetcher,
       pubApi: api,
@@ -97,6 +103,7 @@ class Deps {
     required this.licensePolicies,
     required this.notifications,
     required this.changelogs,
+    required this.scanJobs,
     required this.ecosystems,
     required this.gitFetcher,
     required this.pubApi,
@@ -123,6 +130,13 @@ class Deps {
   /// Release notes read out of published archives by `tool/fill_changelogs.dart`.
   /// The API only ever reads from here and records what it could not find.
   final ChangelogStore changelogs;
+
+  /// Scans that have been asked for, whether or not anybody is still watching.
+  ///
+  /// The one store here that persists a *request* rather than an answer, which
+  /// is what lets a scan outlive the connection that started it and the machine
+  /// that first picked it up.
+  final ScanJobStore scanJobs;
 
   /// Delivers those announcements. Built per use rather than held, since it
   /// owns an HTTP client and the request path never announces anything — only
@@ -152,8 +166,23 @@ class Deps {
   /// request open and no other way to see inside it.
   ///
   /// Process-wide and in memory, like [limiter]: it describes work happening on
-  /// this machine right now, and it is worthless the moment that work ends.
+  /// this machine right now. No longer the durable copy — that is the
+  /// `scan_jobs` row, written from here about once a second — but still the
+  /// fresh one, and still free, which is why a scan reports here first.
   final ScanProgressStore scanProgress = ScanProgressStore();
+
+  /// Drains the scan queue, in this process.
+  ///
+  /// Built lazily and held, because it owns timers and there must be exactly
+  /// one. A route only ever calls `wake()` on it; the draining itself is
+  /// started by `main.dart` and never by a request.
+  late final ScanRunner scanRunner = ScanRunner(
+    jobs: scanJobs,
+    repository: repository,
+    gitFetcher: gitFetcher,
+    analyzer: analyzer,
+    progress: scanProgress,
+  );
 
   /// Per-user limit on the endpoints that fetch repositories and query pub.dev.
   /// Null when limiting is switched off, which tests and local dev do.
@@ -207,7 +236,8 @@ class Deps {
     LicensePolicyStore licensePolicies,
     NotificationStore notifications,
     ChangelogStore changelogs,
-  }) _buildStores() {
+    ScanJobStore scanJobs,
+  })_buildStores() {
     final db = log.tagged('db');
     final url = readEnvironment()['DATABASE_URL'];
     if (url != null && url.isNotEmpty) {
@@ -220,6 +250,7 @@ class Deps {
           licensePolicies: PostgresLicensePolicyStore(pool),
           notifications: PostgresNotificationStore(pool),
           changelogs: PostgresChangelogStore(pool),
+          scanJobs: PostgresScanJobStore(pool),
         );
       } catch (e) {
         // A malformed DATABASE_URL used to blow up lazily on the first request,
@@ -269,12 +300,14 @@ class Deps {
     LicensePolicyStore licensePolicies,
     NotificationStore notifications,
     ChangelogStore changelogs,
-  }) _inMemoryStores() => (
+    ScanJobStore scanJobs,
+  })_inMemoryStores() => (
         repository: InMemoryProjectRepository(),
         apiDiffs: InMemoryApiDiffStore(),
         licensePolicies: InMemoryLicensePolicyStore(),
         notifications: InMemoryNotificationStore(),
         changelogs: InMemoryChangelogStore(),
+        scanJobs: InMemoryScanJobStore(),
       );
 
   static String? _jwksFromSupabaseUrl(String? base) {

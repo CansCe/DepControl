@@ -154,11 +154,14 @@ void main() {
       await repository.setArchived('p1', ownerId: alice.id, archived: false);
 
       final response = await refresh_route.onRequest(
-        contextFor(method: HttpMethod.post),
+        contextFor(method: HttpMethod.post, body: {'scanId': 'scan-1'}),
         'p1',
       );
+      // Accepted rather than done: the re-analysis is queued now, and the
+      // refusal being tested here is the one that happens before that.
+      expect(response.statusCode, HttpStatus.accepted);
 
-      expect(response.statusCode, HttpStatus.ok);
+      await deps.scanRunner.drain();
       expect(fetcher.calls, hasLength(1));
     });
   });

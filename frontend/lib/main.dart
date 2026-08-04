@@ -211,6 +211,11 @@ class _RegistryScreenState extends State<RegistryScreen> {
     super.initState();
     _projects = _fetch();
     _scans.addListener(_onScansChanged);
+    // Scans run on the server and outlive this app, so opening it may be
+    // walking in on work already in progress — started before the tab was
+    // closed, or on another device. Without asking, the panel would be empty
+    // and the obvious next move would be to start the same scan again.
+    unawaited(_scans.reattach(_api));
   }
 
   /// Follows the route. The console sidebar links to `/` and `/archived`, and

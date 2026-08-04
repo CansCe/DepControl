@@ -120,6 +120,24 @@ and frozen against further scanning — or deleted outright. Archiving offers an
 undo; deleting asks first, because nothing is kept and there is nothing to
 restore.
 
+### Scans you can walk away from
+
+A scan belongs to the server, not to the page that asked for it. Adding a
+repository records the scan and returns immediately; the analysis then runs
+whether or not anybody is watching. Close the tab, put the phone away, sign in
+on a different machine — the report still lands, and reopening the app
+re-attaches to whatever is still going rather than showing you nothing.
+
+A panel says what each one is doing, how far along it is and roughly how much
+longer it has. When the server cannot say, the panel shows what it last knew and
+asks less and less often, rather than a request a second for as long as the tab
+is open — and if it gives up asking it says so as a loss of contact, because the
+scan itself is still running.
+
+The one thing that does interrupt a scan is the server stopping: a deploy, or a
+machine that runs out of memory. Nothing is lost when that happens — the scan is
+still recorded, and the next machine to look picks it up and runs it again.
+
 ---
 
 ## What it supports
@@ -172,13 +190,13 @@ More on all of it, and why, in [docs/DESIGN.md](docs/DESIGN.md).
 
 Shipped so far: the monorepo and shared models, ingest by Git URL, resolve &
 simulate, the Postgres registry with auth, report history, change diffing and
-alerts, and the scan-cost work that made large repositories survive a scan.
+alerts, the scan-cost work that made large repositories survive a scan, and
+scans that run on the server rather than inside the request that asked for them.
 
 What is planned, in order:
 
 | | Scope | Status |
 |---|-------|--------|
-| 0.6 | Stop the scan poller retrying a dead scan forever | planned |
 | 0.8 | Refresh stored report bodies for fields outside the change digest | planned |
 | 0.9 | Split manifest parsing into its own package, away from registry access | planned |
 | 1 | **NuGet** as a third ecosystem | planned |
@@ -412,10 +430,11 @@ project owned by someone else is a `404`, not a `403`.
 |---|---|
 | `GET /` | health |
 | `GET /me` | the authenticated user |
-| `GET` `POST` `/projects` | list, add |
+| `GET` `POST` `/projects` | list; queue a scan (`202`) |
 | `GET` `PATCH` `DELETE` `/projects/{id}` | fetch, archive/restore, delete |
-| `POST /projects/{id}/refresh` | re-scan |
-| `GET /scans/{id}` | scan progress |
+| `POST /projects/{id}/refresh` | queue a re-scan (`202`) |
+| `GET /scans` | this account's unfinished scans |
+| `GET /scans/{id}` | one scan: state, progress, what it produced |
 | `GET /projects/{id}/history` | revisions; `?revision=` for one in full |
 | `GET /projects/{id}/changes` | diff two revisions; `?changelogs=true` for release notes |
 | `POST /projects/{id}/resolve` | simulate a constraint change |

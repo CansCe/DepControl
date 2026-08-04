@@ -2,14 +2,15 @@ import 'dart:io';
 
 import 'package:backend/src/auth/auth_user.dart';
 import 'package:backend/src/deps.dart';
+import 'package:backend/src/repository/scan_job_store.dart';
+import 'package:backend/src/services/git_fetcher.dart';
 import 'package:backend/src/services/scan_watch.dart';
 import 'package:dart_frog/dart_frog.dart';
 import 'package:shared/shared.dart';
-import 'package:uuid/uuid.dart';
 
 /// GET  /projects              -> the caller's active projects
 /// GET  /projects?archived=true -> the caller's archived projects instead
-/// POST /projects              -> ingest by git URL, returns the report
+/// POST /projects              -> queue a scan of a git URL, returns 202
 ///
 /// Guarded by `requireAuth` in `_middleware.dart`, so the `AuthUser` is
 /// guaranteed present and every project is scoped to its owner.
@@ -43,6 +44,19 @@ Future<Response> onRequest(RequestContext context) async {
   }
 }
 
+/// Writes the scan down and returns.
+///
+/// This used to clone the repository and analyze it before answering, which
+/// made a scan exactly as durable as the connection that asked for it — and on
+/// a deployment that scales to zero, the connection was also the only thing
+/// keeping the machine alive. Closing the tab ended the scan. Now the request
+/// does the part that has to be synchronous — validating the input, and saying
+/// the work was accepted — and `ScanRunner` does the rest whether or not
+/// anybody is still watching.
+///
+/// **No project is created here.** An add's project appears once its first
+/// report does, exactly as before, so a git URL nobody can clone leaves nothing
+/// behind for someone to tidy up.
 Future<Response> _add(
   RequestContext context,
   Deps deps,
@@ -65,60 +79,68 @@ Future<Response> _add(
       body: {'error': 'gitUrl is required'},
     );
   }
+
   final ref = (body['ref'] as String?) ?? 'HEAD';
 
-  // The caller names its own scan so it can watch it. Optional: a client that
-  // does not care — the rescan tool, an integration test — passes nothing and
-  // the analysis reports to a sink that discards everything.
-  final progress = scanSinkFor(deps, body['scanId']);
-
+  // Refused here rather than a minute into a queued job. This is the part of a
+  // scan that can be judged without the network, and a caller who typed the
+  // wrong host should hear about it now rather than read it off a failed
+  // report later.
   try {
-    progress.phase(ScanPhase.fetching);
-    // Every pubspec in the repository, not just the one at its root: a
-    // monorepo's other packages are dependencies of the project too.
-    final files = await deps.gitFetcher.fetchAll(gitUrl, ref: ref);
-    final id = const Uuid().v4();
-    final report = await deps.analyzer.analyzeRepository(
-      id,
-      files,
-      progress: progress,
-    );
-
-    final project = Project(
-      id: id,
-      gitUrl: gitUrl,
-      name: _repoName(gitUrl),
-      ownerId: user.id,
-      ref: ref,
-      addedAt: DateTime.now().toUtc(),
-    );
-
-    progress.phase(ScanPhase.saving);
-    await deps.repository.add(project);
-    await deps.repository.saveReport(report);
-    progress.phase(ScanPhase.done);
-
-    return Response.json(
-      statusCode: HttpStatus.created,
-      body: {'project': project.toJson(), 'report': report.toJson()},
-    );
+    GitFetcher.validate(gitUrl, ref: ref);
   } on StateError catch (e) {
-    progress.failed(e.message);
-    return Response.json(
-      statusCode: HttpStatus.badRequest,
-      body: {'error': e.message},
-    );
-  } on UnsupportedError catch (e) {
-    progress.failed('${e.message}');
     return Response.json(
       statusCode: HttpStatus.badRequest,
       body: {'error': e.message},
     );
   }
-}
 
-String _repoName(String gitUrl) {
-  final segments = Uri.parse(gitUrl).pathSegments;
-  if (segments.isEmpty) return gitUrl;
-  return segments.last.replaceAll('.git', '');
+  // The caller names its own scan so it can start watching without waiting for
+  // an id to come back. That is now also the job's primary key, which is why
+  // one is required here where it used to be optional — a scan nobody can name
+  // is a scan nobody can find again after closing the page.
+  final scanId = scanIdFrom(body['scanId']);
+  if (scanId == null) {
+    return Response.json(
+      statusCode: HttpStatus.badRequest,
+      body: {
+        'error': 'scanId is required: 1-$kMaxScanIdLength characters of '
+            'A-Z, a-z, 0-9, dot, dash or underscore',
+      },
+    );
+  }
+
+  final existing = await deps.scanJobs.byId(scanId, ownerId: user.id);
+  if (existing != null) {
+    // The same scan asked for twice — a retried request, or a client that did
+    // not hear the first answer. Returning the job it already has is the whole
+    // of what "at most once" needs here.
+    return Response.json(
+      statusCode: HttpStatus.accepted,
+      body: existing.toStatus().toJson(),
+    );
+  }
+
+  final job = await deps.scanJobs.enqueue(
+    ScanJob(
+      id: scanId,
+      ownerId: user.id,
+      kind: ScanJobKind.add,
+      gitUrl: gitUrl,
+      ref: ref,
+      progress: ScanProgress(
+        phase: ScanPhase.queued,
+        startedAt: DateTime.now().toUtc(),
+        phaseStartedAt: DateTime.now().toUtc(),
+      ),
+      createdAt: DateTime.now().toUtc(),
+    ),
+  );
+
+  deps.scanRunner.wake();
+
+  return Response.json(
+    statusCode: HttpStatus.accepted,
+    body: job.toStatus().toJson(),
+  );
 }

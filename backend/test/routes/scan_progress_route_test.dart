@@ -58,69 +58,82 @@ void main() {
     );
   });
 
+  Future<Response> submitAdd(String scanId, {String repo = 'demo'}) =>
+      projects_route.onRequest(
+        contextFor(
+          method: HttpMethod.post,
+          body: {
+            'gitUrl': 'https://github.com/acme/$repo.git',
+            'scanId': scanId,
+          },
+        ),
+      );
+
+  Future<Response> readScan(String scanId) => scan_route.onRequest(
+        contextFor(method: HttpMethod.get, path: '/scans/$scanId'),
+        scanId,
+      );
+
   group('scan progress', () {
-    test('an add that names a scan leaves progress behind for it', () async {
-      final response = await projects_route.onRequest(
-        contextFor(
-          method: HttpMethod.post,
-          body: {
-            'gitUrl': 'https://github.com/acme/demo.git',
-            'scanId': 'scan-1',
-          },
-        ),
-      );
+    test('a queued scan is describable before anything has run', () async {
+      await submitAdd('scan-1');
 
-      expect(response.statusCode, HttpStatus.created);
-
-      final progress = deps.scanProgress['scan-1'];
-      expect(progress, isNotNull);
-      expect(progress!.phase, ScanPhase.done);
-      // The fake analyzer reports one package per node it returns.
-      expect(progress.packagesDone, progress.packagesTotal);
-      expect(progress.packagesTotal, greaterThan(0));
+      // The difference this phase makes: there is something to read the moment
+      // the request is answered, rather than only once a worker has started.
+      final status = ScanStatus.fromJson(await jsonOf(await readScan('scan-1')));
+      expect(status.state, ScanJobState.queued);
+      expect(status.progress.phase, ScanPhase.queued);
     });
 
-    test('an add that names no scan records nothing', () async {
-      await projects_route.onRequest(
-        contextFor(
-          method: HttpMethod.post,
-          body: {'gitUrl': 'https://github.com/acme/demo.git'},
-        ),
-      );
+    test('the scan records what it did, and the route serves it', () async {
+      await submitAdd('scan-1');
+      await deps.scanRunner.drain();
 
-      expect(deps.scanProgress['scan-1'], isNull);
-    });
-
-    test('the route serves what the scan recorded', () async {
-      await projects_route.onRequest(
-        contextFor(
-          method: HttpMethod.post,
-          body: {
-            'gitUrl': 'https://github.com/acme/demo.git',
-            'scanId': 'scan-2',
-          },
-        ),
-      );
-
-      final response = await scan_route.onRequest(
-        contextFor(method: HttpMethod.get, path: '/scans/scan-2'),
-        'scan-2',
-      );
-
+      final response = await readScan('scan-1');
       expect(response.statusCode, HttpStatus.ok);
-      final body = await jsonOf(response);
-      expect(body['phase'], 'done');
-      expect(ScanProgress.fromJson(body).phase, ScanPhase.done);
+
+      final status = ScanStatus.fromJson(await jsonOf(response));
+      expect(status.state, ScanJobState.done);
+      expect(status.progress.phase, ScanPhase.done);
+      expect(status.projectId, isNotNull);
+      // The fake analyzer reports one package per node it returns.
+      expect(status.progress.packagesDone, status.progress.packagesTotal);
+      expect(status.progress.packagesTotal, greaterThan(0));
     });
 
-    // Progress lives in this process only. A scan that has aged out, or one
-    // running on another instance, is a 404 — and the client is expected to
-    // read that as "cannot say" rather than as a failure.
-    test('an unknown scan is a 404, not an error', () async {
-      final response = await scan_route.onRequest(
-        contextFor(method: HttpMethod.get, path: '/scans/nope'),
-        'nope',
+    test('the answer outlives the memory it was recorded in', () async {
+      await submitAdd('scan-1');
+      await deps.scanRunner.drain();
+
+      // What a restart looks like from the route's side: the in-memory store is
+      // gone and the row is all there is. Before this phase that was a 404 and
+      // the client was told to guess.
+      deps.scanProgress.remove('scan-1');
+
+      final status = ScanStatus.fromJson(await jsonOf(await readScan('scan-1')));
+      expect(status.state, ScanJobState.done);
+      expect(status.progress.phase, ScanPhase.done);
+    });
+
+    test('a scan belonging to somebody else is a 404, not a 403', () async {
+      await submitAdd('scan-1');
+
+      const bob = AuthUser(
+        id: 'b0000000-0000-0000-0000-00000000000b',
+        role: 'authenticated',
+        email: 'bob@example.com',
       );
+      final context = contextFor(method: HttpMethod.get, path: '/scans/scan-1');
+      when(context.read<AuthUser>).thenReturn(bob);
+
+      // The id is one the *client* invented, so it is guessable — which is
+      // exactly why this route stopped being keyed on the id alone.
+      final response = await scan_route.onRequest(context, 'scan-1');
+      expect(response.statusCode, HttpStatus.notFound);
+    });
+
+    test('an unknown scan is a 404, not an error', () async {
+      final response = await readScan('nope');
 
       expect(response.statusCode, HttpStatus.notFound);
     });
@@ -134,20 +147,14 @@ void main() {
         analyzer: FakeAnalyzer(),
       );
 
-      final response = await projects_route.onRequest(
-        contextFor(
-          method: HttpMethod.post,
-          body: {
-            'gitUrl': 'https://github.com/acme/gone.git',
-            'scanId': 'scan-3',
-          },
-        ),
-      );
+      await submitAdd('scan-3', repo: 'gone');
+      await deps.scanRunner.drain();
 
-      expect(response.statusCode, HttpStatus.badRequest);
-      final progress = deps.scanProgress['scan-3']!;
-      expect(progress.phase, ScanPhase.failed);
-      expect(progress.error, 'repository not found');
+      final status = ScanStatus.fromJson(await jsonOf(await readScan('scan-3')));
+      expect(status.state, ScanJobState.failed);
+      expect(status.error, 'repository not found');
+      expect(status.progress.phase, ScanPhase.failed);
+      expect(status.progress.error, 'repository not found');
     });
   });
 

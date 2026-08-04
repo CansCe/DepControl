@@ -59,7 +59,7 @@ void main() {
         ),
       );
 
-      await c.api.addProject('https://example.com/a.git');
+      await c.api.addProject('https://example.com/a.git', scanId: 'scan-1');
 
       expect(c.sent.single.headers['Authorization'], 'Bearer test-token');
       expect(
@@ -125,7 +125,7 @@ void main() {
       );
 
       await expectLater(
-        c.api.addProject(''),
+        c.api.addProject('', scanId: 'scan-1'),
         throwsA(
           isA<ApiException>()
               .having((e) => e.message, 'message', 'gitUrl is required'),

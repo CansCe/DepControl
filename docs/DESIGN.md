@@ -171,6 +171,102 @@ simply never going to reply, which is the failure that used to strand eight
 workers and take a large scan down with them. A partial report that says what it
 could not reach is worth having. A 500 after four minutes is not.
 
+### A scan is not a request
+
+It used to be. The analysis ran inside the POST that asked for it and the report
+came back in the response, which made a scan exactly as durable as the browser
+tab — and on a deployment that scales to zero, exactly as durable as the
+connection holding the machine up. Closing the page ended the work.
+
+So `POST /projects` and `POST /projects/{id}/refresh` write a row to `scan_jobs`
+and answer `202`. `ScanRunner` drains it. Three consequences worth stating:
+
+- **No project is created until the scan succeeds**, exactly as before. Creating
+  one up front to hang the scan off would leave an empty project behind every
+  time somebody mistyped a URL.
+- **The request still refuses what it can judge without the network.** A host
+  this cannot read is a `400` at the time of asking, not a job that turns up
+  failed a minute later. Whether a repository *exists* is not in that category
+  and stops being something the request answers.
+- **`GET /scans/{id}` became owner-scoped.** While progress lived in a map keyed
+  only on an id the client invented, a guessed id read somebody else's scan. It
+  is a `404` for another owner, not a `403`, for the reason every other lookup
+  here is.
+
+**The worker is the same process as the API.** A separate one would have to be
+always-on: the only thing that knows a scan was asked for is the API, so a worker
+that scaled to zero would have nothing to start it, and one that did not scale to
+zero is an always-on machine under a different name — which was ruled out on
+cost. One image, one machine, started by the proxy on a request.
+
+**Which means the app has to stop itself.** Fly's `auto_stop_machines` counts
+connections, so it stops a machine with no open request however busy the process
+is — harmless while the scan *was* the request, fatal now. It is off, and
+`IdleWatchdog` does the job from inside with one extra condition: no request for
+`IDLE_SHUTDOWN_SECONDS` **and** nothing in the scan queue. It stops by exiting 0,
+which under an `on-failure` restart policy leaves the machine stopped until the
+next request starts it. Unset means never, which is what every local run gets.
+
+**Progress is written twice, on purpose.** The in-memory `ScanProgressStore` is
+the live copy and stays the hot path; the row is flushed about once a second and
+is the durable one. `packageDone()` fires once per package — 1,491 times on the
+largest repository measured — and a write each would cost more than the registry
+calls it is reporting on. The flush doubles as the heartbeat, because they happen
+together.
+
+**A machine that dies loses the attempt, not the request.** A claimed job whose
+heartbeat has gone stale is re-claimed by the next machine to drain, bounded by
+`attempts` so a scan that reliably kills its worker is eventually reported as
+failed rather than retried forever. It restarts from the beginning: a
+half-scanned repository is not a resumable thing, and pretending otherwise would
+mean persisting per-package state to save a minute.
+
+The honest limit, and the one to quote: **a scan runs until it finishes or the
+server stops.** A deploy still interrupts one. What changed is that interrupting
+it no longer loses it.
+
+### Watching a scan
+
+The scan says nothing until it is over, so the only way to learn what it is doing
+is to ask. That was true when it was a request and is still true now; what
+changed is that asking is no longer a side channel onto an open connection. It is
+the only channel, and it works from a device that never started the scan.
+
+A null answer is still not an error. A scan this account never asked for reads
+the same as a poll that could not reach the server at all, and neither says
+anything about the scan — both mean *no news*, never *no progress*, and both
+leave whatever was last known on screen under an indeterminate bar. What no
+longer produces one is a restart or a second instance, which is most of what used
+to.
+
+**What was wrong until phase 0.6** was not the 404, which is correct, but that
+the client never stopped asking. A flat 1200 ms poll is fifty requests a minute
+for as long as the tab stays open, and the run of them observed in the metrics
+was not a bug in the poller at all — the machine had been OOM-killed and
+restarted, so the scan and the progress went with it and no later answer was ever
+going to differ. That the flood was a *symptom* is why the fix was a small one
+and the memory work above was the real one.
+
+Now the interval doubles while the server says nothing, to a fifteen-second
+ceiling, and the poller gives up once the silence has run for two minutes.
+Silence is measured in time rather than in a count of replies, because with a
+stretching interval those are not the same question, and the one worth asking is
+how long it has been quiet. A single answer resets both — a scan that goes quiet,
+recovers and goes quiet again has not been silent throughout.
+
+Two things it deliberately does not do. It does not stop the **scan**, which is a
+job on the server and finishes there; only this client's view of it is abandoned,
+and the message says exactly that rather than calling it a failure, because
+telling somebody a running scan failed invites them to start a second one. And it
+does not clear what it last knew — giving up is about not asking again, not about
+forgetting the answer, and a bar that emptied itself when the poller went quiet
+would claim a regression that never happened.
+
+`GET /scans` is the other half. Opening the app asks what this account still has
+running and re-attaches to it, because a durable scan that the client cannot see
+is worse than no durable scan: the panel would be empty and the obvious next move
+would be to start the same work again.
+
 ## What the source says
 
 Reading the tarball means reading the Dart source, not just the manifests, and

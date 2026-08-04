@@ -779,6 +779,17 @@ class GitFetcher {
     return utf8.decode(bytes, allowMalformed: true);
   }
 
+  /// Checks a repository URL and ref without fetching anything, throwing the
+  /// same [StateError] a fetch would.
+  ///
+  /// Exists because a scan is queued now rather than run inside the request
+  /// that asks for it. Everything else a scan can get wrong is only knowable
+  /// from the network and belongs in the job's failure; this part is knowable
+  /// immediately, and a caller who typed the wrong host should be told so at
+  /// the time rather than by a report that turns up failed a minute later.
+  static void validate(String gitUrl, {String ref = 'HEAD'}) =>
+      _rawBaseFor(gitUrl, ref);
+
   /// Maps a repo URL to its raw-content base, throwing when the URL or ref is
   /// not something this can safely fetch.
   ///

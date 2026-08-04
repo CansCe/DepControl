@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -115,8 +114,33 @@ void main() {
     /// A queue of its own per test, so one case's scans cannot show up in the
     /// next. Successes clear immediately: a lingering one would leave a pending
     /// timer behind and fail the test on teardown rather than on its assertion.
-    ScanQueue freshQueue() =>
-        ScanQueue(successLinger: Duration.zero);
+    ScanQueue freshQueue() => ScanQueue(
+          successLinger: Duration.zero,
+          pollInterval: const Duration(milliseconds: 10),
+        );
+
+    http.Response asJson(Object body, [int status = 200]) => http.Response(
+          jsonEncode(body),
+          status,
+          headers: {'content-type': 'application/json'},
+        );
+
+    /// A re-analysis as the server describes it: queued when it is written
+    /// down, done when a worker has finished with it.
+    ScanStatus scanOf(String scanId, {required bool finished}) => ScanStatus(
+          scanId: scanId,
+          state: finished ? ScanJobState.done : ScanJobState.running,
+          progress: ScanProgress(
+            phase: finished ? ScanPhase.done : ScanPhase.analyzing,
+            startedAt: DateTime.utc(2026, 2, 1),
+            phaseStartedAt: DateTime.utc(2026, 2, 1),
+          ),
+          gitUrl: 'https://github.com/acme/demo.git',
+          projectId: 'p1',
+        );
+
+    String scanIdIn(http.Request request) =>
+        (jsonDecode(request.body) as Map)['scanId'] as String;
 
     final project = Project(
       id: 'p1',
@@ -169,27 +193,39 @@ void main() {
     testWidgets('re-analyze calls the refresh endpoint and updates the view',
         (tester) async {
       final requested = <String>[];
+      // Once the re-analysis has run, reading the project gives the smaller
+      // report, so the change is observable.
+      var reanalyzed = false;
       final api = ApiClient(
         accessToken: () async => 'token',
         client: MockClient((request) async {
-          requested.add('${request.method} ${request.url.path}');
-          // Refresh returns a smaller report so the change is observable.
-          final isRefresh = request.url.path.endsWith('/refresh');
-          final body = isRefresh
-              ? DepReport(
-                  projectId: 'p1',
-                  generatedAt: DateTime.utc(2026, 2, 1),
-                  nodes: _nodes,
-                )
-              : report;
-          return http.Response(
-            jsonEncode({
-              'project': project.toJson(),
-              'report': body.toJson(),
-            }),
-            200,
-            headers: {'content-type': 'application/json'},
-          );
+          final path = request.url.path;
+          requested.add('${request.method} $path');
+
+          if (request.method == 'POST') {
+            reanalyzed = true;
+            return asJson(
+              scanOf(scanIdIn(request), finished: false).toJson(),
+              202,
+            );
+          }
+          if (path == '/scans') return asJson({'scans': <Object>[]});
+          if (path.startsWith('/scans/')) {
+            return asJson(
+              scanOf(path.split('/').last, finished: reanalyzed).toJson(),
+            );
+          }
+          return asJson({
+            'project': project.toJson(),
+            'report': (reanalyzed
+                    ? DepReport(
+                        projectId: 'p1',
+                        generatedAt: DateTime.utc(2026, 2, 1),
+                        nodes: _nodes,
+                      )
+                    : report)
+                .toJson(),
+          });
         }),
       );
 
@@ -197,6 +233,10 @@ void main() {
       await tester.pumpAndSettle();
 
       await tester.tap(find.text('Re-analyze'));
+      await tester.pump();
+      // The re-analysis is a job now, so the screen learns it finished from the
+      // next status poll rather than from the response to its own request.
+      await tester.pump(const Duration(milliseconds: 20));
       await tester.pumpAndSettle();
 
       expect(tester.takeException(), isNull);
@@ -216,19 +256,37 @@ void main() {
     // finished the work and the report went nowhere.
     testWidgets('re-analyze survives leaving the screen', (tester) async {
       final scans = freshQueue();
-      final completed = Completer<http.Response>();
+      // The scan runs on the server, so what is held here is the *answer* about
+      // it rather than the work: it reads as running until the worker is said
+      // to have finished.
+      var workerFinished = false;
       final api = ApiClient(
         accessToken: () async => 'token',
         client: MockClient((request) async {
-          if (request.url.path.endsWith('/refresh')) return completed.future;
-          return http.Response(
-            jsonEncode({
-              'project': project.toJson(),
-              'report': report.toJson(),
-            }),
-            200,
-            headers: {'content-type': 'application/json'},
-          );
+          final path = request.url.path;
+          if (request.method == 'POST') {
+            return asJson(
+              scanOf(scanIdIn(request), finished: false).toJson(),
+              202,
+            );
+          }
+          if (path == '/scans') return asJson({'scans': <Object>[]});
+          if (path.startsWith('/scans/')) {
+            return asJson(
+              scanOf(path.split('/').last, finished: workerFinished).toJson(),
+            );
+          }
+          return asJson({
+            'project': project.toJson(),
+            'report': (workerFinished
+                    ? DepReport(
+                        projectId: 'p1',
+                        generatedAt: DateTime.utc(2026, 2, 1),
+                        nodes: _nodes,
+                      )
+                    : report)
+                .toJson(),
+          });
         }),
       );
 
@@ -256,6 +314,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Re-analyze'));
       await tester.pump();
+      await tester.pump(const Duration(milliseconds: 20));
 
       await tester.pageBack();
       await tester.pump();
@@ -266,21 +325,11 @@ void main() {
         reason: 'leaving the screen must not abandon the scan',
       );
 
-      // And it lands after the screen that asked for it is gone.
-      completed.complete(
-        http.Response(
-          jsonEncode({
-            'project': project.toJson(),
-            'report': DepReport(
-              projectId: 'p1',
-              generatedAt: DateTime.utc(2026, 2, 1),
-              nodes: _nodes,
-            ).toJson(),
-          }),
-          200,
-          headers: {'content-type': 'application/json'},
-        ),
-      );
+      // And it lands after the screen that asked for it is gone. Truer than it
+      // used to be: the work is not merely un-abandoned by this client, it was
+      // never this client's to abandon.
+      workerFinished = true;
+      await tester.pump(const Duration(milliseconds: 20));
       await tester.pumpAndSettle();
 
       expect(scans.isScanning('p1'), isFalse);

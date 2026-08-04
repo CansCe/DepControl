@@ -25,17 +25,25 @@ enum ScanState { queued, running, done, failed }
 /// seconds, and the whole point of moving it here is that the person who asked
 /// can go somewhere else — add a second project, open a different report, press
 /// back — without the work being abandoned or its result thrown away.
+///
+/// It survives more than that now. The scan runs on the server as a job of its
+/// own, so this object is a *view* of work that continues whether or not the
+/// app is open at all: close the tab and the report still lands, and the next
+/// client to sign in re-attaches to whatever is still going.
 class ScanTask {
   ScanTask._({
     required this.id,
     required this.kind,
     required this.label,
     required this.detail,
-    required Future<(Project, DepReport)> Function() work,
-    required Future<ScanProgress?> Function() readProgress,
+    required Future<ScanStatus> Function() submit,
+    required Future<ScanStatus?> Function() readStatus,
+    required Future<({Project project, DepReport? report})> Function(String)
+        readResult,
     this.projectId,
-  })  : _work = work,
-        _readProgress = readProgress,
+  })  : _submit = submit,
+        _readStatus = readStatus,
+        _readResult = readResult,
         queuedAt = DateTime.now();
 
   final String id;
@@ -52,8 +60,13 @@ class ScanTask {
   /// Set for a re-analysis; filled in for an add once the project exists.
   String? projectId;
 
-  final Future<(Project, DepReport)> Function() _work;
-  final Future<ScanProgress?> Function() _readProgress;
+  /// Writes the scan down on the server. Returns as soon as it is recorded —
+  /// the work itself starts there and does not need anybody here.
+  final Future<ScanStatus> Function() _submit;
+
+  final Future<ScanStatus?> Function() _readStatus;
+  final Future<({Project project, DepReport? report})> Function(String)
+      _readResult;
 
   final DateTime queuedAt;
   DateTime? startedAt;
@@ -72,6 +85,10 @@ class ScanTask {
   /// the two differently.
   ScanProgress? progress;
 
+  /// Whether this task is watching a scan somebody else started — another
+  /// device, or this one before it was closed.
+  bool attached = false;
+
   bool get isFinished =>
       state == ScanState.done || state == ScanState.failed;
 
@@ -88,7 +105,8 @@ class ScanTask {
   }
 }
 
-/// Runs repository scans in the background and says what they are doing.
+/// Watches the repository scans this account has running, and says what they
+/// are doing.
 ///
 /// Scans used to be awaited by the widget that started them, which made two
 /// things true that should not have been. Adding a project held the form until
@@ -97,26 +115,19 @@ class ScanTask {
 /// disposed the only thing waiting on the response — the request carried on to
 /// the server, and its report was dropped on the floor.
 ///
-/// Owning the work here fixes both: the future is held by an object that
-/// outlives every route, and anything that wants to know watches this.
+/// Owning the work here fixed both. What this no longer owns is the work
+/// itself: a scan is a row on the server, run by the server, and this holds a
+/// view of it. Closing the app stops the watching and nothing else.
 class ScanQueue extends ChangeNotifier {
   ScanQueue({
-    this.maxConcurrent = 2,
     this.successLinger = const Duration(seconds: 12),
     this.pollInterval = const Duration(milliseconds: 1200),
+    this.pollBackoffLimit = const Duration(seconds: 15),
+    this.pollGiveUpAfter = const Duration(minutes: 2),
   });
 
   /// The app-wide queue. Screens enqueue against this; [ScanOverlay] shows it.
   static final ScanQueue instance = ScanQueue();
-
-  /// How many scans run at once.
-  ///
-  /// More than one, because the complaint this exists to answer is "I have to
-  /// wait for one repository before I can add the next". Not many more, because
-  /// each one is a git clone plus a few hundred registry lookups on a server
-  /// that rate-limits, and eight at once finishes no sooner than two — it just
-  /// makes all eight look stuck.
-  final int maxConcurrent;
 
   /// How long a finished scan stays on screen before clearing itself.
   ///
@@ -131,16 +142,55 @@ class ScanQueue extends ChangeNotifier {
   /// tiny requests rather than thousands.
   final Duration pollInterval;
 
+  /// The slowest a poll gets while the server has nothing to say.
+  ///
+  /// A ceiling rather than unbounded doubling: a scan whose status is
+  /// unreadable for a minute may well become readable again — the network comes
+  /// back, or the machine finishes starting — and an interval that had grown to
+  /// several minutes would catch up long after it mattered.
+  final Duration pollBackoffLimit;
+
+  /// How long the server may say nothing before this stops asking.
+  ///
+  /// Measured in time rather than in a count of replies, because [pollInterval]
+  /// is not the gap between them once the backoff above starts stretching it,
+  /// and the question worth answering is "how long has this been silent", not
+  /// "how many times have we asked".
+  ///
+  /// Giving up abandons the *watching*, never the scan. The scan is a job on
+  /// the server and finishes there; what is lost is this client's view of it,
+  /// which the next [reattach] gets back.
+  final Duration pollGiveUpAfter;
+
   final List<ScanTask> _tasks = [];
   final Map<String, Timer> _linger = {};
 
-  /// The progress poll for each running scan, by task id.
+  /// The status poll for each running scan, by task id.
   final Map<String, Timer> _polls = {};
+
+  /// What each running scan's watcher will complete with.
+  final Map<String, Completer<ScanStatus?>> _watches = {};
+
   final StreamController<ScanTask> _finished =
       StreamController<ScanTask>.broadcast();
 
   var _nextId = 0;
   var _completions = 0;
+
+  /// Whether this has been disposed while a scan was still being watched.
+  ///
+  /// Reachable in a way it was not before. Work used to end when the request
+  /// holding it ended, so disposing the queue ended everything with it. A scan
+  /// is a job on the server now, and [_run] goes on tidying up after a screen —
+  /// or a test — has thrown the queue away. Notifying a disposed
+  /// [ChangeNotifier] throws, and it would throw from somewhere with nothing to
+  /// do with the mistake.
+  var _disposed = false;
+
+  void _notify() {
+    if (_disposed) return;
+    notifyListeners();
+  }
 
   /// How many scans have succeeded since the app started.
   ///
@@ -177,19 +227,21 @@ class ScanQueue extends ChangeNotifier {
 
   /// Queues a repository to be ingested by git URL.
   ScanTask addProject(ApiClient api, String gitUrl, {String? ref}) {
-    // Unique across app runs, not just within one: the server keys progress by
+    // Unique across app runs, not just within one: the server keys the *job* by
     // this, and two devices — or the same device restarted — must not collide
     // on `scan-0`.
     final scanId = _newScanId();
-    final task = ScanTask._(
-      id: scanId,
-      kind: ScanKind.add,
-      label: _repoName(gitUrl),
-      detail: ref == null ? gitUrl : '$gitUrl @ $ref',
-      work: () => api.addProject(gitUrl, ref: ref, scanId: scanId),
-      readProgress: () => api.scanProgress(scanId),
+    return _enqueue(
+      ScanTask._(
+        id: scanId,
+        kind: ScanKind.add,
+        label: _repoName(gitUrl),
+        detail: ref == null ? gitUrl : '$gitUrl @ $ref',
+        submit: () => api.addProject(gitUrl, ref: ref, scanId: scanId),
+        readStatus: () => api.scanStatus(scanId),
+        readResult: api.projectWithReport,
+      ),
     );
-    return _enqueue(task);
   }
 
   /// Queues a re-analysis of an existing project.
@@ -197,37 +249,88 @@ class ScanQueue extends ChangeNotifier {
   /// Returns the scan already in flight when there is one, rather than starting
   /// a second: pressing Re-analyze twice is someone checking whether the first
   /// press registered, not a request for two clones of the same repository.
+  /// The server applies the same rule, because the first press can have come
+  /// from a different device.
   ScanTask reanalyze(ApiClient api, Project project) {
     final existing = _firstOrNull(_pending, (t) => t.projectId == project.id);
     if (existing != null) return existing;
 
     final scanId = _newScanId();
-    final task = ScanTask._(
-      id: scanId,
-      kind: ScanKind.reanalyze,
-      label: project.name,
-      detail: '${project.gitUrl} @ ${project.ref}',
-      projectId: project.id,
-      work: () => api.refreshProject(project.id, scanId: scanId),
-      readProgress: () => api.scanProgress(scanId),
+    return _enqueue(
+      ScanTask._(
+        id: scanId,
+        kind: ScanKind.reanalyze,
+        label: project.name,
+        detail: '${project.gitUrl} @ ${project.ref}',
+        projectId: project.id,
+        submit: () => api.refreshProject(project.id, scanId: scanId),
+        readStatus: () => api.scanStatus(scanId),
+        readResult: api.projectWithReport,
+      ),
     );
-    return _enqueue(task);
+  }
+
+  /// Picks up the scans this account already has running on the server.
+  ///
+  /// Called when the app opens. Without it a durable scan is invisible: the
+  /// work carried on while nobody was looking, and a client that shows an empty
+  /// panel invites the person to start the same scan over again.
+  ///
+  /// Failure is silence. This runs on launch, and an account with nothing
+  /// running — which is nearly always — must not be shown an error because the
+  /// network was briefly away.
+  Future<void> reattach(ApiClient api) async {
+    final List<ScanStatus> running;
+    try {
+      running = await api.activeScans();
+    } catch (_) {
+      return;
+    }
+    if (_disposed) return;
+
+    for (final status in running) {
+      if (_tasks.any((t) => t.id == status.scanId)) continue;
+      _enqueue(_taskFor(api, status)..attached = true);
+    }
+  }
+
+  ScanTask _taskFor(ApiClient api, ScanStatus status) {
+    final gitUrl = status.gitUrl;
+    return ScanTask._(
+      id: status.scanId,
+      // Told apart by whether the job knew its project from the start, which is
+      // exactly the difference between the two.
+      kind: status.projectId == null ? ScanKind.add : ScanKind.reanalyze,
+      label: gitUrl == null ? 'Scan in progress' : _repoName(gitUrl),
+      detail: gitUrl ?? 'started elsewhere',
+      projectId: status.projectId,
+      // Already submitted — by another device, or by this one before it was
+      // closed. Handing back what the server just said keeps [_run] one path
+      // instead of two.
+      submit: () async => status,
+      readStatus: () => api.scanStatus(status.scanId),
+      readResult: api.projectWithReport,
+    );
   }
 
   /// Short, unique, and safe in a URL path — the server takes it as a path
-  /// segment and caps its length.
+  /// segment, caps its length, and now stores it as a primary key.
   String _newScanId() =>
       'scan-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}'
       '-${_nextId++}';
 
   ScanTask _enqueue(ScanTask task) {
     _tasks.add(task);
-    notifyListeners();
-    _pump();
+    _notify();
+    unawaited(_run(task));
     return task;
   }
 
   /// Runs a failed scan again, in place.
+  ///
+  /// For a scan this client lost contact with rather than one that failed, this
+  /// re-attaches rather than re-running: the id is the same, and the server
+  /// answers a repeat submission with the job it already has.
   void retry(ScanTask task) {
     if (task.state != ScanState.failed) return;
     _linger.remove(task.id)?.cancel();
@@ -236,8 +339,8 @@ class ScanQueue extends ChangeNotifier {
       ..error = null
       ..startedAt = null
       ..finishedAt = null;
-    notifyListeners();
-    _pump();
+    _notify();
+    unawaited(_run(task));
   }
 
   /// Takes a finished scan off the panel. Running ones cannot be dismissed —
@@ -248,7 +351,7 @@ class ScanQueue extends ChangeNotifier {
     if (task == null || !task.isFinished) return;
     _linger.remove(id)?.cancel();
     _tasks.remove(task);
-    notifyListeners();
+    _notify();
   }
 
   void clearFinished() {
@@ -256,59 +359,58 @@ class ScanQueue extends ChangeNotifier {
       _linger.remove(task.id)?.cancel();
       _tasks.remove(task);
     }
-    notifyListeners();
+    _notify();
   }
 
-  /// Starts whatever the concurrency cap has room for.
-  void _pump() {
-    var running = _tasks.where((t) => t.state == ScanState.running).length;
-    for (final task in _tasks) {
-      if (running >= maxConcurrent) return;
-      if (task.state != ScanState.queued) continue;
+  /// Submits the scan, watches it to the end, and collects what it produced.
+  ///
+  /// Three steps where there used to be one long request. Only the first is
+  /// this client's to lose: once the submit returns, the scan exists on the
+  /// server and finishing it is no longer conditional on anything here.
+  Future<void> _run(ScanTask task) async {
+    try {
+      final queued = await task._submit();
+      if (_disposed) return;
       task
         ..state = ScanState.running
         ..startedAt = DateTime.now();
-      running++;
-      unawaited(_run(task));
-    }
-  }
+      _absorb(task, queued);
 
-  /// Asks the server what [task] is doing, for as long as it is doing it.
-  ///
-  /// Runs alongside the scan rather than as part of it: the scan is one long
-  /// request that says nothing until it is finished, so the only way to learn
-  /// what it is doing is to ask on a second connection.
-  ///
-  /// A cancellable [Timer] rather than a loop around `Future.delayed`, because
-  /// a delay cannot be called off — the last one would outlive the scan by up
-  /// to [pollInterval], which is both a pointless wakeup and, in a widget test,
-  /// a pending timer that fails the case.
-  void _startPolling(ScanTask task) {
-    _polls[task.id] = Timer.periodic(pollInterval, (_) async {
-      if (task.state != ScanState.running) return;
-      final progress = await task._readProgress();
-      // Ignored when the server cannot say, which is an ordinary outcome
-      // rather than a failure: progress is held per-instance and expires, so a
-      // poll that finds nothing means "no news", not "no progress". Whatever
-      // was last known stays on screen.
-      if (progress == null || progress.isFinished) return;
-      if (task.state != ScanState.running) return;
-      task.progress = progress;
-      notifyListeners();
-    });
-  }
+      final finished = await _watch(task);
+      if (_disposed) return;
 
-  void _stopPolling(ScanTask task) => _polls.remove(task.id)?.cancel();
+      if (finished == null) {
+        // Silence for two minutes. The scan is a job on the server and is very
+        // likely still running, so the message must not claim otherwise —
+        // "failed" here is a statement about this client's view of it.
+        task
+          ..state = ScanState.failed
+          ..error = 'Lost contact with this scan. It is still running on the '
+              'server — reopen the app to pick it up.';
+        return;
+      }
 
-  Future<void> _run(ScanTask task) async {
-    _startPolling(task);
-    try {
-      final (project, report) = await task._work();
+      if (finished.state == ScanJobState.failed) {
+        task
+          ..state = ScanState.failed
+          ..error = finished.error ?? 'The scan failed.';
+        return;
+      }
+
+      final projectId = finished.projectId;
+      if (projectId == null) {
+        task
+          ..state = ScanState.failed
+          ..error = 'The scan finished without saying what it produced.';
+        return;
+      }
+
+      final result = await task._readResult(projectId);
       task
-        ..project = project
-        ..report = report
-        ..projectId = project.id
-        ..label = project.name
+        ..project = result.project
+        ..report = result.report
+        ..projectId = result.project.id
+        ..label = result.project.name
         ..state = ScanState.done;
     } on ApiAuthException catch (e) {
       // The session died mid-scan. Recorded as a failure so the panel says so,
@@ -326,17 +428,98 @@ class ScanQueue extends ChangeNotifier {
         ..state = ScanState.failed
         ..error = 'The scan failed: $e';
     } finally {
-      _stopPolling(task);
-      task.finishedAt = DateTime.now();
-      if (task.state == ScanState.done) {
-        _completions++;
-        _lingerThenClear(task);
+      _stopWatching(task);
+      if (!_disposed) {
+        task.finishedAt = DateTime.now();
+        if (task.state == ScanState.done) {
+          _completions++;
+          _lingerThenClear(task);
+        }
+        if (!_finished.isClosed) _finished.add(task);
+        _notify();
       }
-      if (!_finished.isClosed) _finished.add(task);
-      notifyListeners();
-      // Whatever was waiting behind this one can go now.
-      _pump();
     }
+  }
+
+  /// Asks the server what [task] is doing, for as long as it is doing it, and
+  /// completes with the status that ended it — or null if this gave up asking.
+  ///
+  /// A cancellable [Timer] rather than a loop around `Future.delayed`, because
+  /// a delay cannot be called off — the last one would outlive the scan by up
+  /// to [pollInterval], which is both a pointless wakeup and, in a widget test,
+  /// a pending timer that fails the case.
+  ///
+  /// One-shot and rescheduled rather than [Timer.periodic], because the gap
+  /// between polls is not a constant: a server that keeps answering is asked
+  /// every [pollInterval], and one that has stopped answering is asked less and
+  /// less often until [pollGiveUpAfter] says to stop. A flat interval against a
+  /// scan that cannot be read is fifty requests a minute for as long as the tab
+  /// stays open, none of which will say anything different.
+  Future<ScanStatus?> _watch(ScanTask task) {
+    final watch = _watches[task.id] = Completer<ScanStatus?>();
+    var delay = pollInterval;
+    DateTime? silentSince;
+
+    void finish(ScanStatus? status) {
+      _polls.remove(task.id)?.cancel();
+      _watches.remove(task.id);
+      if (!watch.isCompleted) watch.complete(status);
+    }
+
+    void schedule() {
+      _polls[task.id] = Timer(delay, () async {
+        if (task.state != ScanState.running) return finish(null);
+        final status = await task._readStatus();
+        if (task.state != ScanState.running) return finish(null);
+
+        // Nothing to report. A scan this account never asked for reads the
+        // same as a poll that could not reach the server at all, and neither
+        // says anything about the scan — so both wait rather than concluding.
+        // Whatever was last known stays on screen.
+        if (status == null) {
+          final now = DateTime.now();
+          silentSince ??= now;
+          if (now.difference(silentSince!) >= pollGiveUpAfter) {
+            return finish(null);
+          }
+          delay = _backOff(delay);
+          schedule();
+          return;
+        }
+
+        // Answered, so the clock starts again from here rather than from the
+        // start of the scan — a scan that goes quiet, recovers, and goes quiet
+        // again has not been silent throughout.
+        silentSince = null;
+        delay = pollInterval;
+        if (status.isFinished) return finish(status);
+        _absorb(task, status);
+        schedule();
+      });
+    }
+
+    schedule();
+    return watch.future;
+  }
+
+  void _stopWatching(ScanTask task) {
+    _polls.remove(task.id)?.cancel();
+    final watch = _watches.remove(task.id);
+    if (watch != null && !watch.isCompleted) watch.complete(null);
+  }
+
+  /// Takes what the server just said into the task.
+  void _absorb(ScanTask task, ScanStatus status) {
+    task.progress = status.progress;
+    task.projectId ??= status.projectId;
+    _notify();
+  }
+
+  /// The next gap after a poll that said nothing: double it, up to
+  /// [pollBackoffLimit].
+  Duration _backOff(Duration delay) {
+    final next = delay * 2;
+    return next > pollBackoffLimit ? pollBackoffLimit : next;
   }
 
   void _lingerThenClear(ScanTask task) {
@@ -345,17 +528,22 @@ class ScanQueue extends ChangeNotifier {
       // Guard against a retry having put it back to work in the meantime.
       if (task.state != ScanState.done) return;
       _tasks.remove(task);
-      notifyListeners();
+      _notify();
     });
   }
 
   @override
   void dispose() {
+    _disposed = true;
     for (final timer in [..._linger.values, ..._polls.values]) {
       timer.cancel();
     }
+    for (final watch in _watches.values) {
+      if (!watch.isCompleted) watch.complete(null);
+    }
     _linger.clear();
     _polls.clear();
+    _watches.clear();
     _finished.close();
     super.dispose();
   }
