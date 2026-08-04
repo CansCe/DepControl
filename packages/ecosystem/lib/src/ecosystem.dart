@@ -1,13 +1,11 @@
 import 'package:pub_semver/pub_semver.dart';
 
 import 'manifest.dart';
-import 'package_registry.dart';
 
 export 'manifest.dart';
-export 'package_registry.dart';
 
-/// A package ecosystem: one set of manifest files, one registry, one dialect of
-/// version constraints, one way of writing an import.
+/// A package ecosystem: one set of manifest files, one dialect of version
+/// constraints, one way of writing an import.
 ///
 /// This exists because a dependency report is the same document whichever
 /// ecosystem produced it. "Which packages, at which versions, with which
@@ -20,11 +18,19 @@ export 'package_registry.dart';
 /// are OSV documents and versions are semver in both ecosystems supported here,
 /// so scoring, banding, blame assignment, license classification, resolution
 /// and remediation planning are shared code that never learns which ecosystem
-/// it is serving. Only the four genuinely divergent things are per-ecosystem:
-/// file names, manifest syntax, registry protocol, and constraint dialect.
+/// it is serving. Only the genuinely divergent things are per-ecosystem: file
+/// names, manifest syntax, and constraint dialect.
+///
+/// The fourth divergent thing — the registry protocol — used to be a member
+/// here and is now reached separately, by ecosystem [id], from whoever owns the
+/// network. Everything on this interface answers from text already in hand, so
+/// a manifest parses the same on a build server as it does on a laptop with no
+/// route to pub.dev; a registry client on the same interface would have made
+/// that impossible.
 abstract class Ecosystem {
-  /// Stable identifier, stored on every [DepNode] and never shown to a user:
-  /// `dart`, `npm`. Persisted, so it does not change once written.
+  /// Stable identifier, stored on every reported node and never shown to a
+  /// user: `dart`, `npm`. Persisted, so it does not change once written, and
+  /// the key a registry is looked up by.
   String get id;
 
   /// What to call this ecosystem in a report.
@@ -32,9 +38,6 @@ abstract class Ecosystem {
 
   /// What this ecosystem's files are called, for repository discovery.
   ManifestNaming get naming;
-
-  /// Where this ecosystem's published packages are looked up.
-  PackageRegistry get registry;
 
   /// Reads a manifest and its lockfile.
   ///
@@ -48,7 +51,7 @@ abstract class Ecosystem {
   ///
   /// Null rather than a scanner returning the empty set. "Nobody looked" and
   /// "nothing uses it" are different claims and only one of them is worth
-  /// acting on — see [DepNode.imported].
+  /// acting on, which is why a report's `imported` set is nullable too.
   SourceScanner? get sourceScanner;
 
   /// Reads a constraint written in this ecosystem's dialect, or null when it is

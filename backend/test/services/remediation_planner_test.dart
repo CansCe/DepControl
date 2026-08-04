@@ -35,7 +35,15 @@ RemediationPlanner plannerFor(Registry registry) {
     );
   });
 
-  return RemediationPlanner(Resolver(DartEcosystem(PubApiClient(client: client))));
+  return RemediationPlanner(
+    Resolver(
+      const DartEcosystem(),
+      DartRegistry(
+        PubApiClient(client: client),
+        osv: OsvClient(client: client),
+      ),
+    ),
+  );
 }
 
 DepNode node(

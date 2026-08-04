@@ -1,4 +1,4 @@
-import 'package:backend/src/ecosystem/npm/js_source_scanner.dart';
+import 'package:ecosystem/ecosystem.dart';
 import 'package:test/test.dart';
 
 void main() {

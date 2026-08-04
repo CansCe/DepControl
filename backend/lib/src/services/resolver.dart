@@ -1,7 +1,8 @@
+import 'package:ecosystem/ecosystem.dart';
 import 'package:pub_semver/pub_semver.dart';
 import 'package:shared/shared.dart';
 
-import '../ecosystem/ecosystem.dart';
+import '../ecosystem/package_registry.dart';
 import 'constraint_resolver.dart';
 
 /// Simulates "what happens if I change this dependency's constraint".
@@ -19,9 +20,13 @@ import 'constraint_resolver.dart';
 /// weaker than pub's answer. Conflicts name the packages involved so the reason
 /// is visible.
 class Resolver {
-  Resolver(this._ecosystem);
+  Resolver(this._ecosystem, this._registry);
 
   final Ecosystem _ecosystem;
+
+  /// Where the candidate versions come from — see [ConstraintResolver] for why
+  /// the registry travels beside the ecosystem rather than inside it.
+  final PackageRegistry _registry;
 
   /// Which ecosystem this resolver can answer for.
   ///
@@ -141,7 +146,7 @@ class Resolver {
     Map<String, String> dev,
   ) =>
       // A fresh resolver per call: it caches version listings for the run.
-      ConstraintResolver(_ecosystem).resolve(deps, dev: dev);
+      ConstraintResolver(_ecosystem, _registry).resolve(deps, dev: dev);
 
   Map<String, String> _versionsOf(ResolutionOutcome outcome) => {
         for (final entry in outcome.packages.entries)

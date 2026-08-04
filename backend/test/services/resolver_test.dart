@@ -34,7 +34,10 @@ Resolver resolverFor(Registry registry) {
     );
   });
 
-  return Resolver(DartEcosystem(PubApiClient(client: client)));
+  return Resolver(
+    const DartEcosystem(),
+    DartRegistry(PubApiClient(client: client), osv: OsvClient(client: client)),
+  );
 }
 
 const _pubspec = '''

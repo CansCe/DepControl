@@ -3,8 +3,8 @@ import 'dart:io';
 import 'package:backend/src/archived_project.dart';
 import 'package:backend/src/auth/auth_user.dart';
 import 'package:backend/src/deps.dart';
-import 'package:backend/src/ecosystem/ecosystem.dart';
 import 'package:dart_frog/dart_frog.dart';
+import 'package:ecosystem/ecosystem.dart';
 import 'package:shared/shared.dart';
 
 /// GET `/projects/<id>/remediation` -> a verified fix for each advisory in the

@@ -195,15 +195,16 @@ More on all of it, and why, in [docs/DESIGN.md](docs/DESIGN.md).
 
 Shipped so far: the monorepo and shared models, ingest by Git URL, resolve &
 simulate, the Postgres registry with auth, report history, change diffing and
-alerts, the scan-cost work that made large repositories survive a scan, and
-scans that run on the server rather than inside the request that asked for them.
+alerts, the scan-cost work that made large repositories survive a scan, scans
+that run on the server rather than inside the request that asked for them,
+stored report bodies that refresh for the fields the change digest deliberately
+ignores, and manifest parsing extracted into `packages/ecosystem` so a scan can
+be read without a registry behind it.
 
 What is planned, in order:
 
 | | Scope | Status |
 |---|-------|--------|
-| 0.8 | Refresh stored report bodies for fields outside the change digest | planned |
-| 0.9 | Split manifest parsing into its own package, away from registry access | planned |
 | 1 | **NuGet** as a third ecosystem | planned |
 | 1.5 | **Local repository collector** | planned |
 | 2 | Cross-project search and version drift | planned |
@@ -386,10 +387,14 @@ cd packages/shared && dart test
 ```
 
 ```bash
+cd packages/ecosystem && dart test
+```
+
+```bash
 cd frontend && flutter test
 ```
 
-**The backend suite is split, deliberately.** 601 tests run in about six
+**The backend suite is split, deliberately.** 563 tests run in about six
 seconds; 25 more talk to a real Postgres and take 42 seconds — 88% of the wall
 clock for 4% of the coverage, which is how a suite stops being something you run
 while you work. Those are tagged `db` and skipped by default:
@@ -460,6 +465,7 @@ not counted.
 ```
 project_cloud/            # repo root = pub workspace umbrella (not an app)
 ├── packages/shared/      # DTOs shared by both sides
+├── packages/ecosystem/   # manifest parsing, no network — server and collector share it
 ├── backend/              # Dart Frog API
 │   ├── routes/           # file-based routes → HTTP endpoints
 │   ├── sql/              # schema for tables not created through a route

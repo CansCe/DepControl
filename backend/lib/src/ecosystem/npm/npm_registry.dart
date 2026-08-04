@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:ecosystem/ecosystem.dart';
 import 'package:http/http.dart' as http;
 import 'package:pub_semver/pub_semver.dart';
 import 'package:shared/shared.dart';
@@ -9,7 +10,6 @@ import '../../services/license_catalog.dart';
 import '../../services/request_cache.dart';
 import '../osv_client.dart';
 import '../package_registry.dart';
-import 'npm_version_range.dart';
 
 /// registry.npmjs.org, behind [PackageRegistry].
 class NpmRegistry implements PackageRegistry {

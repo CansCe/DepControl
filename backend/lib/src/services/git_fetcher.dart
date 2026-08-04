@@ -8,7 +8,7 @@ import 'package:http/http.dart' as http;
 
 import '../ecosystem/ecosystems.dart';
 
-export '../ecosystem/manifest.dart' show ManifestFiles;
+export 'package:ecosystem/ecosystem.dart' show ManifestFiles;
 
 /// One package's manifest files, which ecosystem they belong to, and where in
 /// the repository they live.

@@ -1,4 +1,4 @@
-import 'package:backend/src/ecosystem/dart_ecosystem.dart';
+import 'package:backend/src/ecosystem/dart/dart_registry.dart';
 import 'package:backend/src/ecosystem/osv_client.dart';
 import 'package:backend/src/services/pub_api_client.dart';
 import 'package:http/http.dart' as http;

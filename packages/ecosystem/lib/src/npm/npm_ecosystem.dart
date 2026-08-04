@@ -4,22 +4,17 @@ import 'package:pub_semver/pub_semver.dart';
 
 import '../ecosystem.dart';
 import 'js_source_scanner.dart';
-import 'npm_registry.dart';
 import 'npm_version_range.dart';
 
 /// npm packages: `package.json`, `package-lock.json`, registry.npmjs.org.
 class NpmEcosystem implements Ecosystem {
-  NpmEcosystem({NpmRegistry? registry})
-      : registry = registry ?? NpmRegistry();
+  const NpmEcosystem();
 
   @override
   String get id => 'npm';
 
   @override
   String get displayName => 'npm';
-
-  @override
-  final NpmRegistry registry;
 
   @override
   ManifestNaming get naming => const ManifestNaming(

@@ -11,11 +11,27 @@ failure mode is the useful part.
 A dependency report is the same document whichever ecosystem produced it —
 which packages, at which versions, with which advisories and licenses,
 reachable from which manifests. None of that is a question about pub.dev, so
-only four things are per-ecosystem (`backend/lib/src/ecosystem/`): the file
-names, the manifest syntax, the registry protocol, and the constraint dialect.
-Advisories are OSV documents and versions are semver on both sides, so scoring,
-banding, blame assignment, license classification, resolution and remediation
-are shared code that never learns which ecosystem it is serving.
+only four things are per-ecosystem: the file names, the manifest syntax, the
+registry protocol, and the constraint dialect. Advisories are OSV documents and
+versions are semver on both sides, so scoring, banding, blame assignment,
+license classification, resolution and remediation are shared code that never
+learns which ecosystem it is serving.
+
+Those four are split across two places, on the line between "needs the network"
+and "does not". `packages/ecosystem/` holds the first, second and fourth — the
+manifest names, the parsers and the constraint dialects, which answer from text
+already in hand. `backend/lib/src/ecosystem/` holds the third: the registry
+clients, the OSV client, and the `Ecosystems` lookup that pairs an ecosystem id
+with the registry its packages are published in.
+
+The split is not tidiness. A parser that answers from text can run wherever the
+manifests are, which is what lets a repository be read on a developer's own
+machine by exactly the code the server would have used — no second
+implementation to drift, and no need to hand the server the repository to find
+out what is in it. A registry client cannot: it holds a connection pool, a
+cache and, in time, credentials for an internal feed, all of which belong to
+the process that owns them. So `Ecosystem` carries no registry, and whoever
+needs both asks the lookup for the second by the first's `id`.
 
 | | Dart | npm |
 |---|---|---|

@@ -116,15 +116,16 @@ void main() {
     });
 
     return DependencyAnalyzer(
-      Ecosystems([
-        NpmEcosystem(
-          registry: NpmRegistry(
+      Ecosystems(
+        const [NpmEcosystem()],
+        registries: {
+          'npm': NpmRegistry(
             client: client,
             baseUrl: 'https://registry.test',
             osv: OsvClient(client: client, baseUrl: 'https://osv.test'),
           ),
-        ),
-      ]),
+        },
+      ),
     );
   }
 

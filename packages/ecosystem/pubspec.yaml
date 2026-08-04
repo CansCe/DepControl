@@ -1,0 +1,22 @@
+name: ecosystem
+description: >
+  Manifest parsing for every package ecosystem DepControl understands: what the
+  files are called, what they say once read, and how each writes a version
+  constraint. No network, so the server and the local collector parse a
+  repository the same way.
+version: 0.1.0
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: ^3.6.0
+
+dependencies:
+  # Both ecosystems here express constraints as semver ranges, whatever they
+  # spell them like, so the parsed form is pub's.
+  pub_semver: ^2.1.4
+  pubspec_parse: ^1.3.0
+  yaml: ^3.1.2
+
+dev_dependencies:
+  test: ^1.25.0

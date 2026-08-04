@@ -50,7 +50,10 @@ class Deps {
       // each reads a single manifest and writes a pubspec diff. They take the
       // Dart ecosystem explicitly rather than the first configured one, so
       // adding another does not silently repoint them.
-      resolver: Resolver(ecosystems.require('dart')),
+      resolver: Resolver(
+        ecosystems.require('dart'),
+        ecosystems.registryFor('dart'),
+      ),
       inspector: UpgradeInspector(pubApi),
       authVerifier: _buildVerifier(),
       limiter: _buildLimiter(),
@@ -90,7 +93,8 @@ class Deps {
       gitFetcher: gitFetcher,
       pubApi: api,
       analyzer: analyzer,
-      resolver: resolver ?? Resolver(eco.require('dart')),
+      resolver:
+          resolver ?? Resolver(eco.require('dart'), eco.registryFor('dart')),
       inspector: inspector ?? UpgradeInspector(api),
       authVerifier: authVerifier,
       limiter: limiter,

@@ -22,7 +22,10 @@ class DependencyAnalyzer {
         _resolvers = resolvers ??
             {
               for (final ecosystem in _ecosystems.all)
-                ecosystem.id: ConstraintResolver(ecosystem),
+                ecosystem.id: ConstraintResolver(
+                  ecosystem,
+                  _ecosystems.registryFor(ecosystem.id),
+                ),
             };
 
   final Ecosystems _ecosystems;
@@ -186,8 +189,9 @@ class DependencyAnalyzer {
     ScanProgressSink progress = ScanProgressSink.none,
   }) async {
     final eco = _ecosystems.require(ecosystem);
-    final registry = eco.registry;
-    final resolver = _resolvers[ecosystem] ?? ConstraintResolver(eco);
+    final registry = _ecosystems.registryFor(ecosystem);
+    final resolver =
+        _resolvers[ecosystem] ?? ConstraintResolver(eco, registry);
 
     final parsed = eco.parse(files);
     final directNames = parsed.dependencies.keys.toSet();

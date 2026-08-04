@@ -35,7 +35,11 @@ ConstraintResolver resolverFor(Registry registry, {int maxPackages = 200}) {
   });
 
   return ConstraintResolver(
-    DartEcosystem(PubApiClient(client: client)),
+    const DartEcosystem(),
+    DartRegistry(
+      PubApiClient(client: client),
+      osv: OsvClient(client: client),
+    ),
     maxPackages: maxPackages,
   );
 }

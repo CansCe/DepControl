@@ -1,4 +1,4 @@
-import 'package:backend/src/ecosystem/npm/npm_version_range.dart';
+import 'package:ecosystem/ecosystem.dart';
 import 'package:pub_semver/pub_semver.dart';
 import 'package:test/test.dart';
 

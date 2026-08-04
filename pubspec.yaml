@@ -13,6 +13,7 @@ environment:
 # Dart pub workspace. Members resolve together under this single root
 # lockfile / .dart_tool. Run `flutter pub get` here once to resolve everything.
 workspace:
+  - packages/ecosystem
   - packages/shared
   - backend
   - frontend
