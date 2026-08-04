@@ -34,6 +34,18 @@ abstract class ProjectRepository {
   /// a daily re-scan of a project nobody is touching finds the same thing every
   /// day, and writing that down each time would bury the changes.
   ///
+  /// **Marking a revision seen again still refreshes its stored packages.**
+  /// These are two decisions and they were one for too long: the digest governs
+  /// whether a *revision* is created, and a separate rule — is this scan newer
+  /// than the one on record — governs whether the stored *body* moves forward.
+  /// Keeping the old body meant every field the digest deliberately excludes
+  /// was also a field that never updated on a project whose dependencies had
+  /// not moved, which after phase 0 is most projects on most days. `latest`,
+  /// `status`, `size` and `imported` were all silently frozen at first
+  /// sighting. So a revision's body is *as of its last sighting*; the
+  /// [ReportRevision.firstSeenAt]/[ReportRevision.lastSeenAt] window is
+  /// untouched and still means what it meant.
+  ///
   /// [commitSha] is the repository revision scanned, where the caller knows it.
   /// Passing it for a state already recorded fills the gap on the existing
   /// revision rather than creating a new one — learning the commit id of a
@@ -179,26 +191,34 @@ class InMemoryProjectRepository implements ProjectRepository {
     final newest = history.firstOrNull;
 
     if (newest != null && newest.summary.digest == digest) {
+      // Scans can finish out of order, and a report generated before the one
+      // already recorded says nothing newer — so it moves neither `lastSeenAt`
+      // nor the stored body. One question, asked once, answering both.
+      final isNewer = report.generatedAt.isAfter(newest.summary.lastSeenAt);
+      final body =
+          isNewer ? _refreshedBody(newest.report, report) : newest.report;
+
       final seen = ReportRevision(
         id: newest.summary.id,
         projectId: newest.summary.projectId,
         firstSeenAt: newest.summary.firstSeenAt,
-        // Never moves backwards: scans can finish out of order, and a report
-        // generated before the one already recorded says nothing newer.
-        lastSeenAt: report.generatedAt.isAfter(newest.summary.lastSeenAt)
-            ? report.generatedAt
-            : newest.summary.lastSeenAt,
+        lastSeenAt: isNewer ? report.generatedAt : newest.summary.lastSeenAt,
         digest: digest,
         // A commit id learned later fills the gap; one already recorded is not
         // overwritten, since the first sighting is where this state began.
         commitSha: newest.summary.commitSha ?? commitSha,
-        total: newest.summary.total,
-        outdated: newest.summary.outdated,
-        vulnerable: newest.summary.vulnerable,
+        // Counted from the body actually stored, not from the report in hand.
+        // `status` is outside the digest, so a re-scan that found a package had
+        // fallen behind matches on digest and still changes `outdated` — and
+        // Postgres computes these from the stored jsonb, so taking them from
+        // anywhere else is how the two stores start disagreeing.
+        total: body.total,
+        outdated: body.outdated,
+        vulnerable: body.vulnerable,
       );
       history[0] = _StoredRevision(
         summary: seen,
-        report: newest.report,
+        report: body,
         sequence: newest.sequence,
       );
       return SavedReport(revision: seen, isNewRevision: false);
@@ -259,6 +279,25 @@ class InMemoryProjectRepository implements ProjectRepository {
           .firstOrNull
           ?.report;
 }
+
+/// [stored]'s body brought up to date with what [fresh] measured.
+///
+/// Only the packages move, and that is not a shortcut. `manifests` and
+/// `coverageNote` are both in the digest, so a digest match has already
+/// established that they agree — and `generatedAt` stays where it was, because
+/// it dates the revision rather than the measurement. What a reader should take
+/// from a revision is that the packages are as of [ReportRevision.lastSeenAt],
+/// which sits on the same row.
+///
+/// This is the whole of what Postgres does with `set nodes = ...`; the two are
+/// meant to be read side by side.
+DepReport _refreshedBody(DepReport stored, DepReport fresh) => DepReport(
+      projectId: stored.projectId,
+      generatedAt: stored.generatedAt,
+      nodes: fresh.nodes,
+      manifests: stored.manifests,
+      coverageNote: stored.coverageNote,
+    );
 
 /// A revision and the report it holds, kept together so the in-memory store
 /// mirrors the single Postgres row rather than two collections that can drift.

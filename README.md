@@ -96,6 +96,11 @@ when that state was first seen and when it was last confirmed, because
 "unchanged for six months" and "nobody has looked in six months" are different
 facts.
 
+Not writing a revision does not mean not looking. A re-scan that finds nothing
+different still updates what it measured — how far behind each package now is,
+whether a newer release has appeared — so a project that has been stable for
+months shows today's readings against the day its dependencies last moved.
+
 Compare any two revisions in either direction and get: how far each version
 moved (breaking/minor/patch, direction kept separate), advisories that newly
 apply, advisories that cleared, relicensing, and dependencies that changed from

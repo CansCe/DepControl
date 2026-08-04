@@ -393,6 +393,36 @@ A newly published advisory against an unchanged version *is* a change, and so is
 a relicensing — those are the two things a re-scan of an untouched project
 exists to find.
 
+**The digest decides whether a revision is written. It does not decide whether
+the packages are stored.** These are two questions and they were one function
+for too long: both `saveReport` implementations short-circuited on a digest
+match and kept the *old* node list, so "excluded from the digest" quietly also
+meant "never written again on a project whose dependencies have not moved".
+Every field in the list above was frozen at first sighting, and so were `size`
+and `imported`, which nobody had decided anything about. The failure is
+invisible from the inside — the report renders, the numbers are plausible, and
+`Latest` is simply the answer from whenever this state began.
+
+So a sighting now refreshes the stored body as well as marking the revision
+seen. The rule that governs it is not the digest but the one that already
+governs `lastSeenAt`: a scan generated *after* the one on record. A scan that
+finished late was measured earlier, and writing its readings would undo what the
+newer scan learned.
+
+What that costs, stated plainly: **a revision's packages are as of its last
+sighting, not its first.** The window itself is untouched — `firstSeenAt` is
+still when this state began — and only the fields the digest deliberately
+excludes can differ, which is exactly the set that moves on somebody else's
+schedule. `generatedAt` on a stored report stays at the first sighting, because
+it dates the revision rather than the measurement; `lastSeenAt`, on the same
+row, is what says how fresh the readings are.
+
+This is a storage-layer fix with consequences elsewhere in this document. Risk
+score, EOL proximity and maintenance activity are all excluded from the digest
+for the same good reason, and without this they would have been blank or months
+stale on precisely the stable projects they exist to reassure you about — which
+would have read as a scoring bug rather than a storage one.
+
 Comparison is against the newest revision only, so a project that goes A → B → A
 has three revisions rather than two. Folding the second A into the first would
 stretch one row's window across the period when B held, which is a claim about

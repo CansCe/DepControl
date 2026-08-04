@@ -152,6 +152,18 @@ class PostgresProjectRepository implements ProjectRepository {
   static const _revisionColumns = 'id, project_id, first_seen_at, last_seen_at, '
       'content_digest, commit_sha';
 
+  /// The revision counts, computed from the stored node list in Postgres.
+  ///
+  /// Shared between reading a history and writing a sighting so the two cannot
+  /// answer differently — the sighting refreshes `nodes`, so counting the report
+  /// in hand instead would be counting something the row may not hold.
+  static const _revisionCounts = '''
+        jsonb_array_length(nodes) as total,
+        (select count(*) from jsonb_array_elements(nodes) as e
+          where e.value ->> 'status' = 'outdated') as outdated,
+        (select count(*) from jsonb_array_elements(nodes) as e
+          where e.value ->> 'status' = 'vulnerable') as vulnerable''';
+
   @override
   Future<SavedReport> saveReport(
     DepReport report, {
@@ -223,28 +235,45 @@ class PostgresProjectRepository implements ProjectRepository {
     // generated before the one on record says nothing newer; `coalesce` because
     // a commit id already recorded belongs to the first sighting, which is
     // where this state began.
+    //
+    // `nodes` refreshes on the same condition that moves `last_seen_at`, and
+    // this is phase 0.8: the digest decides whether a *revision* is written,
+    // never whether the *body* is. Keeping the old node list here meant every
+    // field the digest deliberately excludes — `latest`, `status`, `size`,
+    // `imported` — was frozen at first sighting on any project whose
+    // dependencies had not moved. `manifests` and `coverage_note` are inside
+    // the digest, so a match has already established they agree and there is
+    // nothing to write.
     final seen = await _pool.execute(
       Sql.named('''
         update dep_report_revisions set
           last_seen_at = greatest(last_seen_at, @lastSeen:timestamptz),
-          commit_sha   = coalesce(commit_sha, @commitSha:text)
+          commit_sha   = coalesce(commit_sha, @commitSha:text),
+          nodes        = case when @lastSeen:timestamptz > last_seen_at
+                              then @nodes:jsonb
+                              else nodes
+                         end
         where id = (
           select id from dep_report_revisions
           where project_id = @projectId:uuid
           order by first_seen_at desc, seq desc
           limit 1
         )
-        returning $_revisionColumns
+        returning $_revisionColumns, $_revisionCounts
       '''),
       parameters: {
         'projectId': report.projectId,
         'lastSeen': report.generatedAt,
         'commitSha': commitSha,
+        'nodes': report.nodes.map((n) => n.toJson()).toList(),
       },
     );
 
+    // Counts read back from the updated row rather than taken from the report,
+    // because an out-of-order scan leaves the stored body alone and its counts
+    // would then describe a state that was not written.
     return SavedReport(
-      revision: _revisionFromRow(seen.first.toColumnMap(), report: report),
+      revision: _revisionFromRow(seen.first.toColumnMap()),
       isNewRevision: false,
     );
   }
@@ -298,12 +327,7 @@ class PostgresProjectRepository implements ProjectRepository {
     // three numbers per row.
     final result = await _pool.execute(
       Sql.named('''
-        select $_revisionColumns,
-               jsonb_array_length(nodes) as total,
-               (select count(*) from jsonb_array_elements(nodes) as e
-                 where e.value ->> 'status' = 'outdated') as outdated,
-               (select count(*) from jsonb_array_elements(nodes) as e
-                 where e.value ->> 'status' = 'vulnerable') as vulnerable
+        select $_revisionColumns, $_revisionCounts
         from dep_report_revisions
         where project_id = @id:uuid
         order by first_seen_at desc, seq desc
@@ -345,9 +369,10 @@ class PostgresProjectRepository implements ProjectRepository {
 
   /// A revision summary.
   ///
-  /// [report] supplies the counts on the write path, where the caller already
-  /// holds the report and computing them in SQL would mean a second query for
-  /// numbers that are in hand.
+  /// [report] supplies the counts on the *insert* path, where the row was just
+  /// written from it and computing them in SQL would mean asking for numbers
+  /// already in hand. Every other path counts the stored nodes, which after
+  /// phase 0.8 are not necessarily the ones the caller passed.
   static ReportRevision _revisionFromRow(
     Map<String, dynamic> row, {
     DepReport? report,

@@ -173,6 +173,88 @@ void main() {
     });
   });
 
+  // The other half of the digest's job, and for a long time an accident: it
+  // decided whether a revision was written *and*, by short-circuiting, whether
+  // the stored packages were written at all. The second is not its decision.
+  group('refreshing the stored body', () {
+    test('a re-scan refreshes what the digest leaves out', () async {
+      // The assertion that matters is the pair. Either half alone passes while
+      // the feature is broken in the other direction: keep only the first and a
+      // store that wrote a revision every scan would pass; keep only the
+      // second and so would the frozen body this replaced.
+      final repo = InMemoryProjectRepository();
+
+      await repo.saveReport(report([node('http', latest: '1.0.0')]));
+      final saved = await repo.saveReport(
+        report(
+          [node('http', latest: '2.0.0', status: DepStatus.outdated)],
+          at: DateTime.utc(2026, 2, 1),
+        ),
+      );
+
+      expect(saved.isNewRevision, isFalse);
+      expect(await repo.revisionsFor(projectId), hasLength(1));
+
+      final stored = await repo.reportFor(projectId);
+      expect(stored!.nodes.single.latest, '2.0.0');
+      expect(stored.nodes.single.status, DepStatus.outdated);
+    });
+
+    test('the revision counts follow the refreshed body', () async {
+      // `status` is outside the digest, so a package falling behind matches on
+      // digest and still changes what the history list prints.
+      final repo = InMemoryProjectRepository();
+
+      await repo.saveReport(report([node('http', latest: '1.0.0')]));
+      final seen = (await repo.saveReport(
+        report(
+          [node('http', latest: '2.0.0', status: DepStatus.outdated)],
+          at: DateTime.utc(2026, 2, 1),
+        ),
+      )).revision;
+
+      expect(seen.outdated, 1);
+      expect((await repo.revisionsFor(projectId)).single.outdated, 1);
+    });
+
+    test('an out-of-order scan does not overwrite the body', () async {
+      // The same rule that stops `lastSeenAt` moving backwards. A scan that
+      // finished late was measured earlier, so its `latest` is the older
+      // reading and writing it would undo what the newer scan learned.
+      final repo = InMemoryProjectRepository();
+
+      await repo.saveReport(
+        report([node('http', latest: '2.0.0')], at: DateTime.utc(2026, 6, 1)),
+      );
+      await repo.saveReport(
+        report([node('http', latest: '1.0.0')], at: DateTime.utc(2026, 3, 1)),
+      );
+
+      final stored = await repo.reportFor(projectId);
+      expect(stored!.nodes.single.latest, '2.0.0');
+    });
+
+    test('the revision window is not disturbed by the refresh', () async {
+      // The body tracks forward; when this state *began* does not.
+      final repo = InMemoryProjectRepository();
+
+      await repo.saveReport(report([node('http', latest: '1.0.0')]));
+      await repo.saveReport(
+        report([node('http', latest: '2.0.0')], at: DateTime.utc(2026, 2, 1)),
+      );
+
+      final revision = (await repo.revisionsFor(projectId)).single;
+      expect(revision.firstSeenAt, DateTime.utc(2026, 1, 1));
+      expect(revision.lastSeenAt, DateTime.utc(2026, 2, 1));
+
+      // And the body still dates itself to the revision rather than to the
+      // scan that refreshed it — `lastSeenAt` above is what says how fresh the
+      // measurements are.
+      expect((await repo.reportFor(projectId))!.generatedAt,
+          DateTime.utc(2026, 1, 1));
+    });
+  });
+
   group('reading the history', () {
     test('reportFor is the newest revision', () async {
       final repo = InMemoryProjectRepository();

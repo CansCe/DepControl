@@ -224,6 +224,39 @@ void main() {
           expect(latest!.nodes.single.installed, '1.2.0');
         });
 
+        test('a sighting refreshes the stored body, in SQL', () async {
+          // Phase 0.8 against the real `update ... set nodes`. The in-memory
+          // store is held to the same pair in report_history_test.dart.
+          await repo.add(fixture());
+
+          DepReport withLatest(String latest, {required DateTime at}) =>
+              DepReport(
+                projectId: id,
+                generatedAt: at,
+                nodes: [
+                  DepNode(
+                    name: 'http',
+                    kind: DepKind.direct,
+                    installed: '1.2.0',
+                    latest: latest,
+                    status: DepStatus.outdated,
+                  ),
+                ],
+              );
+
+          await repo.saveReport(withLatest('1.3.0', at: DateTime.utc(2026, 1, 2)));
+          final seen = await repo
+              .saveReport(withLatest('1.9.0', at: DateTime.utc(2026, 2, 2)));
+
+          expect(seen.isNewRevision, isFalse);
+          expect(await repo.revisionsFor(id), hasLength(1));
+          expect((await repo.reportFor(id))!.nodes.single.latest, '1.9.0');
+
+          // And the late arrival leaves it alone, same as `last_seen_at`.
+          await repo.saveReport(withLatest('1.4.0', at: DateTime.utc(2026, 1, 20)));
+          expect((await repo.reportFor(id))!.nodes.single.latest, '1.9.0');
+        });
+
         test('counts come back from the jsonb without decoding it', () async {
           await repo.add(fixture());
 
