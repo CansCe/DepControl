@@ -215,11 +215,30 @@ hand to a service:
   else. Not your source, not your `.env`, not your history.
 - It **executes nothing** — no `pub get`, no `npm install`, no build hooks, no
   subprocess of any kind.
-- Its output is a **plain JSON bundle you can read before it goes anywhere**:
-  package names, versions, kinds, and the manifest paths they came from. That
-  is the whole contents.
+- Its output is a **plain JSON bundle you can read before it goes anywhere**.
 - Uploading is a **separate, explicit step**. Collecting and sending are not the
   same command.
+
+**What it discloses, stated exactly.** This is not zero-disclosure, and it should
+not be sold internally as if it were.
+
+*Never leaves your machine:* source, credentials, `.env`, git history, absolute
+paths, path-dependency targets, git-dependency URLs, and the internal feed
+hostnames in `NuGet.config` / `.npmrc`.
+
+*Does leave your machine:* the package names and versions you depend on, your
+root package name, the packages your source imports, and the repo-relative
+directory of each manifest. Those package names are then queried against pub.dev,
+npm, nuget.org and OSV — so the shape of a private repository's dependency tree is
+observable to those registries, exactly as it is for any scan. Nothing about your
+code is.
+
+**In one line: it discloses a repository's dependency list and module layout
+instead of its contents.** Two flags narrow it further — `--redact-paths` replaces
+manifest directories with opaque ids, and `--exclude-private` withholds packages
+that resolve from an internal feed. Both are recorded in the report, which says
+"manifest 3 of 7" and gives a withheld count rather than rendering a redacted
+bundle as though it were complete.
 
 ### Phase 6 — API health tracking *(planned)*
 
