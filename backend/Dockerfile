@@ -4,8 +4,13 @@
 #     docker build -f backend/Dockerfile .
 #
 # Why: `backend` is a pub workspace member (`resolution: workspace`) whose
-# `shared` dependency resolves through the root lockfile. A context of
-# `backend/` alone cannot see `packages/shared` and `dart pub get` fails.
+# `shared` and `ecosystem` dependencies resolve through the root lockfile. A
+# context of `backend/` alone cannot see `packages/` and `dart pub get` fails.
+#
+# Every local package `backend` depends on has to be copied in AND given a path
+# override below — a workspace member missing from both is only reported as
+# "could not find package <name> at https://pub.dev", which reads like a typo
+# rather than a missing COPY.
 #
 # `dart_frog build` ships its own Dockerfile, but it is not usable here. It
 # emits a `pubspec_overrides.yaml` pointing at the *host's absolute path* to
@@ -19,7 +24,7 @@ FROM dart:stable AS build
 RUN dart pub global activate dart_frog_cli 1.2.14
 
 WORKDIR /app
-COPY packages/shared ./packages/shared
+COPY packages ./packages
 COPY backend ./backend
 
 WORKDIR /app/backend
@@ -27,7 +32,7 @@ WORKDIR /app/backend
 # Detach from the workspace: the image deliberately carries no root pubspec (the
 # root workspace also pulls in `frontend`, which would drag the whole Flutter SDK
 # into an API image), so `resolution: workspace` has to come out of pubspec.yaml
-# itself and the override points `shared` at the copy alongside it.
+# itself and the overrides point each local package at the copy alongside it.
 #
 # It is NOT enough to cancel it with `resolution: null` in pubspec_overrides.yaml:
 # pub honours that, but `dart_frog build` reads pubspec.yaml directly, sees
@@ -37,7 +42,7 @@ WORKDIR /app/backend
 # bin/server.dart, but with an empty Router: every route 404s with "Route not
 # found" at runtime. Deleting the key here is what keeps that from coming back.
 RUN sed -i '/^resolution: workspace$/d' pubspec.yaml \
- && printf 'dependency_overrides:\n  shared:\n    path: ../packages/shared\n' \
+ && printf 'dependency_overrides:\n  shared:\n    path: ../packages/shared\n  ecosystem:\n    path: ../packages/ecosystem\n' \
       > pubspec_overrides.yaml \
  && dart pub get
 
@@ -53,7 +58,7 @@ RUN test -d build/routes \
 # Overwrite it, then resolve and compile for real. From `/app/backend/build`,
 # `../../packages/shared` is `/app/packages/shared`.
 WORKDIR /app/backend/build
-RUN printf 'dependency_overrides:\n  shared:\n    path: ../../packages/shared\n' \
+RUN printf 'dependency_overrides:\n  shared:\n    path: ../../packages/shared\n  ecosystem:\n    path: ../../packages/ecosystem\n' \
       > pubspec_overrides.yaml \
  && dart pub get \
  && dart compile exe bin/server.dart -o bin/server
