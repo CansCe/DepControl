@@ -1,0 +1,33 @@
+name: collector
+description: >
+  `depcontrol collect` — reads a repository's dependencies on the machine that
+  holds it, and writes a bundle small enough to read before it goes anywhere.
+  For repositories a hosted scanner cannot reach (Azure DevOps, GitHub
+  Enterprise, an internal GitLab) and for the lockfiles that are generated
+  locally and never committed.
+version: 0.1.0
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: ^3.6.0
+
+dependencies:
+  # The parsers the server uses, running here instead. That is the whole reason
+  # `packages/ecosystem` was extracted: a bundle is the *parsed* form, so a
+  # repository must parse identically on a laptop and on the server.
+  ecosystem: ^0.1.0
+  shared: ^0.1.0
+  args: ^2.5.0
+  http: ^1.2.0
+  path: ^1.9.0
+  # `.npmrc` is not any standard format, `NuGet.config` is XML, and a
+  # `pubspec.yaml` naming a custom `hosted:` host is YAML. All three are read
+  # only to find out which packages come from a feed the server cannot reach —
+  # never to be uploaded.
+  xml: ^6.5.0
+  yaml: ^3.1.2
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.0

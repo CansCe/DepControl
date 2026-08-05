@@ -41,7 +41,15 @@ create table if not exists scan_jobs (
   -- What to scan. `project_id` is set from the start for a refresh, and only
   -- once the scan succeeds for an add — a git URL nobody can clone must not
   -- leave an empty project behind.
-  git_url      text        not null,
+  --
+  -- `git_url` is nullable because a scan is not always a fetch. A local scan
+  -- arrives as a `bundle`: a repository this server cannot reach, read on the
+  -- machine that holds it and uploaded already parsed. Exactly one of the two is
+  -- set, and the uploaded one is the only copy there will ever be — a git URL
+  -- can always be fetched again, and a bundle cannot be asked for again without
+  -- the person who made it.
+  git_url      text,
+  bundle       jsonb,
   ref          text        not null default 'HEAD',
   project_id   uuid        references projects (id) on delete cascade,
 
@@ -56,6 +64,26 @@ create table if not exists scan_jobs (
   heartbeat_at timestamptz,
   finished_at  timestamptz
 );
+
+-- Applied to a database that already has this table, where `git_url` is `not
+-- null` and there is no `bundle`. Both statements are safe to re-run, and the
+-- constraint is added last so it is checked against a column that exists.
+alter table scan_jobs
+  add column if not exists bundle jsonb;
+
+alter table scan_jobs
+  alter column git_url drop not null;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'scan_jobs_one_source'
+  ) then
+    alter table scan_jobs add constraint scan_jobs_one_source
+      check ((git_url is null) <> (bundle is null));
+  end if;
+end
+$$;
 
 -- The drain query: the oldest job that is waiting, or one whose worker has gone
 -- quiet. Partial, because finished jobs are the overwhelming majority of the

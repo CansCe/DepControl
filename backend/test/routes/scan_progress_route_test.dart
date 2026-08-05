@@ -38,6 +38,7 @@ void main() {
     when(() => request.method).thenReturn(method);
     when(() => request.uri).thenReturn(Uri.parse('http://localhost$path'));
     when(request.json).thenAnswer((_) async => body);
+    when(() => request.headers).thenReturn(const {});
 
     final context = _MockRequestContext();
     when(() => context.request).thenReturn(request);

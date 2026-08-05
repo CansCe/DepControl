@@ -244,6 +244,37 @@ class ScanQueue extends ChangeNotifier {
     );
   }
 
+  /// Queues a bundle collected by `depcontrol collect`.
+  ///
+  /// [projectId] brings an existing local project up to date; without it the
+  /// bundle creates a new project. The two are separate server endpoints for a
+  /// reason worth keeping here too — uploading the same repository twice as a
+  /// new project would split its history down the middle.
+  ScanTask addBundle(
+    ApiClient api,
+    CollectedBundle bundle, {
+    String? projectId,
+    String? label,
+  }) {
+    final scanId = _newScanId();
+    return _enqueue(
+      ScanTask._(
+        id: scanId,
+        kind: projectId == null ? ScanKind.add : ScanKind.reanalyze,
+        label: label ?? bundle.rootPackageName ?? 'a local repository',
+        detail: 'collected '
+            '${bundle.generatedAt.toIso8601String().split('T').first}'
+            '${bundle.pathsRedacted ? ', paths redacted' : ''}',
+        projectId: projectId,
+        submit: () => projectId == null
+            ? api.addProjectFromBundle(bundle, scanId: scanId)
+            : api.uploadBundle(projectId, bundle, scanId: scanId),
+        readStatus: () => api.scanStatus(scanId),
+        readResult: api.projectWithReport,
+      ),
+    );
+  }
+
   /// Queues a re-analysis of an existing project.
   ///
   /// Returns the scan already in flight when there is one, rather than starting
@@ -261,7 +292,9 @@ class ScanQueue extends ChangeNotifier {
         id: scanId,
         kind: ScanKind.reanalyze,
         label: project.name,
-        detail: '${project.gitUrl} @ ${project.ref}',
+        detail: project.gitUrl == null
+            ? 'uploaded bundle'
+            : '${project.gitUrl} @ ${project.ref}',
         projectId: project.id,
         submit: () => api.refreshProject(project.id, scanId: scanId),
         readStatus: () => api.scanStatus(scanId),

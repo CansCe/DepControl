@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 
 import '../repository/project_repository.dart';
 import '../repository/scan_job_store.dart';
+import 'bundle_ingest.dart';
 import 'dependency_analyzer.dart';
 import 'git_fetcher.dart';
 import 'logger.dart';
@@ -168,8 +169,8 @@ class ScanRunner {
   }
 
   Future<void> _run(ScanJob job) async {
-    _log.info('Scanning ${job.gitUrl} (${job.kind.name}, attempt '
-        '${job.attempts} of $maxAttempts)');
+    _log.info('Scanning ${job.subject ?? 'an uploaded bundle'} '
+        '(${job.kind.name}, attempt ${job.attempts} of $maxAttempts)');
 
     final sink = _progress.sinkFor(job.id);
     final flush = Timer.periodic(flushInterval, (_) {
@@ -179,18 +180,17 @@ class ScanRunner {
 
     try {
       final project = await _resolveProject(job);
-
-      sink.phase(ScanPhase.fetching);
-      final files = await _gitFetcher.fetchAll(job.gitUrl, ref: job.ref);
-      final report = await _analyzer.analyzeRepository(
-        project.id,
-        files,
-        progress: sink,
-      );
+      final report = await _analyze(job, project.id, sink);
 
       sink.phase(ScanPhase.saving);
       await _repository.add(
-        project.copyWith(lastCheckedAt: DateTime.now().toUtc()),
+        project.copyWith(
+          lastCheckedAt: DateTime.now().toUtc(),
+          // A re-upload moves the project's freshness forward; a nightly sweep
+          // of the registries does not, and must not be allowed to look as
+          // though it did.
+          bundleCollectedAt: job.bundle?.generatedAt,
+        ),
       );
       await _repository.saveReport(report);
       sink.phase(ScanPhase.done);
@@ -214,6 +214,44 @@ class ScanRunner {
     }
   }
 
+  /// The report this job asked for, however it asked.
+  ///
+  /// The only place the two kinds of scan differ. A git scan fetches and then
+  /// analyzes; a local scan was handed the parsed repository up front and has
+  /// nothing to fetch — the machine that could reach it did that part, which is
+  /// the entire feature. Both end in the same analyzer, and everything past this
+  /// method is identical: the same merge, the same registry lookups, the same
+  /// report, the same history, the same notifications.
+  Future<DepReport> _analyze(
+    ScanJob job,
+    String projectId,
+    ScanProgressSink sink,
+  ) async {
+    if (job.bundle case final bundle?) {
+      // No fetching phase, and deliberately no pretence of one: a client
+      // watching a local scan should see it start analyzing immediately,
+      // because it does.
+      return _analyzer.analyzeAll(
+        projectId,
+        BundleIngest.read(bundle),
+        coverageNote: BundleIngest.coverageNoteFor(bundle),
+        progress: sink,
+      );
+    }
+
+    final gitUrl = job.gitUrl;
+    if (gitUrl == null) {
+      // A row with neither a URL nor a bundle. The database refuses to hold one
+      // and no route writes one, so this is unreachable — but it is the sort of
+      // unreachable that becomes a null dereference three refactors later.
+      throw StateError('this scan says nothing about what to scan');
+    }
+
+    sink.phase(ScanPhase.fetching);
+    final files = await _gitFetcher.fetchAll(gitUrl, ref: job.ref);
+    return _analyzer.analyzeRepository(projectId, files, progress: sink);
+  }
+
   /// The project this job is about — the existing one for a refresh, a new one
   /// for an add.
   ///
@@ -223,13 +261,22 @@ class ScanRunner {
   /// keyed by it.
   Future<Project> _resolveProject(ScanJob job) async {
     if (job.kind == ScanJobKind.add) {
+      final gitUrl = job.gitUrl;
       return Project(
         id: const Uuid().v4(),
-        gitUrl: job.gitUrl,
-        name: _repoName(job.gitUrl),
+        gitUrl: gitUrl,
+        source: gitUrl == null ? ProjectSource.local : ProjectSource.git,
+        // A local project is named by the bundle's root package, since there is
+        // no URL to take a repository name from. A bundle collected with
+        // `--redact-paths` states no name either, and rather than invent one the
+        // project is called what it is.
+        name: gitUrl == null
+            ? (job.bundle?.rootPackageName ?? 'a local repository')
+            : _repoName(gitUrl),
         ownerId: job.ownerId,
         ref: job.ref,
         addedAt: DateTime.now().toUtc(),
+        bundleCollectedAt: job.bundle?.generatedAt,
       );
     }
 
@@ -250,7 +297,7 @@ class ScanRunner {
   }
 
   Future<void> _fail(ScanJob job, ScanProgressSink sink, String reason) async {
-    _log.warn('Could not scan ${job.gitUrl}: $reason');
+    _log.warn('Could not scan ${job.subject ?? job.id}: $reason');
     sink.failed(reason);
     await _jobs.finish(
       job.id,

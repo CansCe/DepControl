@@ -104,6 +104,46 @@ class FakeAnalyzer implements DependencyAnalyzer {
       );
 
   @override
+  Future<DepReport> analyzeAll(
+    String projectId,
+    List<AnalyzableManifest> manifests, {
+    String? coverageNote,
+    ScanProgressSink progress = ScanProgressSink.none,
+  }) async =>
+      DepReport(
+        projectId: projectId,
+        generatedAt: DateTime.utc(2026, 1, 1).add(Duration(minutes: _tick++)),
+        nodes: nodes,
+        coverageNote: coverageNote,
+      );
+
+  /// Re-reads nothing, and says so by handing the report straight back.
+  ///
+  /// A fake that produced *different* nodes here would make the local sweep look
+  /// like it had found a change on every pass, which is the one behaviour the
+  /// digest exists to prevent and the one a test must not accidentally assert.
+  @override
+  Future<DepReport> refreshMetadata(
+    DepReport report, {
+    ScanProgressSink progress = ScanProgressSink.none,
+  }) async =>
+      report;
+
+  @override
+  Future<DepReport> analyzeParsed(
+    String projectId,
+    ParsedManifest parsed, {
+    String ecosystem = DepNode.defaultEcosystem,
+    Set<String>? imported,
+    ScanProgressSink progress = ScanProgressSink.none,
+  }) async =>
+      DepReport(
+        projectId: projectId,
+        generatedAt: DateTime.utc(2026, 1, 1).add(Duration(minutes: _tick++)),
+        nodes: nodes,
+      );
+
+  @override
   Future<DepReport> analyzeRepository(
     String projectId,
     FetchedRepository repository, {

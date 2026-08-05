@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:backend/src/archived_project.dart';
 import 'package:backend/src/auth/auth_user.dart';
 import 'package:backend/src/deps.dart';
+import 'package:backend/src/local_project.dart';
 import 'package:backend/src/repository/scan_job_store.dart';
 import 'package:backend/src/services/scan_watch.dart';
 import 'package:dart_frog/dart_frog.dart';
@@ -36,6 +37,24 @@ Future<Response> onRequest(RequestContext context, String id) async {
 
   final refusal = archivedProjectRefusal(project, 're-analysis');
   if (refusal != null) return refusal;
+
+  // A local project cannot be re-fetched, because there is nothing here to
+  // fetch from: refreshing one means collecting it again on the machine that
+  // holds the repository and uploading the result to `/projects/<id>/bundle`.
+  //
+  // Note this is *not* the same as saying a local project goes stale. Its
+  // advisories and licences are re-queried by the nightly sweep from the stored
+  // versions, with no repository access at all; only its dependency *list* is
+  // as old as the last collect.
+  final unreachable = localProjectRefusal(
+    project,
+    're-analysis',
+    because: 'This project was uploaded rather than fetched, so there is no '
+        'repository here to re-read. Run `depcontrol collect` where the '
+        'repository is and upload the bundle again. Its advisories and '
+        'licences are re-checked automatically either way.',
+  );
+  if (unreachable != null) return unreachable;
 
   // Optional, and read leniently: a POST with no body at all is still a valid
   // refresh, and was the only shape this endpoint accepted until now.

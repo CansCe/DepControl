@@ -207,4 +207,89 @@ void main() {
     expect(result.notifications!.sent, 0);
     expect(sent, isEmpty);
   });
+
+  group('a local project', () {
+    Project local() => Project(
+          id: 'p-local',
+          name: 'payroll_app',
+          source: ProjectSource.local,
+          ownerId: owner,
+          addedAt: DateTime.utc(2026, 1, 1),
+          bundleCollectedAt: DateTime.utc(2026, 1, 1),
+        );
+
+    /// The sweep, with a fetcher that records anything asked of it.
+    ///
+    /// The recording is the assertion: a local project's repository is
+    /// somewhere this server has never been, and a sweep that reached for it
+    /// would fail on every project this feature exists for.
+    ({RescanService service, FakeGitFetcher fetcher}) sweeper(
+      List<DepNode> nodes,
+    ) {
+      final fetcher = FakeGitFetcher();
+      return (
+        fetcher: fetcher,
+        service: RescanService(
+          repository: repository,
+          gitFetcher: fetcher,
+          analyzer: FakeAnalyzer(nodes: nodes),
+          notifier: Notifier(
+            store: notifications,
+            client: MockClient((request) async {
+              sent.add(request);
+              return http.Response('ok', 200);
+            }),
+          ),
+        ),
+      );
+    }
+
+    setUp(() async => repository.add(local()));
+
+    test('is swept without any repository access at all', () async {
+      // The first upload's report, as the ingest would have stored it.
+      await repository.saveReport(
+        DepReport(
+          projectId: 'p-local',
+          generatedAt: DateTime.utc(2026, 1, 1),
+          nodes: [node('http')],
+        ),
+      );
+
+      final swept = sweeper([node('http')]);
+      final result = await swept.service.rescan(local());
+
+      expect(swept.fetcher.calls, isEmpty);
+      // An advisory is a fact about a (package, version) pair and the versions
+      // are stored, so nothing about the sweep needs the repository.
+      expect(result.error, isNull);
+    });
+
+    test('finding nothing new writes no revision', () async {
+      await repository.saveReport(
+        DepReport(
+          projectId: 'p-local',
+          generatedAt: DateTime.utc(2026, 1, 1),
+          nodes: [node('http')],
+        ),
+      );
+
+      final result = await sweeper([node('http')]).service.rescan(local());
+
+      expect(result.changed, isFalse);
+      expect(await repository.revisionsFor('p-local'), hasLength(1));
+      expect(sent, isEmpty);
+    });
+
+    test('with no report yet is not an error worth reporting', () async {
+      // A project whose first upload has not finished. Nothing to re-check,
+      // and nothing wrong.
+      final swept = sweeper([node('http')]);
+      final result = await swept.service.rescan(local());
+
+      expect(swept.fetcher.calls, isEmpty);
+      expect(result.changed, isFalse);
+      expect(result.error, contains('no report'));
+    });
+  });
 }

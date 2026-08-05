@@ -58,6 +58,17 @@ class DartEcosystem implements Ecosystem {
   @override
   String constraintAtLeast(Version version) => '^$version';
 
+  /// A constraint is a *version range*, or nothing.
+  ///
+  /// Only a hosted dependency has one. Everything else was previously recorded
+  /// as `entry.value.toString()`, which is a debug rendering of the declaration
+  /// — and for a git dependency that string is the repository URL, which
+  /// routinely carries a deploy token, while for a path dependency it is a
+  /// location on somebody's disk. Both then travelled into the node, the stored
+  /// report, the digest and the UI, and out of a machine that had promised
+  /// neither would leave it. `foreignOrigin` already says where the dependency
+  /// comes from, which is the part a reader can act on; the URL was never
+  /// anything but a leak wearing a version's clothes.
   Map<String, DeclaredDependency> _declarations(
     Map<String, Dependency> deps,
   ) =>
@@ -66,7 +77,10 @@ class DartEcosystem implements Ecosystem {
           entry.key: DeclaredDependency(
             constraint: switch (entry.value) {
               final HostedDependency hosted => hosted.version.toString(),
-              final other => other.toString(),
+              // An SDK dependency's constraint is a real version range against
+              // the SDK, and names nothing but the SDK.
+              final SdkDependency sdk => sdk.version.toString(),
+              _ => null,
             },
             foreignOrigin: _originOf(entry.value),
           ),

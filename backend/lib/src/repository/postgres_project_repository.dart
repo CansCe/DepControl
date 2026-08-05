@@ -39,32 +39,43 @@ class PostgresProjectRepository implements ProjectRepository {
     }
     await _pool.execute(
       Sql.named('''
-        insert into projects (id, git_url, name, owner_id, ref, added_at,
-                              last_checked_at)
-        values (@id:uuid, @gitUrl:text, @name:text, @ownerId:uuid, @ref:text,
-                @addedAt:timestamptz, @lastCheckedAt:timestamptz)
+        insert into projects (id, git_url, source, name, owner_id, ref,
+                              added_at, last_checked_at, bundle_collected_at)
+        values (@id:uuid, @gitUrl:text, @source:text, @name:text,
+                @ownerId:uuid, @ref:text, @addedAt:timestamptz,
+                @lastCheckedAt:timestamptz, @bundleCollectedAt:timestamptz)
         on conflict (id) do update set
           git_url         = excluded.git_url,
+          source          = excluded.source,
           name            = excluded.name,
           ref             = excluded.ref,
-          last_checked_at = excluded.last_checked_at
+          last_checked_at = excluded.last_checked_at,
+          -- Kept where a scan did not bring a newer bundle: a nightly sweep
+          -- re-queries the registries and learns nothing new about when the
+          -- repository was last read, so it must not blank the one timestamp
+          -- that says so.
+          bundle_collected_at = coalesce(
+            excluded.bundle_collected_at, projects.bundle_collected_at
+          )
         where projects.owner_id = excluded.owner_id
       '''),
       parameters: {
         'id': project.id,
         'gitUrl': project.gitUrl,
+        'source': project.source.name,
         'name': project.name,
         'ownerId': project.ownerId,
         'ref': project.ref,
         'addedAt': project.addedAt ?? DateTime.now().toUtc(),
         'lastCheckedAt': project.lastCheckedAt,
+        'bundleCollectedAt': project.bundleCollectedAt,
       },
     );
     return project;
   }
 
-  static const _columns = 'id, git_url, name, owner_id, ref, added_at, '
-      'last_checked_at, archived_at';
+  static const _columns = 'id, git_url, source, name, owner_id, ref, added_at, '
+      'last_checked_at, bundle_collected_at, archived_at';
 
   @override
   Future<List<Project>> allForOwner(
@@ -408,7 +419,9 @@ class PostgresProjectRepository implements ProjectRepository {
 
   Project _projectFromRow(Map<String, dynamic> row) => Project(
         id: row['id'].toString(),
-        gitUrl: row['git_url'] as String,
+        gitUrl: row['git_url'] as String?,
+        source: ProjectSource.parse(row['source'] as String?),
+        bundleCollectedAt: (row['bundle_collected_at'] as DateTime?)?.toUtc(),
         name: row['name'] as String,
         ownerId: row['owner_id']?.toString(),
         ref: (row['ref'] as String?) ?? 'HEAD',

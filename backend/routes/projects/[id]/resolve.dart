@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:backend/src/archived_project.dart';
 import 'package:backend/src/auth/auth_user.dart';
 import 'package:backend/src/deps.dart';
+import 'package:backend/src/local_project.dart';
 import 'package:dart_frog/dart_frog.dart';
 import 'package:ecosystem/ecosystem.dart';
 import 'package:shared/shared.dart';
@@ -47,9 +48,15 @@ Future<Response> onRequest(RequestContext context, String id) async {
   // one throws here, which for an npm project is the ordinary case rather than
   // a fault, and answering 500 told the caller nothing about which of the two
   // it was.
+  // A local project's files were never here to re-read. Refused rather than
+  // simulated against nothing: a resolution answer derived from a dependency
+  // list without its manifest would be a guess wearing a proof's clothes.
+  final unreachable = localProjectRefusal(project, 'Simulating a change');
+  if (unreachable != null) return unreachable;
+
   final ManifestFiles files;
   try {
-    files = await deps.gitFetcher.fetch(project.gitUrl, ref: project.ref);
+    files = await deps.gitFetcher.fetch(project.gitUrl!, ref: project.ref);
   } on StateError {
     final manifest = deps.resolver.ecosystem.naming.manifest;
     return Response.json(

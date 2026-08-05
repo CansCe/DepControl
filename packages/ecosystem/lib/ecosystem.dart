@@ -9,6 +9,7 @@ library;
 
 export 'src/dart/dart_ecosystem.dart';
 export 'src/dart/import_scanner.dart';
+export 'src/discovery.dart';
 export 'src/ecosystem.dart';
 export 'src/manifest.dart';
 export 'src/npm/js_source_scanner.dart';

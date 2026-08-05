@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:backend/src/auth/auth_user.dart';
 import 'package:backend/src/deps.dart';
 import 'package:backend/src/repository/scan_job_store.dart';
+import 'package:backend/src/services/bundle_ingest.dart';
 import 'package:backend/src/services/git_fetcher.dart';
 import 'package:backend/src/services/scan_watch.dart';
 import 'package:dart_frog/dart_frog.dart';
@@ -10,7 +11,9 @@ import 'package:shared/shared.dart';
 
 /// GET  /projects              -> the caller's active projects
 /// GET  /projects?archived=true -> the caller's archived projects instead
-/// POST /projects              -> queue a scan of a git URL, returns 202
+/// POST /projects              -> queue a scan, returns 202. Either
+///                                `{gitUrl}` for a repository this server can
+///                                fetch, or `{bundle}` for one it cannot.
 ///
 /// Guarded by `requireAuth` in `_middleware.dart`, so the `AuthUser` is
 /// guaranteed present and every project is scoped to its owner.
@@ -62,6 +65,18 @@ Future<Response> _add(
   Deps deps,
   AuthUser user,
 ) async {
+  if (bundleTooLarge(
+    context.request.headers[HttpHeaders.contentLengthHeader],
+  )) {
+    return Response.json(
+      statusCode: HttpStatus.requestEntityTooLarge,
+      body: {
+        'error': 'A bundle may be at most ${BundleIngest.maxBytes} bytes. A '
+            'real one is a few tens of kilobytes.',
+      },
+    );
+  }
+
   final Map<String, dynamic> body;
   try {
     body = await context.request.json() as Map<String, dynamic>;
@@ -73,26 +88,53 @@ Future<Response> _add(
   }
 
   final gitUrl = body['gitUrl'] as String?;
-  if (gitUrl == null || gitUrl.isEmpty) {
+  final rawBundle = body['bundle'];
+
+  // Exactly one, and said plainly. "Both" is a client bug rather than an
+  // instruction to guess which one was meant, and guessing would scan a
+  // repository nobody asked about.
+  if ((gitUrl == null || gitUrl.isEmpty) && rawBundle == null) {
     return Response.json(
       statusCode: HttpStatus.badRequest,
-      body: {'error': 'gitUrl is required'},
+      body: {
+        'error': 'gitUrl or bundle is required. Use bundle for a repository '
+            'this server cannot reach — run `depcontrol collect` where the '
+            'repository is.',
+      },
+    );
+  }
+  if (gitUrl != null && gitUrl.isNotEmpty && rawBundle != null) {
+    return Response.json(
+      statusCode: HttpStatus.badRequest,
+      body: {'error': 'give either gitUrl or bundle, not both'},
     );
   }
 
   final ref = (body['ref'] as String?) ?? 'HEAD';
 
-  // Refused here rather than a minute into a queued job. This is the part of a
-  // scan that can be judged without the network, and a caller who typed the
-  // wrong host should hear about it now rather than read it off a failed
-  // report later.
-  try {
-    GitFetcher.validate(gitUrl, ref: ref);
-  } on StateError catch (e) {
-    return Response.json(
-      statusCode: HttpStatus.badRequest,
-      body: {'error': e.message},
-    );
+  CollectedBundle? bundle;
+  if (rawBundle != null) {
+    try {
+      bundle = readBundle(rawBundle, ecosystems: deps.ecosystems);
+    } on FormatException catch (e) {
+      return Response.json(
+        statusCode: HttpStatus.badRequest,
+        body: {'error': e.message},
+      );
+    }
+  } else {
+    // Refused here rather than a minute into a queued job. This is the part of a
+    // scan that can be judged without the network, and a caller who typed the
+    // wrong host should hear about it now rather than read it off a failed
+    // report later.
+    try {
+      GitFetcher.validate(gitUrl!, ref: ref);
+    } on StateError catch (e) {
+      return Response.json(
+        statusCode: HttpStatus.badRequest,
+        body: {'error': e.message},
+      );
+    }
   }
 
   // The caller names its own scan so it can start watching without waiting for
@@ -126,7 +168,8 @@ Future<Response> _add(
       id: scanId,
       ownerId: user.id,
       kind: ScanJobKind.add,
-      gitUrl: gitUrl,
+      gitUrl: bundle == null ? gitUrl : null,
+      bundle: bundle,
       ref: ref,
       progress: ScanProgress(
         phase: ScanPhase.queued,

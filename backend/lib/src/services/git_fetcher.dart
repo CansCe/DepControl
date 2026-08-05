@@ -431,35 +431,21 @@ class GitFetcher {
       final slash = file.name.indexOf('/');
       if (slash < 0) continue; // `pax_global_header` and friends
       final path = file.name.substring(slash + 1);
-      if (path.isNotEmpty && !_isIgnored(path)) entries[path] = file;
+      if (path.isNotEmpty && !isGeneratedPath(path)) entries[path] = file;
     }
 
     // Pass one: where the packages are, most likely to be the point of the
     // repository first — because [maxManifests] decides what gets dropped.
-    final locations = <_ManifestLocation>[];
+    final locations = <ManifestLocation>[];
     for (final path in entries.keys) {
-      if (_manifestAt(path) case final location?) locations.add(location);
+      if (manifestAt(path, _ecosystems.naming) case final location?) {
+        locations.add(location);
+      }
     }
     if (locations.isEmpty) {
       throw StateError('No package manifest found in $gitUrl.');
     }
-    locations.sort((a, b) {
-      // Demonstrations before shallowness: `bloc` keeps 23 example apps under
-      // `examples/` and its actual libraries under `packages/`, and a plain
-      // alphabetical sort spends the whole budget on the examples and reports
-      // nothing about the library anyone came to read about.
-      final byRole = _isIncidental(a.directory) == _isIncidental(b.directory)
-          ? 0
-          : (_isIncidental(a.directory) ? 1 : -1);
-      if (byRole != 0) return byRole;
-
-      // Then shallowest first, so the root leads when there is one.
-      final byDepth = _depth(a.directory).compareTo(_depth(b.directory));
-      if (byDepth != 0) return byDepth;
-
-      final byPath = a.directory.compareTo(b.directory);
-      return byPath != 0 ? byPath : a.ecosystem.compareTo(b.ecosystem);
-    });
+    locations.sort(compareByReadingOrder);
 
     final note = locations.length > maxManifests
         ? 'This repository has ${locations.length} manifests; the first '
@@ -492,10 +478,10 @@ class GitFetcher {
 
         final naming = ecosystem.naming;
         final isSource = naming.isSource(path);
-        final isAuxiliary = naming.isAuxiliary(_fileName(path));
+        final isAuxiliary = naming.isAuxiliary(fileNameOf(path));
         if (!isSource && !isAuxiliary) continue;
 
-        final owner = _nearestManifest(path, kept, ecosystem.id);
+        final owner = nearestManifest(path, kept, ecosystem.id);
         if (owner == null) continue;
 
         final text = _decode(entry.value);
@@ -532,7 +518,7 @@ class GitFetcher {
           files: ManifestFiles(
             manifest: manifest,
             lock: lock,
-            companions: _companionsFor(
+            companions: companionsFor(
               naming,
               location.directory,
               (path) => _decode(entries[path]),
@@ -590,146 +576,12 @@ class GitFetcher {
     return inflated.takeBytes();
   }
 
-  /// Where [path] is a manifest, which ecosystem's and in which directory. The
-  /// repository root is the empty string.
-  ///
-  /// Null for everything else, which is nearly every path in a repository —
-  /// this runs once per archive entry, so it checks the file name first.
-  _ManifestLocation? _manifestAt(String path) {
-    final fileName = _fileName(path);
-    for (final naming in _ecosystems.naming) {
-      if (!naming.isManifest(fileName)) continue;
-      final slash = path.lastIndexOf('/');
-      return _ManifestLocation(
-        directory: slash < 0 ? '' : path.substring(0, slash),
-        ecosystem: naming.ecosystem,
-        fileName: fileName,
-      );
-    }
-    return null;
-  }
-
-  /// The companion files [naming] asks for, read from [read] at or above
-  /// [directory], nearest first.
-  ///
-  /// Nearest wins and the search walks upward, because that is how MSBuild
-  /// finds a `Directory.Packages.props`: the one in the project's own directory
-  /// beats the one at the repository root. A companion nobody committed is
-  /// simply absent, which the parser is expected to cope with — it is a file
-  /// the manifest may need, not one it must have.
-  static Map<String, String> _companionsFor(
-    ManifestNaming naming,
-    String directory,
-    String? Function(String path) read,
-  ) {
-    if (naming.companionFiles.isEmpty) return const {};
-
-    final found = <String, String>{};
-    for (final name in naming.companionFiles) {
-      var at = directory;
-      while (true) {
-        final content = read(at.isEmpty ? name : '$at/$name');
-        if (content != null) {
-          found[name] = content;
-          break;
-        }
-        if (at.isEmpty) break;
-        final slash = at.lastIndexOf('/');
-        at = slash < 0 ? '' : at.substring(0, slash);
-      }
-    }
-    return found;
-  }
-
-  /// The deepest manifest of [ecosystem] in [locations] whose directory
-  /// contains [path].
-  ///
-  /// A file belongs to the package nearest above it, not to the root: in a
-  /// monorepo `tools/differ/lib/x.dart` is the differ's source, and counting its
-  /// imports against the root would report the root as depending on packages it
-  /// has never heard of.
-  ///
-  /// Restricted to one ecosystem because "nearest" has to mean nearest *of the
-  /// right kind*. In a Flutter app with a JavaScript front end under `web/`,
-  /// the manifest nearest a `.dart` file may well be `web/package.json`, and
-  /// attributing Dart imports to it would report an npm package as depending on
-  /// Dart packages.
-  static _ManifestLocation? _nearestManifest(
-    String path,
-    List<_ManifestLocation> locations,
-    String ecosystem,
-  ) {
-    _ManifestLocation? best;
-    for (final location in locations) {
-      if (location.ecosystem != ecosystem) continue;
-      if (location.directory.isEmpty) {
-        best ??= location;
-        continue;
-      }
-      if (!path.startsWith('${location.directory}/')) continue;
-      if (best == null || location.directory.length > best.directory.length) {
-        best = location;
-      }
-    }
-    return best;
-  }
-
-  /// Whether a repository path is generated, vendored, or otherwise not the
-  /// project's own code.
-  static bool _isIgnored(String path) {
-    for (final segment in path.split('/')) {
-      if (_ignoredSegments.contains(segment)) return true;
-    }
-    return false;
-  }
-
-  /// Directories whose contents are outputs or third-party copies. `build` is
-  /// here because Dart and Flutter both write there; a repository that keeps
-  /// hand-written source in a directory of that name loses those imports, which
-  /// costs a false "declared but not imported" rather than a false accusation
-  /// of using something undeclared.
-  static const _ignoredSegments = {
-    '.dart_tool',
-    '.git',
-    '.symlinks',
-    'build',
-    'node_modules',
-    'Pods',
-  };
-
-  /// Whether a package is a demonstration or fixture rather than something the
-  /// repository exists to ship.
-  ///
-  /// These are still read and still reported — an example app's dependencies
-  /// are as capable of carrying an advisory as any other. They just go last,
-  /// so that when a repository has more packages than [maxManifests] the ones
-  /// dropped are the ones nobody opened the report to see.
-  static bool _isIncidental(String directory) {
-    for (final segment in directory.split('/')) {
-      if (_incidentalSegments.contains(segment)) return true;
-    }
-    return false;
-  }
-
-  static const _incidentalSegments = {
-    'example',
-    'examples',
-    'sample',
-    'samples',
-    'demo',
-    'demos',
-    'fixture',
-    'fixtures',
-    'testdata',
-  };
-
-  static String _fileName(String path) {
-    final slash = path.lastIndexOf('/');
-    return slash < 0 ? path : path.substring(slash + 1);
-  }
-
-  static int _depth(String directory) =>
-      directory.isEmpty ? 0 : directory.split('/').length;
+  // Where a manifest is, which package owns a source file, where a companion
+  // file is found and which paths are generated all live in
+  // `package:ecosystem`'s `discovery.dart` now. They are answered from paths
+  // alone, and the collector walking somebody's working tree has to answer them
+  // exactly as this does — two implementations would disagree eventually, and
+  // the disagreement would read as a package attributed to the wrong manifest.
 
   /// Text of an archive entry, or null when it is missing or unreadable.
   ///
@@ -779,7 +631,7 @@ class GitFetcher {
       _ => const [],
     };
 
-    final found = <String, _ManifestLocation>{};
+    final found = <String, ManifestLocation>{};
     final companions = <String>{};
     for (final entry in entries.whereType<Map<String, dynamic>>()) {
       final path = entry['path']?.toString();
@@ -796,13 +648,13 @@ class GitFetcher {
         continue;
       }
 
-      final location = _manifestAt(path);
+      final location = manifestAt(path, _ecosystems.naming);
       if (location != null) {
         found[location.key] = location;
         continue;
       }
 
-      final fileName = _fileName(path);
+      final fileName = fileNameOf(path);
       if (_ecosystems.naming.any((n) => n.isCompanion(fileName))) {
         companions.add(path);
       }
@@ -1022,41 +874,10 @@ class _ArchiveUnavailable implements Exception {
   const _ArchiveUnavailable();
 }
 
-/// Where a manifest sits in a repository, and which ecosystem's it is.
 /// What a tree listing turned up: the manifests, and where the files some of
 /// them need to be read alongside are.
 typedef _Discovery = ({
-  List<_ManifestLocation> manifests,
+  List<ManifestLocation> manifests,
   Set<String> companionPaths,
 });
 
-class _ManifestLocation {
-  const _ManifestLocation({
-    required this.directory,
-    required this.ecosystem,
-    required this.fileName,
-  });
-
-  /// Path from the repository root, empty for the root itself.
-  final String directory;
-
-  /// The [Ecosystem.id] whose manifest was found here.
-  final String ecosystem;
-
-  /// The manifest's own file name.
-  ///
-  /// Carried rather than derived from the ecosystem, because .NET names its
-  /// project file after the project: there is no `naming.manifest` to look up
-  /// once the file has been found, and one directory can legitimately hold
-  /// `Acme.csproj` and `Acme.Tests.csproj`.
-  final String fileName;
-
-  /// The full path of the manifest, root-relative.
-  String get path => directory.isEmpty ? fileName : '$directory/$fileName';
-
-  /// Identity within a repository. The directory alone will not do: one
-  /// directory can hold a `pubspec.yaml` and a `package.json`, and those are
-  /// two packages with two dependency trees. Nor will directory and ecosystem,
-  /// for the .NET reason above.
-  String get key => '$ecosystem:$path';
-}

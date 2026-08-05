@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -22,6 +23,7 @@ import 'security/pin_gate.dart';
 import 'security/pin_prompt.dart';
 import 'security/web_session_timeout.dart';
 import 'theme.dart';
+import 'upload/file_pick.dart';
 import 'widgets/chrome.dart';
 import 'widgets/console_shell.dart';
 import 'widgets/project_card.dart';
@@ -342,6 +344,44 @@ class _RegistryScreenState extends State<RegistryScreen> {
     });
   }
 
+  /// Takes a bundle `depcontrol collect` wrote and queues it.
+  ///
+  /// The file is read and parsed here rather than posted as-is, so that a file
+  /// which is not a bundle is refused on this side of the network with a
+  /// sentence about what it should have been. The server checks it again — it
+  /// has to, since anything can post — but a person who picked the wrong file
+  /// should not have to read an API error to find that out.
+  Future<void> _uploadBundle() async {
+    final String? text;
+    try {
+      text = await pickTextFile();
+    } on Object {
+      setState(() => _error = 'That file could not be read.');
+      return;
+    }
+    if (text == null) return; // cancelled
+
+    final CollectedBundle bundle;
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is! Map<String, dynamic>) throw const FormatException();
+      bundle = CollectedBundle.fromJson(decoded);
+      if (bundle.manifests.isEmpty) throw const FormatException();
+    } on Object {
+      setState(
+        () => _error = 'That is not a bundle. Run `depcontrol collect` in the '
+            'repository and choose the file it writes.',
+      );
+      return;
+    }
+
+    _scans.addBundle(_api, bundle);
+    setState(() {
+      _error = null;
+      _showArchived = false;
+    });
+  }
+
   /// Bumped when settings closes, so the PIN prompt is rebuilt from scratch.
   ///
   /// It decides whether to show itself once, when its state is created — so
@@ -396,6 +436,7 @@ class _RegistryScreenState extends State<RegistryScreen> {
       console: RegistryConsole(
         controller: _urlController,
         onSubmit: _add,
+        onUpload: canPickFile ? _uploadBundle : null,
         archived: _showArchived,
         onFilter: _setFilter,
         error: _error,

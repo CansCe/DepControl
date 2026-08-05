@@ -17,19 +17,19 @@ class PostgresScanJobStore implements ScanJobStore {
 
   final Pool _pool;
 
-  static const _columns = 'id, owner_id, kind, git_url, ref, project_id, '
-      'state, progress, error, attempts, created_at, claimed_at, '
+  static const _columns = 'id, owner_id, kind, git_url, bundle, ref, '
+      'project_id, state, progress, error, attempts, created_at, claimed_at, '
       'heartbeat_at, finished_at';
 
   @override
   Future<ScanJob> enqueue(ScanJob job) async {
     await _pool.execute(
       Sql.named('''
-        insert into scan_jobs (id, owner_id, kind, git_url, ref, project_id,
-                               state, progress, created_at)
-        values (@id:text, @ownerId:uuid, @kind:text, @gitUrl:text, @ref:text,
-                @projectId:uuid, @state:text, @progress:jsonb,
-                @createdAt:timestamptz)
+        insert into scan_jobs (id, owner_id, kind, git_url, bundle, ref,
+                               project_id, state, progress, created_at)
+        values (@id:text, @ownerId:uuid, @kind:text, @gitUrl:text,
+                @bundle:jsonb, @ref:text, @projectId:uuid, @state:text,
+                @progress:jsonb, @createdAt:timestamptz)
         on conflict (id) do nothing
       '''),
       parameters: {
@@ -37,6 +37,9 @@ class PostgresScanJobStore implements ScanJobStore {
         'ownerId': job.ownerId,
         'kind': job.kind.name,
         'gitUrl': job.gitUrl,
+        // The uploaded copy is the only copy: a bundle describes a repository
+        // this server cannot reach, so losing the row loses the scan for good.
+        'bundle': job.bundle?.toJson(),
         'ref': job.ref,
         'projectId': job.projectId,
         'state': job.state.name,
@@ -213,7 +216,8 @@ class PostgresScanJobStore implements ScanJobStore {
         id: row['id'] as String,
         ownerId: '${row['owner_id']}',
         kind: ScanJobKind.parse(row['kind'] as String?),
-        gitUrl: row['git_url'] as String,
+        gitUrl: row['git_url'] as String?,
+        bundle: _bundleFrom(row['bundle']),
         ref: (row['ref'] as String?) ?? 'HEAD',
         projectId: row['project_id'] == null ? null : '${row['project_id']}',
         state: ScanJobState.parse(row['state'] as String?),
@@ -225,6 +229,17 @@ class PostgresScanJobStore implements ScanJobStore {
         heartbeatAt: (row['heartbeat_at'] as DateTime?)?.toUtc(),
         finishedAt: (row['finished_at'] as DateTime?)?.toUtc(),
       );
+
+  /// The uploaded bundle, or null for a git scan.
+  static CollectedBundle? _bundleFrom(Object? raw) {
+    final decoded = switch (raw) {
+      final String json => jsonDecode(json),
+      final Map map => map,
+      _ => null,
+    };
+    if (decoded is! Map || decoded.isEmpty) return null;
+    return CollectedBundle.fromJson(decoded.cast<String, dynamic>());
+  }
 
   /// jsonb usually decodes to a parsed Dart map; some driver paths hand it back
   /// as the raw string. An empty object is what a freshly enqueued job holds,

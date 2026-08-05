@@ -602,7 +602,9 @@ class _Summary extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '${project.gitUrl} @ ${project.ref}',
+            project.isLocal
+                ? 'uploaded with depcontrol collect'
+                : '${project.gitUrl} @ ${project.ref}',
             style: mono(
               theme.textTheme.bodySmall,
               color: Colors.white.withValues(alpha: 0.62),
@@ -613,9 +615,14 @@ class _Summary extends StatelessWidget {
             project.isArchived
                 ? 'Archived ${_ago(project.archivedAt!)} — a snapshot of what '
                     'this depended on, not kept up to date.'
-                : project.lastCheckedAt != null
-                    ? 'Last analyzed ${_ago(project.lastCheckedAt!)}'
-                    : 'Analyzed when added',
+                // A local report is only as fresh as the last `collect`, and
+                // presenting a stale bundle like a live scan would be the one
+                // genuinely misleading thing this feature could do.
+                : project.isLocal
+                    ? _collectedAge(project)
+                    : project.lastCheckedAt != null
+                        ? 'Last analyzed ${_ago(project.lastCheckedAt!)}'
+                        : 'Analyzed when added',
             style: theme.textTheme.bodySmall?.copyWith(
               color: project.isArchived
                   ? const Color(0xFFFFD48A)
@@ -865,6 +872,27 @@ class _Note extends StatelessWidget {
 /// Coarse relative time. Lives in `platform/relative_time.dart` now that the
 /// console draws the same figure on the registry grid as well.
 String _ago(DateTime time) => relativeAge(time);
+
+/// How fresh a local project's dependency list is.
+///
+/// Two clocks, and they answer different questions. `lastCheckedAt` is when this
+/// server last re-queried the registries, which happens on the ordinary schedule
+/// for a local project as for any other. `bundleCollectedAt` is when somebody
+/// last ran `depcontrol collect` — and *that* is how old the dependency list is,
+/// because the repository is somewhere this server has never been.
+///
+/// The timestamp is self-reported by a client, so one in the future says the
+/// collecting machine's clock is wrong rather than that the bundle is fresh.
+String _collectedAge(Project project) {
+  final collected = project.bundleCollectedAt;
+  if (collected == null) return 'Collected on your own machine';
+  if (collected.isAfter(DateTime.now().toUtc())) {
+    return 'Collected at a time this machine has not reached yet — the '
+        "collecting machine's clock may be wrong.";
+  }
+  return 'Dependencies collected ${_ago(collected)}; advisories re-checked '
+      'here since.';
+}
 
 class _Stat extends StatelessWidget {
   const _Stat({required this.label, required int value, this.color})

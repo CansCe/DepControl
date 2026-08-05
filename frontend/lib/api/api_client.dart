@@ -167,6 +167,42 @@ class ApiClient {
     return ScanStatus.fromJson(json);
   }
 
+  /// Queues an ingest of a bundle collected by `depcontrol collect`.
+  ///
+  /// The alternative to [addProject] for a repository this server cannot reach:
+  /// an Azure DevOps or GitHub Enterprise repository, anything behind a VPN, or
+  /// one whose lockfile is gitignored and therefore invisible to a remote read.
+  /// What travels is the dependency list, never the repository.
+  Future<ScanStatus> addProjectFromBundle(
+    CollectedBundle bundle, {
+    required String scanId,
+  }) async {
+    final json = await _send(() async => _client.post(
+          Uri.parse('$baseUrl/projects'),
+          headers: await _headers(json: true),
+          body: jsonEncode({'bundle': bundle.toJson(), 'scanId': scanId}),
+        ));
+    return ScanStatus.fromJson(json);
+  }
+
+  /// Brings a local project up to date from a freshly collected bundle.
+  ///
+  /// What [refreshProject] is for a git project, and the reason that one
+  /// refuses a local project with 409: there is no repository here to re-read,
+  /// so the newer reading has to be uploaded rather than fetched.
+  Future<ScanStatus> uploadBundle(
+    String projectId,
+    CollectedBundle bundle, {
+    required String scanId,
+  }) async {
+    final json = await _send(() async => _client.post(
+          Uri.parse('$baseUrl/projects/$projectId/bundle'),
+          headers: await _headers(json: true),
+          body: jsonEncode({'bundle': bundle.toJson(), 'scanId': scanId}),
+        ));
+    return ScanStatus.fromJson(json);
+  }
+
   /// Queues a re-fetch and re-analysis of an existing project.
   ///
   /// Distinct from [report], which only reads what was already stored: a report

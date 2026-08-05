@@ -92,6 +92,22 @@ class RescanService {
     return results;
   }
 
+  /// Re-checks a local project without touching a repository.
+  ///
+  /// This is what makes a local project worth *tracking* rather than uploading
+  /// once. An advisory and a licence are facts about a `(package, version)`
+  /// pair, and the versions are already stored — so there is nothing to fetch,
+  /// and the sweep works for a repository on an internal GitLab exactly as well
+  /// as for a public one.
+  ///
+  /// The dependency *list* is a different matter and does not update here: it is
+  /// as old as the last `depcontrol collect`, which is why the project carries
+  /// the bundle's own timestamp and the UI shows it.
+  Future<DepReport> _rescanLocal(Project project, DepReport? previous) async {
+    if (previous == null) throw const _NothingStored();
+    return _analyzer.refreshMetadata(previous);
+  }
+
   /// Re-scans one project.
   Future<RescanResult> rescan(Project project) async {
     if (project.isArchived) {
@@ -108,9 +124,19 @@ class RescanService {
 
     final DepReport report;
     try {
-      final repository =
-          await _gitFetcher.fetchAll(project.gitUrl, ref: project.ref);
-      report = await _analyzer.analyzeRepository(project.id, repository);
+      report = project.isLocal
+          ? await _rescanLocal(project, previous)
+          : await _analyzer.analyzeRepository(
+              project.id,
+              await _gitFetcher.fetchAll(project.gitUrl!, ref: project.ref),
+            );
+    } on _NothingStored {
+      // A local project whose first upload has not finished. Nothing to sweep
+      // and nothing wrong.
+      return RescanResult(
+        project: project,
+        error: 'no report to re-check yet',
+      );
     } catch (e) {
       // Anything the fetch or the analysis can throw: a ref that is gone, a
       // repository that went private, a manifest that stopped parsing.
@@ -156,4 +182,12 @@ class RescanService {
       notifications: outcome,
     );
   }
+}
+
+/// A local project whose first bundle has not landed yet.
+///
+/// Not a failure and not worth a warning in the log: there is simply nothing
+/// stored to re-check, and there will be as soon as the upload finishes.
+class _NothingStored implements Exception {
+  const _NothingStored();
 }

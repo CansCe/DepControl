@@ -188,6 +188,154 @@ which is rate limited, is unavailable too, the scan falls back to the repository
 root and the report says so rather than implying the repository holds one
 package.
 
+## Repositories the server cannot reach
+
+`GitFetcher` accepts github.com and gitlab.com over https and nothing else, so
+until the collector existed an Azure DevOps repository, a GitHub Enterprise one
+or anything behind a VPN could not be scanned at all — which is most of the .NET
+estate this application's third ecosystem was built for. There is a second,
+independent reason: a lockfile is generated locally and routinely gitignored, so
+a remote scan resolves declared constraints instead and labels the versions
+inferred. An advisory applies to a **resolved** version, not to a constraint.
+
+So the repository is read where it lives, by `depcontrol collect`, and what is
+uploaded is a **bundle**: package names, the versions they resolved to, the
+packages the source imports, and the repo-relative directory of each manifest.
+
+### Parsed there, not here
+
+The bundle is the *parsed* form, which is why `packages/ecosystem` exists. The
+collector runs the same `Ecosystem` implementations the server does — the same
+`.csproj` reader, the same lockfile readers, the same import scanners — and
+`packages/ecosystem/lib/src/discovery.dart` holds the rules for *where* a
+manifest is and which package owns a source file, so a tarball read on the server
+and a working tree read on a laptop are laid out identically. Two implementations
+of "which pubspec owns this `.dart` file" would disagree eventually, and the
+disagreement would surface as a package attributed to the wrong manifest in a
+report nobody re-derives.
+
+`DependencyAnalyzer.analyzeAll` is where the two paths meet. It takes manifests
+already read, so resolution, advisories, licences, sizes, history, diffing and
+notification are all downstream of the seam and cannot tell which kind of scan
+they are serving. There is a test asserting that the same fixture produces the
+same report both ways; it is the only thing that keeps that true.
+
+### The disclosure boundary, stated exactly
+
+This will be described internally as "scan a private repo and keep it private",
+and that is stronger than what it delivers. The true version, because the gap
+between the two is where somebody gets an unpleasant surprise:
+
+**Never leaves the machine:** source code, credentials, `.env`, git history,
+absolute paths, path-dependency targets, git-dependency URLs, and the internal
+feed hostnames in `NuGet.config` / `.npmrc`.
+
+**Does leave the machine:** the package names and versions the repository depends
+on, its root package name, the set of packages its own source imports, and the
+repo-relative directory of each manifest.
+
+**And onward from the server:** those package names are queried against pub.dev,
+registry.npmjs.org, nuget.org and OSV. So the *shape of the dependency tree* of a
+private repository is observable to those registries, exactly as it is for any
+scan. Nothing about the code is.
+
+**In one line: it discloses a repository's dependency list and module layout
+instead of its contents.** A large reduction, and not zero.
+
+Building this turned up a leak that predated it and had nothing to do with
+bundles. Both the pub and npm parsers recorded a non-registry dependency's
+*declaration* as its constraint — for pub a `GitDependency: url@…`, for npm the
+raw specifier — and both of those are URLs. A git URL routinely carries a deploy
+token, and a path dependency names a location on somebody's disk; both were
+travelling into the node, the stored report, the digest and the UI. The rule now
+is one sentence: **a constraint is a version range, or nothing.** `foreignOrigin`
+says what a reader can act on, and the URL only ever leaked.
+
+### Two decisions the feature forces
+
+**Manifest directories ship verbatim by default.** `services/PayrollEngine` is
+repo-relative rather than absolute, but it still says what a private repository
+contains, and in a .NET monorepo the project directory names *are* the internal
+product names. Three things argue for shipping it anyway: attributing a package
+to the manifest that pulled it in is a core feature of the report; "which of our
+thirty services still uses NHibernate 5.2" is answered with it; and the person
+running `collect` is the only one who knows whether their directory names are
+sensitive. So it is their call and the default is the useful one.
+
+`--redact-paths` replaces each directory with a **positional** id, not a hash of
+the path. A hash of `services/PayrollEngine` is guessable from a wordlist by
+anybody who ever sees it, and somebody who asked for redaction asked precisely
+because those names are worth guessing. The cost is that adding or removing a
+manifest renumbers the rest — which registers as a change in the project's
+history, and a repository whose manifest set moved has in fact changed.
+
+**The part that is not optional:** a report built from a redacted bundle *says
+so*. Manifests render as "manifest 3 of 7" rather than as a name, and the
+withheld-package count sits in the report's `coverageNote` beside the other
+things a scan admits it was not told. Redaction without the label would render an
+opaque id where a name belongs and quietly claim to be naming something — the
+same lie a report tells when it renders "nobody looked" as "nothing found". Do
+not add redaction without the label; the label is the feature.
+
+**Packages from a private feed get the existing unchecked treatment**, not a
+degraded node. An internal package cannot be looked up on nuget.org; left alone,
+the analyzer queries it, gets a 404, and degrades the node to unmeasured — which
+puts the repository's most sensitive names into the report as noise carrying no
+information, or worse, finds something unrelated squatting on the name and
+reports its licence and advisories. SDK, path and git dependencies are already
+listed as unchecked *with where they came from*, precisely because "we could not
+check this" is not "somebody must review this". A private-feed package is the
+same case and gets the same marker — `a private registry`, and never the
+hostname. `--exclude-private` drops them from the bundle entirely, and the report
+says how many were withheld.
+
+Which packages those are is read locally from `.npmrc` scoped registries,
+`NuGet.config`'s `packageSourceMapping`, and a `pubspec.yaml`'s `hosted:`
+overrides. Two deliberate gaps: a **bare** `registry=` line in `.npmrc` marks
+nothing, because the overwhelmingly common reason to redirect everything is a
+caching proxy in front of npmjs and marking every package private would withhold
+the whole report to protect names that are public; and a private NuGet source
+with **no** source mapping marks nothing either, because NuGet itself resolves
+that by asking every source in turn and there is no way to know. The CLI says so
+out loud rather than letting `--exclude-private` appear to work while withholding
+nothing.
+
+### What a local project's freshness means
+
+Two clocks, and conflating them is the one genuinely misleading thing this
+feature could do.
+
+`lastCheckedAt` is when this server last re-queried the registries.
+`bundleCollectedAt` is when somebody last ran `collect` — and *that* is how old
+the dependency list is. The nightly sweep re-checks a local project's advisories
+and licences from its **stored node set**, with no repository access at all,
+because an advisory is a fact about a `(package, version)` pair and the versions
+are already here. Nothing structural is re-derived: the packages, their versions,
+their kinds, which manifests they came from and whether the source imported them
+all stay as collected. Only the fields that move on somebody else's schedule are
+re-read — which are exactly the fields `reportDigest` excludes, so a sweep that
+finds nothing new writes no revision, the same as a git re-scan.
+
+So a local project's advisories are as current as anyone's while its dependency
+list is as old as its last collect, and the UI says both. The timestamp is
+self-reported by a client, so one in the future is treated as a wrong clock
+rather than as freshness.
+
+`POST /projects/<id>/refresh` on a local project returns **409**, following the
+archived-project precedent exactly — same status, same reasoning — and the
+message says to run `collect` again, *and* that the advisories are being
+re-checked anyway, because "cannot refresh" otherwise reads as "is going stale".
+Simulation and remediation planning refuse the same way: both need the manifest,
+and a fix that has not been resolved against the real constraints is the one
+thing a remediation plan must not offer.
+
+A bundle upload to a **git** project is refused too, and that is the mirror
+image. Converting a fetched project to a collected one is a real case — a
+repository moves behind a VPN — but a project that is fetched sometimes and
+uploaded sometimes has a freshness nobody can state, with half its history as of
+a server scan and half as of somebody's laptop. That conversion deserves its own
+decision rather than being a side effect of an upload.
+
 ## What a scan costs
 
 Enriching a package means asking a registry about it, and a large repository is

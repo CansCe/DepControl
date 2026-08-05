@@ -7,6 +7,23 @@ import 'cvss.dart';
 import 'git_fetcher.dart';
 import 'scan_progress_store.dart';
 
+/// One manifest, read, and what to call it in a report.
+///
+/// The unit both scanning paths reduce to. A fetched repository has files and a
+/// tree; a collected bundle has neither, having been parsed on the machine that
+/// held the repository. What they have in common is this, and it is everything
+/// downstream needs.
+typedef AnalyzableManifest = ({
+  /// What to call this manifest in the report — a directory, a project file, or
+  /// "manifest 3 of 7" where a bundle was collected with its paths redacted.
+  String label,
+  String ecosystem,
+
+  /// Packages this manifest's own source imports, or null when nobody looked.
+  Set<String>? imported,
+  ParsedManifest parsed,
+});
+
 /// Turns fetched manifests into a [DepReport] enriched with registry data.
 ///
 /// Knows nothing about pub.dev, `pubspec.yaml` or Dart. Everything specific to
@@ -66,26 +83,58 @@ class DependencyAnalyzer {
     String projectId,
     FetchedRepository repository, {
     ScanProgressSink progress = ScanProgressSink.none,
+  }) =>
+      analyzeAll(
+        projectId,
+        [
+          for (final manifest in repository.manifests)
+            (
+              label: repository.labelOf(manifest),
+              ecosystem: manifest.ecosystem,
+              imported: manifest.importedPackages,
+              parsed: _ecosystems.require(manifest.ecosystem).parse(
+                    manifest.files,
+                  ),
+            ),
+        ],
+        coverageNote: repository.discoveryNote,
+        progress: progress,
+      );
+
+  /// Analyzes every manifest in [manifests] and merges them into one report.
+  ///
+  /// Takes the parsed form rather than files, so that a repository downloaded
+  /// from a forge and a bundle collected on somebody's own machine merge through
+  /// exactly this code. The merge is the part with the interesting rules — same
+  /// package at the same version reached from two manifests, one of which
+  /// imports it — and a second copy of them for the second source is how the two
+  /// would quietly stop agreeing.
+  Future<DepReport> analyzeAll(
+    String projectId,
+    List<AnalyzableManifest> manifests, {
+    String? coverageNote,
+    ScanProgressSink progress = ScanProgressSink.none,
   }) async {
     progress
-      ..manifestsTotal(repository.manifests.length)
+      ..manifestsTotal(manifests.length)
       ..phase(ScanPhase.analyzing);
 
     // One manifest is the common case, and merging machinery would only make
     // its result harder to read.
-    if (repository.manifests.length == 1) {
-      final report = await analyze(
+    if (manifests.length == 1) {
+      final only = manifests.single;
+      final report = await analyzeParsed(
         projectId,
-        repository.primary.files,
-        ecosystem: repository.primary.ecosystem,
-        imported: repository.primary.importedPackages,
+        only.parsed,
+        ecosystem: only.ecosystem,
+        imported: only.imported,
         progress: progress,
       );
       return DepReport(
         projectId: report.projectId,
         generatedAt: report.generatedAt,
         nodes: report.nodes,
-        coverageNote: repository.discoveryNote,
+        coverageNote: coverageNote,
       );
     }
 
@@ -93,13 +142,13 @@ class DependencyAnalyzer {
     final merged = <String, DepNode>{};
     final origins = <String, List<String>>{};
 
-    for (final manifest in repository.manifests) {
-      final label = repository.labelOf(manifest);
-      final report = await analyze(
+    for (final manifest in manifests) {
+      final label = manifest.label;
+      final report = await analyzeParsed(
         projectId,
-        manifest.files,
+        manifest.parsed,
         ecosystem: manifest.ecosystem,
-        imported: manifest.importedPackages,
+        imported: manifest.imported,
         progress: progress,
       );
       for (final node in report.nodes) {
@@ -129,11 +178,8 @@ class DependencyAnalyzer {
       projectId: projectId,
       generatedAt: DateTime.now().toUtc(),
       nodes: nodes,
-      manifests: [
-        for (final manifest in repository.manifests)
-          repository.labelOf(manifest),
-      ],
-      coverageNote: repository.discoveryNote,
+      manifests: [for (final manifest in manifests) manifest.label],
+      coverageNote: coverageNote,
     );
   }
 
@@ -187,13 +233,40 @@ class DependencyAnalyzer {
     String ecosystem = DepNode.defaultEcosystem,
     Set<String>? imported,
     ScanProgressSink progress = ScanProgressSink.none,
+  }) =>
+      analyzeParsed(
+        projectId,
+        _ecosystems.require(ecosystem).parse(files),
+        ecosystem: ecosystem,
+        imported: imported,
+        progress: progress,
+      );
+
+  /// Analyzes one manifest that has already been read.
+  ///
+  /// The same work as [analyze] minus its first line, and the seam the local
+  /// collector needs: a repository somebody will not hand to a hosted service is
+  /// parsed on their own machine, and what arrives here is the parsed form
+  /// rather than the files. Everything downstream — resolution, advisories,
+  /// licenses, sizes, history, diffing, notification — cannot tell the two apart
+  /// and is not asked to, which is the point of cutting it here rather than
+  /// anywhere lower.
+  ///
+  /// [ecosystem] still travels alongside, because a [ParsedManifest] has
+  /// deliberately forgotten which dialect it came from: it is what picks the
+  /// registry to ask and the resolver to ask with.
+  Future<DepReport> analyzeParsed(
+    String projectId,
+    ParsedManifest parsed, {
+    String ecosystem = DepNode.defaultEcosystem,
+    Set<String>? imported,
+    ScanProgressSink progress = ScanProgressSink.none,
   }) async {
     final eco = _ecosystems.require(ecosystem);
     final registry = _ecosystems.registryFor(ecosystem);
     final resolver =
         _resolvers[ecosystem] ?? ConstraintResolver(eco, registry);
 
-    final parsed = eco.parse(files);
     final directNames = parsed.dependencies.keys.toSet();
     final devNames = parsed.devDependencies.keys.toSet();
     final locked = parsed.locked;
@@ -364,6 +437,89 @@ class DependencyAnalyzer {
       projectId: projectId,
       generatedAt: DateTime.now().toUtc(),
       nodes: nodes,
+    );
+  }
+
+  /// Re-reads what the registries say about a report's packages, without
+  /// reading the repository.
+  ///
+  /// What a local project is swept with. An advisory and a licence are facts
+  /// about a `(package, version)` pair, and the versions are already stored — so
+  /// the nightly sweep can re-query OSV and the registries from the stored node
+  /// set with **no repository access at all**, which is the only way a project
+  /// whose repository this server has never been able to reach can go on being
+  /// tracked rather than being a snapshot.
+  ///
+  /// Nothing structural is re-derived, and that is the discipline: the packages,
+  /// their versions, their kinds, which manifests they came from and whether the
+  /// source imported them all stay exactly as collected. Only the fields that
+  /// move on somebody else's schedule are re-read — which are precisely the
+  /// fields `reportDigest` excludes, so a sweep that finds nothing new produces
+  /// no revision, exactly as a git re-scan does.
+  ///
+  /// A package that is not on a public registry is skipped rather than queried.
+  /// Its licence already says so ([PackageLicense.isPublished]), and querying it
+  /// would look up somebody else's package under an internal name — the failure
+  /// mode the private-feed marker exists to prevent.
+  Future<DepReport> refreshMetadata(
+    DepReport report, {
+    ScanProgressSink progress = ScanProgressSink.none,
+  }) async {
+    progress
+      ..manifestsTotal(1)
+      ..phase(ScanPhase.analyzing)
+      ..manifestStarted(report.nodes.length);
+
+    final nodes = await _mapConcurrently(report.nodes, onDone: progress, (
+      node,
+    ) async {
+      if (node.license?.isPublished == false) return node;
+
+      final registry = _ecosystems.byId(node.ecosystem) == null
+          ? null
+          : _ecosystems.registryFor(node.ecosystem);
+      if (registry == null || !registry.isValidPackageName(node.name)) {
+        return node;
+      }
+
+      final current = _tryParseVersion(node.installed);
+      final info = await _orDegrade(
+        () => registry.info(node.name),
+        const RegistryInfo(latest: null),
+      );
+
+      final (advisories, license) = await (
+        current == null
+            ? Future<List<DepAdvisory>>.value(node.advisories)
+            : _orDegrade<List<DepAdvisory>>(
+                () => _advisoriesFor(
+                  registry,
+                  node.name,
+                  info.advisories,
+                  current,
+                ),
+                node.advisories,
+              ),
+        _orDegrade(
+          () => registry.licenseFor(node.name, node.installed, info.latest),
+          node.license ?? PackageLicense.undetermined,
+        ),
+      ).wait;
+
+      return node.copyWith(
+        latest: info.latest,
+        status: _status(node.installed, info.latest, advisories),
+        advisories: advisories,
+        license: license,
+      );
+    });
+
+    return DepReport(
+      projectId: report.projectId,
+      generatedAt: DateTime.now().toUtc(),
+      nodes: nodes,
+      manifests: report.manifests,
+      coverageNote: report.coverageNote,
     );
   }
 

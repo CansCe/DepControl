@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:backend/src/archived_project.dart';
 import 'package:backend/src/auth/auth_user.dart';
 import 'package:backend/src/deps.dart';
+import 'package:backend/src/local_project.dart';
 import 'package:dart_frog/dart_frog.dart';
 import 'package:ecosystem/ecosystem.dart';
 import 'package:shared/shared.dart';
@@ -62,11 +63,17 @@ Future<Response> onRequest(RequestContext context, String id) async {
     return Response.json(body: planner.uncoveredPlan(report).toJson());
   }
 
+  // A local project's manifest is not here to resolve against, and a fix that
+  // has not been checked against the real constraints is the one thing a
+  // remediation plan must not offer.
+  final unreachable = localProjectRefusal(project, 'Planning a fix');
+  if (unreachable != null) return unreachable;
+
   // Resolve against live content: a fix is only worth offering if it works
   // against the pubspec as it stands now.
   final ManifestFiles files;
   try {
-    files = await deps.gitFetcher.fetch(project.gitUrl, ref: project.ref);
+    files = await deps.gitFetcher.fetch(project.gitUrl!, ref: project.ref);
   } on StateError {
     // The report says this project has Dart packages and the repository does
     // not have the manifest they came from — a moved directory, a rewritten

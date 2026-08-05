@@ -17,3 +17,7 @@ workspace:
   - packages/shared
   - backend
   - frontend
+  # The local collector. A member because it runs the same parsers the server
+  # does and must resolve them to the same versions; `tools/api_differ` stays
+  # out for the opposite reason, being pinned to a different `analyzer`.
+  - tools/collector

@@ -89,14 +89,16 @@ class ProjectCard extends StatelessWidget {
                         Row(
                           children: [
                             Icon(
-                              Icons.terminal,
+                              project.isLocal
+                                  ? Icons.upload_file_outlined
+                                  : Icons.terminal,
                               size: 13,
                               color: surfaces.muted,
                             ),
                             const SizedBox(width: 5),
                             Expanded(
                               child: Text(
-                                project.gitUrl,
+                                project.gitUrl ?? 'uploaded bundle',
                                 overflow: TextOverflow.ellipsis,
                                 style: monoOf(
                                   context,

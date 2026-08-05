@@ -10,9 +10,10 @@ class ScanJob {
     required this.id,
     required this.ownerId,
     required this.kind,
-    required this.gitUrl,
     required this.progress,
     required this.createdAt,
+    this.gitUrl,
+    this.bundle,
     this.ref = 'HEAD',
     this.projectId,
     this.state = ScanJobState.queued,
@@ -33,8 +34,34 @@ class ScanJob {
   final String ownerId;
 
   final ScanJobKind kind;
-  final String gitUrl;
+
+  /// The repository to fetch, or null when this scan has one uploaded to it
+  /// instead.
+  ///
+  /// Exactly one of [gitUrl] and [bundle] is set, and which one is the whole
+  /// difference between the two kinds of scan: a git scan is told where to look,
+  /// a local scan is handed what was found. Everything after that point — the
+  /// registry lookups, the report, the history, the notifications — is identical
+  /// and does not know which it is serving.
+  final String? gitUrl;
+
+  /// The repository as somebody's own machine read it, for a local scan.
+  ///
+  /// Held on the job because the work outlives the request: the upload is the
+  /// only copy of a private repository's dependency list this server will ever
+  /// get, and a machine that dies between accepting it and analyzing it must not
+  /// be able to lose it. Nothing else on this row is as unrecoverable — a git
+  /// URL can always be fetched again.
+  final CollectedBundle? bundle;
+
   final String ref;
+
+  /// What a person watching this scan would call it.
+  ///
+  /// A local scan has no URL, so the bundle's root package name stands in. Null
+  /// when the bundle names none, which a report handles the same way it handles
+  /// every other unstated name.
+  String? get subject => gitUrl ?? bundle?.rootPackageName;
 
   /// Set from the start for a refresh; only once the scan succeeds for an add.
   final String? projectId;
@@ -76,6 +103,7 @@ class ScanJob {
         ownerId: ownerId,
         kind: kind,
         gitUrl: gitUrl,
+        bundle: bundle,
         ref: ref,
         projectId: projectId ?? this.projectId,
         state: state ?? this.state,

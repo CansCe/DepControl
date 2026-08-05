@@ -74,11 +74,20 @@ class NpmEcosystem implements Ecosystem {
     if (raw is! Map<String, dynamic>) return const {};
     return {
       for (final entry in raw.entries)
-        if (entry.value is String)
-          entry.key: DeclaredDependency(
-            constraint: entry.value as String,
-            foreignOrigin: _originOf(entry.value as String),
-          ),
+        if (entry.value case final String spec)
+          entry.key: () {
+            final origin = _originOf(spec);
+            return DeclaredDependency(
+              // npm's specifier field is a union, and only the registry arm of
+              // it is a version range. The others are URLs and paths —
+              // `git+https://token@host/repo.git` is the specifier as written,
+              // token included — and recording one as a "constraint" put it in
+              // the node, the stored report and the UI. `foreignOrigin` says
+              // what a reader needs; the URL only ever leaked.
+              constraint: origin == null ? spec : null,
+              foreignOrigin: origin,
+            );
+          }(),
     };
   }
 
@@ -185,10 +194,9 @@ class NpmEcosystem implements Ecosystem {
       // the tree resolves to unless it was forced not to.
       if (depth[name] != null && depth[name]! <= nesting) continue;
 
-      final version = doc['version'];
       depth[name] = nesting;
       out[name] = LockedDependency(
-        version: version is String ? version : '(unknown)',
+        version: _lockedVersion(doc['version']),
         foreignOrigin: _lockOrigin(doc),
       );
     }
@@ -211,9 +219,8 @@ class NpmEcosystem implements Ecosystem {
 
       // Shallowest wins, as above; the top level is the hoisted copy.
       if (depth == 0 || !out.containsKey(entry.key)) {
-        final version = doc['version'];
         out[entry.key] = LockedDependency(
-          version: version is String ? version : '(unknown)',
+          version: _lockedVersion(doc['version']),
           foreignOrigin: _lockOrigin(doc),
         );
       }
@@ -223,6 +230,26 @@ class NpmEcosystem implements Ecosystem {
     }
 
     return out;
+  }
+
+  /// The version a lockfile entry states, or `(unknown)` when what it states is
+  /// not a version at all.
+  ///
+  /// npm writes the *specifier* into `version` for anything it did not install
+  /// from the registry — `file:../internal/thing`, or a git URL with whatever
+  /// credential was in it. Carried through, that becomes the node's `installed`
+  /// string: printed in the report, stored in the revision, and part of what a
+  /// local collector would upload. The entry's origin already says it is a path
+  /// or a git dependency, which is the part that means anything to a reader.
+  static String _lockedVersion(Object? version) {
+    if (version is! String || version.isEmpty) return '(unknown)';
+    if (version.contains('://') ||
+        version.startsWith('file:') ||
+        version.startsWith('link:') ||
+        version.startsWith('workspace:')) {
+      return '(unknown)';
+    }
+    return version;
   }
 
   /// Where a locked entry came from, or null for the registry.

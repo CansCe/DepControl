@@ -34,6 +34,12 @@ dependencies:
 dev_dependencies:
   dart_frog_cli: ^1.1.0
   lints: ^6.0.0
+  # Test-only, and deliberately one-directional: the collector never depends on
+  # `backend`, but a test proving that a bundle and a fetched repository give the
+  # same report has to be able to produce a real bundle rather than a hand-built
+  # imitation of one. A hand-built bundle would only ever prove that the ingest
+  # agrees with the test's idea of a bundle.
+  collector: ^0.1.0
   # Mocks RequestContext/Request in route tests (the Dart Frog testing recipe).
   mocktail: ^1.0.0
   test: ^1.25.0

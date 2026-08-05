@@ -154,7 +154,12 @@ class _Header extends StatelessWidget {
                               ),
                             ),
                             const SizedBox(width: 12),
-                            ConsoleTag(label: project.ref),
+                            // A ref names a commit somebody can go and look at.
+                            // A local project's does not, so it says what it
+                            // actually is instead.
+                            ConsoleTag(
+                              label: project.isLocal ? 'Local' : project.ref,
+                            ),
                             if (project.isArchived) ...[
                               const SizedBox(width: 8),
                               ConsoleTag(
@@ -167,7 +172,10 @@ class _Header extends StatelessWidget {
                         ),
                         const SizedBox(height: 6),
                         Text(
-                          project.gitUrl,
+                          // A local project has no URL and is not meant to: a
+                          // URL is the one thing about a private repository
+                          // that would let a hosted service try to reach it.
+                          project.gitUrl ?? 'uploaded with depcontrol collect',
                           style: monoOf(
                             context,
                             theme.textTheme.bodySmall,
@@ -215,6 +223,26 @@ class _Header extends StatelessWidget {
       return 'Archived ${relativeAge(at)} — a snapshot of what this depended '
           'on, not kept up to date.';
     }
+
+    // A local project has two ages and they mean different things. Its
+    // advisories and licences are re-checked here on the ordinary schedule, but
+    // its *dependency list* is as old as the last `depcontrol collect` — the
+    // repository is somewhere this server has never been. Showing only the
+    // server's timestamp would present a six-month-old dependency list as
+    // though it had been read this morning.
+    if (project.isLocal) {
+      final collected = project.bundleCollectedAt;
+      if (collected == null) return 'Collected on your own machine';
+      if (collected.isAfter(DateTime.now().toUtc())) {
+        // Self-reported by a client, so a future timestamp says the clock is
+        // wrong rather than that the bundle is fresh.
+        return 'Collected at a time this machine has not reached yet — the '
+            'collecting machine\'s clock may be wrong.';
+      }
+      return 'Dependencies collected ${relativeAge(collected)}; advisories '
+          're-checked here since.';
+    }
+
     if (project.lastCheckedAt case final at?) {
       return 'Last analyzed ${relativeAge(at)}';
     }

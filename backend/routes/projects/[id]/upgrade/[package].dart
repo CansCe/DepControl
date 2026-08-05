@@ -57,13 +57,20 @@ Future<Response> onRequest(
   }
 
   // The project's own SDK range decides whether a newer version is reachable.
+  //
+  // A local project has no repository here to read it from, which is the same
+  // situation as a fetch that fails: the check is skipped and everything else
+  // about the upgrade still holds. Not a refusal, because unlike simulation this
+  // endpoint answers perfectly well without it.
   String? projectSdk;
-  try {
-    final files = await deps.gitFetcher.fetch(project.gitUrl, ref: project.ref);
-    projectSdk =
-        Pubspec.parse(files.manifest).environment['sdk']?.toString();
-  } catch (_) {
-    // Without it the SDK check is simply skipped; everything else still holds.
+  final gitUrl = project.gitUrl;
+  if (gitUrl != null) {
+    try {
+      final files = await deps.gitFetcher.fetch(gitUrl, ref: project.ref);
+      projectSdk = Pubspec.parse(files.manifest).environment['sdk']?.toString();
+    } catch (_) {
+      // Without it the SDK check is simply skipped.
+    }
   }
 
   final impact = await deps.inspector.inspect(

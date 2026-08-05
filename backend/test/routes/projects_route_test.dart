@@ -41,6 +41,10 @@ void main() {
     when(() => request.method).thenReturn(method);
     when(() => request.uri).thenReturn(Uri.parse('http://localhost$path'));
     when(request.json).thenAnswer((_) async => body);
+    // A bundle upload is refused on its declared length before the body is
+    // read, so every request here has to be able to answer what its headers
+    // are. A real client sends none of interest.
+    when(() => request.headers).thenReturn(const {});
 
     final context = _MockRequestContext();
     when(() => context.request).thenReturn(request);

@@ -143,6 +143,58 @@ The one thing that does interrupt a scan is the server stopping: a deploy, or a
 machine that runs out of memory. Nothing is lost when that happens — the scan is
 still recorded, and the next machine to look picks it up and runs it again.
 
+### Repositories we cannot reach
+
+Most repositories worth governing are not on public GitHub. They are on Azure
+DevOps, on GitHub Enterprise, on an internal GitLab, or behind a VPN — and a
+hosted scanner cannot open any of them. There is a second problem even for the
+ones it can: a lockfile is generated locally and routinely gitignored, so the
+versions a remote scan sees are inferred from declared constraints, and an
+advisory applies to a resolved version rather than to a constraint.
+
+So the repository is read where it lives, by a CLI, and what travels is the
+dependency list:
+
+```bash
+dart run depcontrol collect .          # writes depcontrol-bundle.json
+```
+
+Then upload it from the registry screen, or pass `--upload https://your-api`.
+Collecting and sending are separate on purpose, so you can read the file first.
+
+- It reads **manifests, lockfiles and your own source**, and nothing else — not
+  your `.env`, not your history.
+- Source is scanned **on your machine**; only the resulting package *names*
+  leave it.
+- Git, path and SDK dependencies travel as a marker — 'a git dependency' — never
+  as a URL or a path. A git URL routinely carries a deploy token.
+- It **executes nothing**: no `pub get`, no `npm install`, no `dotnet restore`,
+  no build hook, no subprocess of any kind.
+- It **ignores `.gitignore`**, which is the point — that is where the lockfile
+  is.
+
+Packages from an internal feed are marked as unchecked rather than looked up on
+the public registry under the same name, and `--exclude-private` withholds them
+from the bundle entirely. `--redact-paths` replaces directory and package names
+with positional ids. Both flags are recorded, so the report says "manifest 3 of
+7" and gives a withheld count rather than presenting a redacted bundle as a
+complete one.
+
+A local project is tracked, not just uploaded once: its advisories and licences
+are re-checked here on the same schedule as everything else, because those are
+facts about a package and a version rather than about your repository. Only the
+dependency list is as old as your last `collect`, and the report says so.
+
+**What it discloses, exactly.** *Never leaves your machine:* source, credentials,
+`.env`, git history, absolute paths, path-dependency targets, git-dependency
+URLs, and the internal feed hostnames in `NuGet.config` / `.npmrc`. *Does leave
+your machine:* the package names and versions you depend on, your root package
+name, the packages your source imports, and the repo-relative directory of each
+manifest — which are then queried against pub.dev, npm, nuget.org and OSV like
+any other scan. **In one line: it discloses a repository's dependency list and
+module layout instead of its contents.** That is a large reduction and it is not
+nothing.
+
 ---
 
 ## What it supports
@@ -173,8 +225,9 @@ keeps them in a `packages.config` beside it. Both are read alongside the project
 file, so a report on either says what is installed rather than listing packages
 with no version.
 
-Repositories are read from **github.com and gitlab.com over https**. Public
-repositories today.
+Repositories are read from **github.com and gitlab.com over https**, or from a
+bundle collected on your own machine — which is how a private, self-hosted or
+enterprise repository is scanned, and how a gitignored lockfile is read at all.
 
 ## What it will not tell you
 
@@ -197,12 +250,19 @@ whether this covers you:
   as `5.2.7+4000` — the same release, written the way everything downstream can
   compare. It sorts and matches advisories correctly; it just does not look like
   what your `.csproj` says.
-- **NuGet packages are looked up on nuget.org only.** A `.csproj` does not say
-  which feed a package came from — that lives in a `NuGet.config` this server
-  does not read — so a package restored from an internal feed is either not
-  found, or found under the same name on the public registry and reported with
-  somebody else's licence and advisories. Internal feeds are phase 7.
-- **No private or self-hosted Git.** Public GitHub and GitLab only.
+- **A remotely scanned NuGet package is looked up on nuget.org only.** A
+  `.csproj` does not say which feed a package came from — that lives in a
+  `NuGet.config` the server never sees — so a package restored from an internal
+  feed is either not found, or found under the same name on the public registry
+  and reported with somebody else's licence and advisories. `depcontrol collect`
+  reads that config locally and marks those packages unchecked, so collecting
+  fixes it; a scan by URL still cannot. Internal feeds proper are phase 7.
+- **Private and self-hosted repositories are collected, not fetched.** There is
+  no credential store here and no plan for one: the server reaches public
+  GitHub and GitLab, and everything else arrives as a bundle you produced.
+- **A local project's dependency list is as old as your last `collect`.** Its
+  advisories and licences are re-checked here on the usual schedule; nobody can
+  re-read the repository but you.
 
 More on all of it, and why, in [docs/DESIGN.md](docs/DESIGN.md).
 
@@ -216,14 +276,15 @@ alerts, the scan-cost work that made large repositories survive a scan, scans
 that run on the server rather than inside the request that asked for them,
 stored report bodies that refresh for the fields the change digest deliberately
 ignores, manifest parsing extracted into `packages/ecosystem` so a scan can be
-read without a registry behind it, and **.NET** as a third ecosystem — project
-files, central package management and legacy `packages.config` alike.
+read without a registry behind it, **.NET** as a third ecosystem — project
+files, central package management and legacy `packages.config` alike — and the
+**local collector**, which reads a repository where it lives and makes private,
+self-hosted and enterprise repositories scannable at all.
 
 What is planned, in order:
 
 | | Scope | Status |
 |---|-------|--------|
-| 1.5 | **Local repository collector** | planned |
 | 2 | Cross-project search and version drift | planned |
 | 3 | Tags, owners, filters, health badges | planned |
 | 4 | Do-not-upgrade, snooze, approval history | planned |
@@ -231,55 +292,9 @@ What is planned, in order:
 | 6 | Settings API card, and **API health tracking** | planned |
 | 7 | SBOM export, notification digests, per-package timeline, internal registries | sketched |
 
-The two features described below are 1.5 and 6. Neither is built yet.
-
-### Phase 1.5 — Local repository collector *(planned)*
-
-A remote scan sees only what your repository publishes, and that is regularly
-not what you run. Lockfiles are generated locally and frequently gitignored, so
-the resolved versions — the ones an advisory actually applies to — never reach
-the server, and the report falls back to inferring them from declared
-constraints. Repositories that are private or self-hosted cannot be scanned at
-all.
-
-The plan is a small CLI you run inside your own checkout, which produces the
-same report from local files:
-
-```bash
-depcontrol collect            # writes a dependency bundle from the working tree
-```
-
-**Sealed by construction**, because it runs against a repository you would not
-hand to a service:
-
-- It reads an **explicit allowlist of manifest and lockfile names** and nothing
-  else. Not your source, not your `.env`, not your history.
-- It **executes nothing** — no `pub get`, no `npm install`, no build hooks, no
-  subprocess of any kind.
-- Its output is a **plain JSON bundle you can read before it goes anywhere**.
-- Uploading is a **separate, explicit step**. Collecting and sending are not the
-  same command.
-
-**What it discloses, stated exactly.** This is not zero-disclosure, and it should
-not be sold internally as if it were.
-
-*Never leaves your machine:* source, credentials, `.env`, git history, absolute
-paths, path-dependency targets, git-dependency URLs, and the internal feed
-hostnames in `NuGet.config` / `.npmrc`.
-
-*Does leave your machine:* the package names and versions you depend on, your
-root package name, the packages your source imports, and the repo-relative
-directory of each manifest. Those package names are then queried against pub.dev,
-npm, nuget.org and OSV — so the shape of a private repository's dependency tree is
-observable to those registries, exactly as it is for any scan. Nothing about your
-code is.
-
-**In one line: it discloses a repository's dependency list and module layout
-instead of its contents.** Two flags narrow it further — `--redact-paths` replaces
-manifest directories with opaque ids, and `--exclude-private` withholds packages
-that resolve from an internal feed. Both are recorded in the report, which says
-"manifest 3 of 7" and gives a withheld count rather than rendering a redacted
-bundle as though it were complete.
+The local collector is described under
+[Repositories we cannot reach](#repositories-we-cannot-reach) above; it is
+built. The feature below is not.
 
 ### Phase 6 — API health tracking *(planned)*
 

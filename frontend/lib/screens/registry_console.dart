@@ -16,6 +16,7 @@ class RegistryConsole extends StatelessWidget {
     required this.archived,
     required this.onFilter,
     required this.grid,
+    this.onUpload,
     this.error,
     this.pinPrompt,
     this.trackedCount,
@@ -24,6 +25,10 @@ class RegistryConsole extends StatelessWidget {
 
   final TextEditingController controller;
   final VoidCallback onSubmit;
+
+  /// Chooses a collected bundle and queues it, where this build can choose
+  /// files at all.
+  final VoidCallback? onUpload;
 
   /// Whether the archived half is on show.
   final bool archived;
@@ -49,6 +54,7 @@ class RegistryConsole extends StatelessWidget {
           _Hero(
             controller: controller,
             onSubmit: onSubmit,
+            onUpload: onUpload,
             archived: archived,
             error: error,
           ),
@@ -68,18 +74,91 @@ class RegistryConsole extends StatelessWidget {
   }
 }
 
+/// The second way in: for a repository this server cannot reach.
+///
+/// `GitFetcher` accepts github.com and gitlab.com and nothing else, so an Azure
+/// DevOps repository, a GitHub Enterprise one, or anything behind a VPN cannot
+/// be scanned by URL at all. It is read where it lives instead, by a CLI, and
+/// what arrives here is the dependency list rather than the repository.
+///
+/// The command is shown rather than explained, because it is the whole of what
+/// somebody has to do and a paragraph about it would be longer than it is.
+class _LocalRepositoryHint extends StatelessWidget {
+  const _LocalRepositoryHint({required this.onUpload});
+
+  final VoidCallback? onUpload;
+
+  static const command = 'dart run depcontrol collect .';
+
+  @override
+  Widget build(BuildContext context) {
+    final surfaces = Surfaces.of(context);
+    final theme = Theme.of(context);
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Icon(Icons.vpn_lock_outlined, size: 15, color: surfaces.muted),
+        const SizedBox(width: 8),
+        Expanded(
+          // `Text.rich` rather than a bare `RichText`: it inherits the ambient
+          // text style, and it is what widget finders can read — a line nobody
+          // can assert on is a line that quietly disappears in a refactor.
+          child: Text.rich(
+            TextSpan(
+              style: theme.textTheme.bodySmall?.copyWith(color: surfaces.muted),
+              children: [
+                const TextSpan(
+                  text: 'Repository we cannot reach, or a lockfile that is not '
+                      'committed? Run ',
+                ),
+                TextSpan(
+                  text: command,
+                  style: monoOf(
+                    context,
+                    theme.textTheme.bodySmall,
+                    color: surfaces.text,
+                  ),
+                ),
+                const TextSpan(
+                  text: ' where it lives and upload the bundle. It sends the '
+                      'dependency list, not the code.',
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (onUpload != null) ...[
+          const SizedBox(width: 12),
+          OutlinedButton.icon(
+            onPressed: onUpload,
+            icon: const Icon(Icons.upload_file_outlined, size: 17),
+            label: const Text('Upload bundle'),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
 /// The card the page opens with: what this screen is, and the one action it
 /// exists to offer.
 class _Hero extends StatelessWidget {
   const _Hero({
     required this.controller,
     required this.onSubmit,
+    required this.onUpload,
     required this.archived,
     required this.error,
   });
 
   final TextEditingController controller;
   final VoidCallback onSubmit;
+
+  /// Chooses a bundle file and queues it. Null on a build with no file chooser,
+  /// which hides the button and leaves the instructions — the CLI command is
+  /// true everywhere, and the browser is where the file goes.
+  final VoidCallback? onUpload;
   final bool archived;
   final String? error;
 
@@ -151,6 +230,8 @@ class _Hero extends StatelessWidget {
                 ),
               ],
             ),
+            const SizedBox(height: 18),
+            _LocalRepositoryHint(onUpload: onUpload),
           ],
           if (error != null) ...[
             const SizedBox(height: 12),
