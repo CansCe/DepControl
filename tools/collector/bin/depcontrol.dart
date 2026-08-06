@@ -25,6 +25,9 @@ Future<void> main(List<String> arguments) async {
   exitCode = await _run(arguments);
 }
 
+/// The hosted API `--pair` submits to when `--api` is not given.
+const kDefaultApi = 'https://depcontrol-api.fly.dev';
+
 Future<int> _run(List<String> arguments) async {
   final parser = ArgParser()
     ..addFlag(
@@ -61,9 +64,23 @@ Future<int> _run(List<String> arguments) async {
           'file nobody can read is a file nobody can check before sending.',
     )
     ..addOption(
+      'pair',
+      help: 'After writing the bundle, submit it using a pairing code minted '
+          'from the registry screen ("Add project" > run the collector). '
+          'Pass "-" to read the code from stdin instead of the command line, '
+          'for anyone who does not want it in their shell history. Mutually '
+          'exclusive with --upload — a code already names the account.',
+    )
+    ..addOption(
+      'api',
+      defaultsTo: kDefaultApi,
+      help: 'Base URL for --pair. Defaults to the hosted DepControl API.',
+    )
+    ..addOption(
       'upload',
       help: 'After writing the bundle, send it to this DepControl API — for '
-          'example https://depcontrol.fly.dev. Off unless asked for.',
+          'example https://depcontrol.fly.dev. Off unless asked for. Needs '
+          '--token; prefer --pair, which needs nothing but a code.',
     )
     ..addOption(
       'token',
@@ -77,6 +94,14 @@ Future<int> _run(List<String> arguments) async {
           'creating a new one. This is how a local project is brought up to '
           'date; it cannot be re-fetched.',
     );
+
+  // A double-clicked binary arrives with no arguments at all, and on Windows
+  // with a console freshly allocated just for it — there is no useful "print
+  // usage and exit" for someone who just double-clicked an .exe. `collect .`
+  // is the one thing worth doing by default; usage is still one --help away.
+  if (arguments.isEmpty && stdout.hasTerminal) {
+    return _collect(collectParser.parse(const []));
+  }
 
   final ArgResults args;
   try {
@@ -95,7 +120,17 @@ Future<int> _run(List<String> arguments) async {
     _usage(collectParser);
     return 64;
   }
-  return _collect(args.command!);
+
+  final command = args.command!;
+  if (command['pair'] != null && command['upload'] != null) {
+    stderr.writeln(
+      '--pair and --upload are mutually exclusive: a pairing code already '
+      'names the account this bundle goes to.',
+    );
+    return 64;
+  }
+
+  return _collect(command);
 }
 
 Future<int> _upload(
@@ -152,6 +187,72 @@ Future<int> _upload(
   return 65;
 }
 
+/// Submits a freshly written bundle against a pairing code minted from the
+/// registry screen. The web page that minted it is already polling and picks
+/// the scan up on its own — nothing here has to say where to look.
+Future<int> _pair(
+  CollectedBundle bundle, {
+  required String api,
+  required String code,
+}) async {
+  final base = Uri.tryParse(api);
+  if (base == null || !base.isScheme('https') && !base.isScheme('http')) {
+    stderr.writeln('--api needs an https URL, e.g. $kDefaultApi');
+    return 64;
+  }
+
+  // The client invents its own scan id so it can watch without waiting for one
+  // to come back, which is what the server's queue is keyed by — same as
+  // `--upload`.
+  final scanId = 'collect-${DateTime.now().toUtc().millisecondsSinceEpoch}';
+  final url = base.resolve('/collector/bundles');
+
+  final http.Response response;
+  try {
+    response = await http.post(
+      url,
+      headers: {'content-type': 'application/json'},
+      body: jsonEncode({
+        'code': code,
+        'scanId': scanId,
+        'bundle': bundle.toJson(),
+      }),
+    );
+  } on http.ClientException catch (e) {
+    stderr.writeln('Could not reach $url: ${e.message}');
+    return 69; // EX_UNAVAILABLE
+  }
+
+  if (response.statusCode >= 200 && response.statusCode < 300) {
+    stderr.writeln(
+      'Submitted. The page that showed this code is already watching — scan '
+      '$scanId runs on the server whether or not this window stays open.',
+    );
+    return 0;
+  }
+
+  if (response.statusCode == HttpStatus.unauthorized) {
+    stderr.writeln(
+      'That code was refused: ${response.body}\n'
+      'It may be wrong, already used, or older than fifteen minutes. Mint a '
+      'new one from the registry screen and pass it to --pair.',
+    );
+    return 77; // EX_NOPERM
+  }
+
+  stderr.writeln('$url answered ${response.statusCode}: ${response.body}');
+  return 65;
+}
+
+/// Reads a pairing code from the command line, or from stdin when [raw] is
+/// `-` — for anyone who does not want a bearer credential sitting in their
+/// shell history. Null for anything blank either way.
+String? _readCode(String raw) {
+  final code = raw == '-' ? stdin.readLineSync() : raw;
+  final trimmed = code?.trim();
+  return trimmed == null || trimmed.isEmpty ? null : trimmed;
+}
+
 Future<int> _collect(ArgResults args) async {
   final rest = args.rest;
   if (rest.length > 1) {
@@ -184,31 +285,44 @@ Future<int> _collect(ArgResults args) async {
       : const JsonEncoder.withIndent('  ').convert(result.bundle.toJson());
 
   final out = args['out'] as String;
-  if (out == '-') {
+  final File? outFile = out == '-' ? null : File(out);
+  if (outFile == null) {
     stdout.writeln(json);
   } else {
-    File(out).writeAsStringSync('$json\n');
+    outFile.writeAsStringSync('$json\n');
   }
 
-  // To stderr, so `--out -` still pipes clean JSON. This summary is the whole
-  // of the "read it before it goes anywhere" promise being kept: it says what
-  // the file contains before anybody decides to send it.
+  // To stderr, so `--out -` still pipes clean JSON. This summary — and the
+  // path, when there is one — is the whole of the "read it before it goes
+  // anywhere" promise being kept: it says what the file contains and exactly
+  // where it sits before anybody decides to send it. The absolute path
+  // matters specifically for a double-clicked binary, whose working directory
+  // is not obviously anywhere.
+  if (outFile != null) {
+    stderr.writeln('Written to ${outFile.absolute.path}.');
+  }
   stderr.writeln(result.summary);
+
+  final pairCode = args['pair'] as String?;
+  if (pairCode != null) {
+    final code = _readCode(pairCode);
+    if (code == null) {
+      stderr.writeln('--pair needs a code; none was given on stdin.');
+      return 64;
+    }
+    return _pair(result.bundle, api: args['api'] as String, code: code);
+  }
 
   final api = args['upload'] as String?;
   if (api == null) {
-    // The default, and the reason `--upload` is a separate flag: producing a
-    // bundle and sending one are different decisions, and somebody should be
-    // able to read the first before taking the second.
-    stderr.writeln(
-      out == '-' ? '' : 'Written to $out. Nothing has been sent anywhere.',
-    );
+    // The default, and the reason `--upload`/`--pair` are separate flags:
+    // producing a bundle and sending one are different decisions, and
+    // somebody should be able to read the first before taking the second.
+    if (outFile == null) stderr.writeln();
+    stderr.writeln('Nothing has been sent anywhere.');
     return 0;
   }
 
-  // Written first, then sent. A failed upload must not also lose the bundle —
-  // collecting it again is minutes of somebody's afternoon.
-  if (out != '-') stderr.writeln('Written to $out.');
   return _upload(
     result.bundle,
     api: api,

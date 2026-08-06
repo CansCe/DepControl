@@ -5,6 +5,7 @@ import 'package:shared/shared.dart';
 
 import '../api/api_client.dart';
 import '../auth/session_monitor.dart';
+import '../collector/collector_pairing.dart';
 import '../export/file_download.dart';
 import '../export/report_export.dart';
 import '../platform/breakpoints.dart';
@@ -138,6 +139,33 @@ class _ReportScreenState extends State<ReportScreen> {
   /// this state object, so disposing it left the server working on a report
   /// nothing would ever read.
   void _reanalyze() => _scans.reanalyze(widget.api, _project);
+
+  /// Brings a local project up to date. The server refuses
+  /// `POST /projects/<id>/refresh` for one with 409 — there is no repository
+  /// here to re-fetch — so pairing the collector is the actual "re-analyze"
+  /// for a local project, not [_reanalyze].
+  void _updateLocalProject() {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Update this project'),
+        content: SizedBox(
+          width: 440,
+          child: CollectorPairing(
+            api: widget.api,
+            scans: _scans,
+            projectId: _project.id,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
 
   /// Writes the report out as a file.
   ///
@@ -366,6 +394,16 @@ class _ReportScreenState extends State<ReportScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                 ),
+              )
+            // A local project has no repository to refetch — the server
+            // refuses `refresh` for one with 409 — so its "keep this
+            // current" action pairs the collector instead of re-scanning.
+            else if (_project.isLocal)
+              TextButton.icon(
+                onPressed: _updateLocalProject,
+                style: TextButton.styleFrom(foregroundColor: Colors.white),
+                icon: const Icon(Icons.sync, size: 18),
+                label: const Text('Update'),
               )
             else
               TextButton.icon(

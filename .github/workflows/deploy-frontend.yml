@@ -35,9 +35,16 @@ jobs:
         # different origin than the API, so it cannot infer the address at
         # runtime. Set it as a repository *variable* (it is a public URL, not a
         # secret; a secret would be masked in logs for no benefit).
+        #
+        # COLLECTOR_RELEASE_URL is the same idea for the collector's download
+        # buttons. `|| '...'` falls back to this repo's own GitHub Releases —
+        # a fork setting its own `vars.COLLECTOR_RELEASE_URL` overrides it, and
+        # an empty result (no release published yet) is also a valid answer:
+        # the registry screen degrades to the `dart run` instructions.
         run: |
           flutter build web --release \
-            --dart-define=API_BASE_URL=${{ vars.API_BASE_URL }}
+            --dart-define=API_BASE_URL=${{ vars.API_BASE_URL }} \
+            --dart-define=COLLECTOR_RELEASE_URL=${{ vars.COLLECTOR_RELEASE_URL || 'https://github.com/CansCe/project_cloud/releases/latest/download' }}
         working-directory: frontend
 
       - name: Deploy to Cloudflare Pages

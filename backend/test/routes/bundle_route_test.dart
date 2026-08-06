@@ -12,6 +12,10 @@ import 'package:test/test.dart';
 
 import '../support/fakes.dart';
 
+import '../../routes/collector/bundles/index.dart' as collector_bundles_route;
+import '../../routes/collector/sessions/[id].dart' as collector_session_route;
+import '../../routes/collector/sessions/index.dart'
+    as collector_sessions_route;
 import '../../routes/projects/index.dart' as projects_route;
 import '../../routes/projects/[id]/bundle.dart' as bundle_route;
 import '../../routes/projects/[id]/refresh.dart' as refresh_route;
@@ -380,6 +384,195 @@ void main() {
       // And it says the thing a reader would otherwise get wrong: the project
       // is not going stale in the way "cannot refresh" suggests.
       expect(body['reason'], contains('advisories'));
+    });
+  });
+
+  group('POST /collector/sessions', () {
+    test('mints a code and a waiting session', () async {
+      final response = await collector_sessions_route.onRequest(
+        contextFor(method: HttpMethod.post, user: alice, body: const {}),
+      );
+
+      expect(response.statusCode, HttpStatus.created);
+      final body = await jsonOf(response);
+      expect(body['code'], isA<String>());
+      expect(body['id'], isA<String>());
+      // Only ever this once — a later read never carries it. See the
+      // `GET /collector/sessions/<id>` group below.
+    });
+
+    test('with an unknown projectId is a 404', () async {
+      final response = await collector_sessions_route.onRequest(
+        contextFor(
+          method: HttpMethod.post,
+          user: alice,
+          body: {'projectId': 'nope'},
+        ),
+      );
+      expect(response.statusCode, HttpStatus.notFound);
+    });
+  });
+
+  group('GET /collector/sessions/<id>', () {
+    Future<Map<String, dynamic>> mint({String? projectId}) async {
+      final response = await collector_sessions_route.onRequest(
+        contextFor(
+          method: HttpMethod.post,
+          user: alice,
+          body: {if (projectId != null) 'projectId': projectId},
+        ),
+      );
+      return jsonOf(response);
+    }
+
+    test('reads waiting, then claimed with the scan id — never the code', () async {
+      final minted = await mint();
+      final id = minted['id'] as String;
+      final code = minted['code'] as String;
+
+      final before = await collector_session_route.onRequest(
+        contextFor(method: HttpMethod.get, user: alice, body: null),
+        id,
+      );
+      final beforeBody = await jsonOf(before);
+      expect(beforeBody['state'], 'waiting');
+      expect(beforeBody.containsKey('code'), isFalse);
+
+      await collector_bundles_route.onRequest(
+        contextFor(
+          method: HttpMethod.post,
+          user: alice,
+          body: {'code': code, 'scanId': 'scan-1', 'bundle': bundleJson()},
+        ),
+      );
+
+      final after = await collector_session_route.onRequest(
+        contextFor(method: HttpMethod.get, user: alice, body: null),
+        id,
+      );
+      final afterBody = await jsonOf(after);
+      expect(afterBody['state'], 'claimed');
+      expect(afterBody['scanId'], 'scan-1');
+      expect(afterBody.containsKey('code'), isFalse);
+    });
+
+    test('somebody else\'s session is a 404, not a 403', () async {
+      final id = (await mint())['id'] as String;
+
+      final response = await collector_session_route.onRequest(
+        contextFor(
+          method: HttpMethod.get,
+          user: const AuthUser(
+            id: 'b0000000-0000-0000-0000-00000000000b',
+            role: 'authenticated',
+          ),
+          body: null,
+        ),
+        id,
+      );
+      expect(response.statusCode, HttpStatus.notFound);
+    });
+  });
+
+  group('POST /collector/bundles', () {
+    Future<String> mintCode({String? projectId}) async {
+      final response = await collector_sessions_route.onRequest(
+        contextFor(
+          method: HttpMethod.post,
+          user: alice,
+          body: {if (projectId != null) 'projectId': projectId},
+        ),
+      );
+      return (await jsonOf(response))['code'] as String;
+    }
+
+    test('claims the code and queues a new local project', () async {
+      final code = await mintCode();
+
+      final response = await collector_bundles_route.onRequest(
+        contextFor(
+          method: HttpMethod.post,
+          user: alice,
+          body: {'code': code, 'scanId': 'scan-1', 'bundle': bundleJson()},
+        ),
+      );
+      expect(response.statusCode, HttpStatus.accepted);
+
+      await runQueuedScans();
+      final project = (await repository.allForOwner(alice.id)).single;
+      expect(project.isLocal, isTrue);
+    });
+
+    test('a wrong code is refused, same as a used or expired one', () async {
+      final response = await collector_bundles_route.onRequest(
+        contextFor(
+          method: HttpMethod.post,
+          user: alice,
+          body: {
+            'code': 'WRNG-CODE-0000-0000',
+            'scanId': 'scan-1',
+            'bundle': bundleJson(),
+          },
+        ),
+      );
+      expect(response.statusCode, HttpStatus.unauthorized);
+    });
+
+    // Single-use is the whole point: a code is a bearer credential and this is
+    // what keeps it from being a standing one.
+    test('the same code cannot be claimed a second time', () async {
+      final code = await mintCode();
+
+      final first = await collector_bundles_route.onRequest(
+        contextFor(
+          method: HttpMethod.post,
+          user: alice,
+          body: {'code': code, 'scanId': 'scan-1', 'bundle': bundleJson()},
+        ),
+      );
+      final second = await collector_bundles_route.onRequest(
+        contextFor(
+          method: HttpMethod.post,
+          user: alice,
+          body: {'code': code, 'scanId': 'scan-2', 'bundle': bundleJson()},
+        ),
+      );
+
+      expect(first.statusCode, HttpStatus.accepted);
+      expect(second.statusCode, HttpStatus.unauthorized);
+    });
+
+    test('a session paired to an existing project re-uploads to it', () async {
+      await projects_route.onRequest(
+        contextFor(
+          method: HttpMethod.post,
+          user: alice,
+          body: {'bundle': bundleJson(), 'scanId': 'first'},
+        ),
+      );
+      await runQueuedScans();
+      final project = (await repository.allForOwner(alice.id)).single;
+
+      final code = await mintCode(projectId: project.id);
+      final response = await collector_bundles_route.onRequest(
+        contextFor(
+          method: HttpMethod.post,
+          user: alice,
+          body: {
+            'code': code,
+            'scanId': 'second',
+            'bundle': bundleJson(generatedAt: DateTime.utc(2026, 8, 4, 17)),
+          },
+        ),
+      );
+      expect(response.statusCode, HttpStatus.accepted);
+      await runQueuedScans();
+
+      // One project, not two — exactly the reason `POST /projects/<id>/bundle`
+      // exists at all, and this route reaches the same tail.
+      final projects = await repository.allForOwner(alice.id);
+      expect(projects, hasLength(1));
+      expect(projects.single.bundleCollectedAt, DateTime.utc(2026, 8, 4, 17));
     });
   });
 }

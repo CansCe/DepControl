@@ -110,31 +110,33 @@ Future<Response> _add(
     );
   }
 
+  if (rawBundle != null) {
+    final outcome = await ingestBundle(
+      deps,
+      ownerId: user.id,
+      rawBundle: rawBundle,
+      rawScanId: body['scanId'],
+    );
+    return outcome.refusal ??
+        Response.json(
+          statusCode: HttpStatus.accepted,
+          body: outcome.status!.toJson(),
+        );
+  }
+
   final ref = (body['ref'] as String?) ?? 'HEAD';
 
-  CollectedBundle? bundle;
-  if (rawBundle != null) {
-    try {
-      bundle = readBundle(rawBundle, ecosystems: deps.ecosystems);
-    } on FormatException catch (e) {
-      return Response.json(
-        statusCode: HttpStatus.badRequest,
-        body: {'error': e.message},
-      );
-    }
-  } else {
-    // Refused here rather than a minute into a queued job. This is the part of a
-    // scan that can be judged without the network, and a caller who typed the
-    // wrong host should hear about it now rather than read it off a failed
-    // report later.
-    try {
-      GitFetcher.validate(gitUrl!, ref: ref);
-    } on StateError catch (e) {
-      return Response.json(
-        statusCode: HttpStatus.badRequest,
-        body: {'error': e.message},
-      );
-    }
+  // Refused here rather than a minute into a queued job. This is the part of a
+  // scan that can be judged without the network, and a caller who typed the
+  // wrong host should hear about it now rather than read it off a failed
+  // report later.
+  try {
+    GitFetcher.validate(gitUrl!, ref: ref);
+  } on StateError catch (e) {
+    return Response.json(
+      statusCode: HttpStatus.badRequest,
+      body: {'error': e.message},
+    );
   }
 
   // The caller names its own scan so it can start watching without waiting for
@@ -168,8 +170,7 @@ Future<Response> _add(
       id: scanId,
       ownerId: user.id,
       kind: ScanJobKind.add,
-      gitUrl: bundle == null ? gitUrl : null,
-      bundle: bundle,
+      gitUrl: gitUrl,
       ref: ref,
       progress: ScanProgress(
         phase: ScanPhase.queued,

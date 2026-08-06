@@ -12,6 +12,7 @@ import 'api/api_config.dart';
 import 'api/project_index.dart';
 import 'auth/auth_gate.dart';
 import 'auth/session_monitor.dart';
+import 'collector/collector_pairing.dart';
 import 'platform/app_surface.dart';
 import 'platform/breakpoints.dart';
 import 'routing/app_route.dart';
@@ -437,6 +438,7 @@ class _RegistryScreenState extends State<RegistryScreen> {
         controller: _urlController,
         onSubmit: _add,
         onUpload: canPickFile ? _uploadBundle : null,
+        collectorPairing: CollectorPairing(api: _api, scans: _scans),
         archived: _showArchived,
         onFilter: _setFilter,
         error: _error,

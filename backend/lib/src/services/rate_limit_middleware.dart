@@ -54,6 +54,68 @@ Middleware rateLimitOutboundWork({Logger? logger}) {
   };
 }
 
+/// Limits `/collector/bundles`, which has no signed-in caller to key against
+/// — the code is the credential, and it has not been checked yet when this
+/// runs. Keyed by client IP instead of a user id.
+///
+/// This is defense in depth, not the actual defense: a pairing code carries
+/// 128 bits of entropy (see `CollectorCode`), which already makes guessing
+/// one infeasible. What this limiter buys is a slow failure instead of a fast
+/// one for whoever tries anyway, and a floor under how much load an
+/// unauthenticated route can take from a single address.
+Middleware rateLimitByIp({Logger? logger}) {
+  final rate = (logger ?? log).tagged('rate');
+
+  return (handler) {
+    return (context) async {
+      final limiter = context.read<Deps>().limiter;
+      if (limiter == null) return handler(context);
+
+      final ip = clientIp(context.request);
+      final decision = limiter.check('ip:$ip');
+      if (decision.allowed) return handler(context);
+
+      rate.warn(
+        'Rate limited $ip on ${context.request.uri.path} — '
+        'retry in ${decision.retryAfterSeconds}s.',
+      );
+
+      return Response.json(
+        statusCode: HttpStatus.tooManyRequests,
+        headers: retryAfterHeaders(decision),
+        body: {
+          'error': 'Too many requests',
+          'retryAfterSeconds': decision.retryAfterSeconds,
+        },
+      );
+    };
+  };
+}
+
+/// The caller's address, preferring what Fly's edge sets over the raw TCP
+/// peer — behind a proxy the peer is always Fly's own load balancer, and
+/// bucketing on that would count every caller as one.
+///
+/// Falls back to the connection's own remote address for a direct request
+/// (local dev, or any deployment with no proxy in front), and to a constant
+/// bucket when neither is available — under-limiting rather than throwing on
+/// a request this server cannot place.
+String clientIp(Request request) {
+  final fly = request.headers['Fly-Client-IP'];
+  if (fly != null && fly.isNotEmpty) return fly;
+
+  final forwarded = request.headers['X-Forwarded-For'];
+  if (forwarded != null && forwarded.isNotEmpty) {
+    return forwarded.split(',').first.trim();
+  }
+
+  try {
+    return request.connectionInfo.remoteAddress.address;
+  } on Object {
+    return 'unknown';
+  }
+}
+
 /// Whether serving this request means calling something else.
 ///
 /// Every write does: adding, re-analyzing and simulating all re-fetch the

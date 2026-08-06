@@ -1,0 +1,121 @@
+# Compiles `depcontrol collect` to a native binary for each OS and publishes
+# them on a GitHub Release, so someone without a Dart SDK can still run the
+# local collector — see phase 1.6 in the roadmap.
+#
+# Triggered by pushing a tag `collector-v<version>` matching
+# `tools/collector/lib/src/version.dart`'s `collectorVersion`, or by a manual
+# "Run workflow" against that same tag (pick it from the ref dropdown — this
+# workflow always builds whatever ref it was run against).
+name: release-collector
+
+on:
+  push:
+    tags:
+      - 'collector-v*'
+  workflow_dispatch:
+
+jobs:
+  # Fails fast and separately from the four-way build matrix, so a version
+  # mismatch is one clear message instead of four identical build failures.
+  version-check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm the tag matches collectorVersion
+        id: check
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" != collector-v* ]]; then
+            echo "Ref '$TAG' does not start with collector-v — for a manual" >&2
+            echo "run, pick a collector-v* tag from the ref dropdown." >&2
+            exit 1
+          fi
+          TAG_VERSION="${TAG#collector-v}"
+          SOURCE_VERSION=$(grep -oP "(?<=collectorVersion = ')[^']+" \
+            tools/collector/lib/src/version.dart)
+          if [[ "$TAG_VERSION" != "$SOURCE_VERSION" ]]; then
+            # `collectorVersion` travels inside every bundle as provenance. A
+            # release whose binary reports a different version than it was
+            # published under would make that field a lie.
+            echo "Tag says $TAG_VERSION but version.dart says $SOURCE_VERSION." >&2
+            exit 1
+          fi
+          echo "version=$SOURCE_VERSION" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version-check
+    strategy:
+      matrix:
+        include:
+          # `dart compile exe` cannot cross-compile, so each target needs its
+          # own runner. macOS ships two: GitHub's `macos-latest` is Apple
+          # Silicon and `macos-13` is the last Intel image, and a binary built
+          # on one will not run on the other.
+          - os: ubuntu-latest
+            asset: depcontrol-linux-x64
+          - os: windows-latest
+            asset: depcontrol-windows-x64.exe
+          - os: macos-latest
+            asset: depcontrol-macos-arm64
+          - os: macos-13
+            asset: depcontrol-macos-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.8
+
+      # Resolved from the workspace root: `tools/collector` is a member and
+      # has no lockfile of its own.
+      - run: flutter pub get
+
+      - name: Compile
+        run: dart compile exe tools/collector/bin/depcontrol.dart -o ${{ matrix.asset }}
+
+      - name: Checksum (Unix)
+        if: runner.os != 'Windows'
+        run: shasum -a 256 '${{ matrix.asset }}' > '${{ matrix.asset }}.sha256'
+
+      - name: Checksum (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash '${{ matrix.asset }}' -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.asset }}" | Out-File -Encoding ascii -NoNewline '${{ matrix.asset }}.sha256'
+
+      # Unversioned names, so the web app can link to a fixed
+      # `.../releases/latest/download/<asset>` URL without knowing the
+      # current version — `collectorVersion` and the release tag carry that
+      # instead.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sha256
+          if-no-files-found: error
+
+  release:
+    needs: [version-check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish the release
+        run: |
+          gh release create "${{ github.ref_name }}" dist/* \
+            --title "depcontrol collector v${{ needs.version-check.outputs.version }}" \
+            --notes "Unsigned binaries: Windows SmartScreen and macOS Gatekeeper both warn before running one, since neither is code-signed. Verify a download against its matching \`.sha256\` file before running it. Run with no arguments to \`collect .\` in the current directory; see \`depcontrol collect --help\` for everything else."

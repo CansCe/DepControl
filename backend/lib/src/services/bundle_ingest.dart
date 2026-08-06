@@ -1,8 +1,15 @@
+import 'dart:io';
+
+import 'package:dart_frog/dart_frog.dart';
 import 'package:shared/shared.dart';
 
+import '../archived_project.dart';
+import '../deps.dart';
 import '../ecosystem/ecosystems.dart';
+import '../repository/scan_job_store.dart';
 import 'dependency_analyzer.dart';
 import 'git_fetcher.dart';
+import 'scan_watch.dart';
 
 /// An uploaded bundle, read and checked, or a [FormatException] whose message
 /// is fit to answer the request with.
@@ -30,6 +37,130 @@ CollectedBundle readBundle(Object? raw, {required Ecosystems ecosystems}) {
 bool bundleTooLarge(String? contentLength) {
   final declared = int.tryParse(contentLength ?? '');
   return declared != null && declared > BundleIngest.maxBytes;
+}
+
+/// What ingesting a bundle produced: a scan to answer with — freshly queued,
+/// or the one already in flight for the same project or scan id — or a
+/// [Response] refusing the upload outright.
+class BundleIngestOutcome {
+  const BundleIngestOutcome.accepted(this.status) : refusal = null;
+
+  const BundleIngestOutcome.refused(Response response)
+      : refusal = response,
+        status = null;
+
+  final ScanStatus? status;
+  final Response? refusal;
+}
+
+/// The tail every bundle-ingest route shares: validate the bundle and the
+/// scan id, apply the project-state checks a re-upload always has, fold into
+/// an already-known scan where one exists, and otherwise enqueue.
+///
+/// [projectId] set means a re-upload to an existing project — the shape
+/// `POST /projects/<id>/bundle` and `POST /collector/bundles` (paired to a
+/// project) both have. Null means a new project, `POST /projects`'s shape.
+/// Which it is also decides [ScanJobKind], exactly as `ScanJob.subject`'s own
+/// doc explains: told apart by whether the job knew its project from the
+/// start.
+///
+/// Does **not** check [bundleTooLarge] — that is judged from a header before
+/// the body is read, and stays the caller's first move.
+Future<BundleIngestOutcome> ingestBundle(
+  Deps deps, {
+  required String ownerId,
+  required Object? rawBundle,
+  required Object? rawScanId,
+  String? projectId,
+}) async {
+  final CollectedBundle bundle;
+  try {
+    bundle = readBundle(rawBundle, ecosystems: deps.ecosystems);
+  } on FormatException catch (e) {
+    return BundleIngestOutcome.refused(
+      Response.json(statusCode: HttpStatus.badRequest, body: {'error': e.message}),
+    );
+  }
+
+  final scanId = scanIdFrom(rawScanId);
+  if (scanId == null) {
+    return BundleIngestOutcome.refused(
+      Response.json(
+        statusCode: HttpStatus.badRequest,
+        body: {
+          'error': 'scanId is required: 1-$kMaxScanIdLength characters of '
+              'A-Z, a-z, 0-9, dot, dash or underscore',
+        },
+      ),
+    );
+  }
+
+  if (projectId != null) {
+    final project = await deps.repository.byId(projectId, ownerId: ownerId);
+    if (project == null) {
+      return BundleIngestOutcome.refused(
+        Response.json(
+          statusCode: HttpStatus.notFound,
+          body: {'error': 'project not found'},
+        ),
+      );
+    }
+
+    final archived = archivedProjectRefusal(project, 're-analysis');
+    if (archived != null) return BundleIngestOutcome.refused(archived);
+
+    if (!project.isLocal) {
+      return BundleIngestOutcome.refused(
+        Response.json(
+          statusCode: HttpStatus.conflict,
+          body: {
+            'error': '${project.name} is fetched from a repository',
+            'reason': 'This project has a git URL, so it is brought up to '
+                'date with POST /projects/<id>/refresh. Bundles are for '
+                'repositories this server cannot reach.',
+          },
+        ),
+      );
+    }
+
+    // A second upload while one is still running is somebody checking whether
+    // the first registered — it carries a newer reading, so the running job is
+    // returned rather than queuing a second one, and the caller can upload
+    // again once it finishes.
+    final running = await deps.scanJobs.unfinishedForProject(project.id);
+    if (running != null) {
+      return BundleIngestOutcome.accepted(running.toStatus());
+    }
+  }
+
+  // The same scan asked for twice — a retried request, or a client that did
+  // not hear the first answer. Returning the job it already has is the whole
+  // of what "at most once" needs here.
+  final existing = await deps.scanJobs.byId(scanId, ownerId: ownerId);
+  if (existing != null) {
+    return BundleIngestOutcome.accepted(existing.toStatus());
+  }
+
+  final now = DateTime.now().toUtc();
+  final job = await deps.scanJobs.enqueue(
+    ScanJob(
+      id: scanId,
+      ownerId: ownerId,
+      kind: projectId == null ? ScanJobKind.add : ScanJobKind.refresh,
+      bundle: bundle,
+      projectId: projectId,
+      progress: ScanProgress(
+        phase: ScanPhase.queued,
+        startedAt: now,
+        phaseStartedAt: now,
+      ),
+      createdAt: now,
+    ),
+  );
+
+  deps.scanRunner.wake();
+
+  return BundleIngestOutcome.accepted(job.toStatus());
 }
 
 /// Reads an uploaded [CollectedBundle] into the form the analyzer already

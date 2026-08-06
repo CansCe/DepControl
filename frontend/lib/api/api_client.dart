@@ -203,6 +203,43 @@ class ApiClient {
     return ScanStatus.fromJson(json);
   }
 
+  /// Mints a one-shot pairing code the local collector binary can submit a
+  /// bundle against, without this session's own token ever leaving the
+  /// browser.
+  ///
+  /// [projectId] set re-uploads to that project once claimed — the same shape
+  /// [uploadBundle] has; absent creates a new one, the same shape
+  /// [addProjectFromBundle] has. The code is returned only from this call; a
+  /// later [collectorSession] read of the same id never carries it.
+  Future<({String id, String code, DateTime expiresAt})>
+      createCollectorSession({String? projectId}) async {
+    final json = await _send(() async => _client.post(
+          Uri.parse('$baseUrl/collector/sessions'),
+          headers: await _headers(json: true),
+          body: jsonEncode({if (projectId != null) 'projectId': projectId}),
+        ));
+    return (
+      id: json['id'] as String,
+      code: json['code'] as String,
+      expiresAt:
+          DateTime.tryParse(json['expiresAt'] as String? ?? '')?.toUtc() ??
+              DateTime.now().toUtc(),
+    );
+  }
+
+  /// What a pairing session minted by [createCollectorSession] is doing.
+  ///
+  /// The page that minted the code polls this until it reads `claimed`, at
+  /// which point [CollectorSession.scanId] is the whole of what is needed to
+  /// hand off to [ScanQueue.reattach] — no separate discovery step.
+  Future<CollectorSession> collectorSession(String id) async {
+    final json = await _send(() async => _client.get(
+          Uri.parse('$baseUrl/collector/sessions/$id'),
+          headers: await _headers(),
+        ));
+    return CollectorSession.fromJson(json);
+  }
+
   /// Queues a re-fetch and re-analysis of an existing project.
   ///
   /// Distinct from [report], which only reads what was already stored: a report

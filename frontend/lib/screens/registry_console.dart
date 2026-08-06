@@ -16,6 +16,7 @@ class RegistryConsole extends StatelessWidget {
     required this.archived,
     required this.onFilter,
     required this.grid,
+    required this.collectorPairing,
     this.onUpload,
     this.error,
     this.pinPrompt,
@@ -29,6 +30,12 @@ class RegistryConsole extends StatelessWidget {
   /// Chooses a collected bundle and queues it, where this build can choose
   /// files at all.
   final VoidCallback? onUpload;
+
+  /// Download-and-pair the collector, so most people never need [onUpload]
+  /// at all. Built by the screen that owns the API client and the scan
+  /// queue — the same reason [grid] arrives pre-built rather than as a
+  /// callback.
+  final Widget collectorPairing;
 
   /// Whether the archived half is on show.
   final bool archived;
@@ -55,6 +62,7 @@ class RegistryConsole extends StatelessWidget {
             controller: controller,
             onSubmit: onSubmit,
             onUpload: onUpload,
+            collectorPairing: collectorPairing,
             archived: archived,
             error: error,
           ),
@@ -84,9 +92,13 @@ class RegistryConsole extends StatelessWidget {
 /// The command is shown rather than explained, because it is the whole of what
 /// somebody has to do and a paragraph about it would be longer than it is.
 class _LocalRepositoryHint extends StatelessWidget {
-  const _LocalRepositoryHint({required this.onUpload});
+  const _LocalRepositoryHint({
+    required this.onUpload,
+    required this.collectorPairing,
+  });
 
   final VoidCallback? onUpload;
+  final Widget collectorPairing;
 
   static const command = 'dart run depcontrol collect .';
 
@@ -95,47 +107,65 @@ class _LocalRepositoryHint extends StatelessWidget {
     final surfaces = Surfaces.of(context);
     final theme = Theme.of(context);
 
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(Icons.vpn_lock_outlined, size: 15, color: surfaces.muted),
-        const SizedBox(width: 8),
-        Expanded(
-          // `Text.rich` rather than a bare `RichText`: it inherits the ambient
-          // text style, and it is what widget finders can read — a line nobody
-          // can assert on is a line that quietly disappears in a refactor.
-          child: Text.rich(
-            TextSpan(
-              style: theme.textTheme.bodySmall?.copyWith(color: surfaces.muted),
-              children: [
-                const TextSpan(
-                  text: 'Repository we cannot reach, or a lockfile that is not '
-                      'committed? Run ',
-                ),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Icon(Icons.vpn_lock_outlined, size: 15, color: surfaces.muted),
+            const SizedBox(width: 8),
+            Expanded(
+              // `Text.rich` rather than a bare `RichText`: it inherits the
+              // ambient text style, and it is what widget finders can read —
+              // a line nobody can assert on is a line that quietly
+              // disappears in a refactor.
+              child: Text.rich(
                 TextSpan(
-                  text: command,
-                  style: monoOf(
-                    context,
-                    theme.textTheme.bodySmall,
-                    color: surfaces.text,
-                  ),
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: surfaces.muted),
+                  children: [
+                    const TextSpan(
+                      text: 'Repository we cannot reach, or a lockfile that '
+                          'is not committed? Download the collector below, '
+                          'or run ',
+                    ),
+                    TextSpan(
+                      text: command,
+                      style: monoOf(
+                        context,
+                        theme.textTheme.bodySmall,
+                        color: surfaces.text,
+                      ),
+                    ),
+                    const TextSpan(
+                      text: ' if a Dart SDK is already there. Either way it '
+                          'sends the dependency list, not the code.',
+                    ),
+                  ],
                 ),
-                const TextSpan(
-                  text: ' where it lives and upload the bundle. It sends the '
-                      'dependency list, not the code.',
-                ),
-              ],
+              ),
             ),
-          ),
+            if (onUpload != null) ...[
+              const SizedBox(width: 12),
+              OutlinedButton.icon(
+                onPressed: onUpload,
+                icon: const Icon(Icons.upload_file_outlined, size: 17),
+                label: const Text('Upload bundle'),
+              ),
+            ],
+          ],
         ),
-        if (onUpload != null) ...[
-          const SizedBox(width: 12),
-          OutlinedButton.icon(
-            onPressed: onUpload,
-            icon: const Icon(Icons.upload_file_outlined, size: 17),
-            label: const Text('Upload bundle'),
+        const SizedBox(height: 16),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: surfaces.isDark ? Console.sidebar : surfaces.inset,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: surfaces.hairline),
           ),
-        ],
+          child: collectorPairing,
+        ),
       ],
     );
   }
@@ -148,6 +178,7 @@ class _Hero extends StatelessWidget {
     required this.controller,
     required this.onSubmit,
     required this.onUpload,
+    required this.collectorPairing,
     required this.archived,
     required this.error,
   });
@@ -159,6 +190,7 @@ class _Hero extends StatelessWidget {
   /// which hides the button and leaves the instructions — the CLI command is
   /// true everywhere, and the browser is where the file goes.
   final VoidCallback? onUpload;
+  final Widget collectorPairing;
   final bool archived;
   final String? error;
 
@@ -231,7 +263,10 @@ class _Hero extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 18),
-            _LocalRepositoryHint(onUpload: onUpload),
+            _LocalRepositoryHint(
+              onUpload: onUpload,
+              collectorPairing: collectorPairing,
+            ),
           ],
           if (error != null) ...[
             const SizedBox(height: 12),

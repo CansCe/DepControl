@@ -1,11 +1,13 @@
 import 'auth/jwt_verifier.dart';
 import 'env.dart';
 import 'repository/api_diff_store.dart';
+import 'repository/collector_session_store.dart';
 import 'repository/license_policy_store.dart';
 import 'repository/postgres_api_diff_store.dart';
 import 'notifications/notifier.dart';
 import 'repository/changelog_store.dart';
 import 'repository/notification_store.dart';
+import 'repository/postgres_collector_session_store.dart';
 import 'repository/postgres_license_policy_store.dart';
 import 'repository/postgres_changelog_store.dart';
 import 'repository/postgres_notification_store.dart';
@@ -42,6 +44,7 @@ class Deps {
       notifications: stores.notifications,
       changelogs: stores.changelogs,
       scanJobs: stores.scanJobs,
+      collectorSessions: stores.collectorSessions,
       ecosystems: ecosystems,
       gitFetcher: GitFetcher(ecosystems: ecosystems),
       pubApi: pubApi,
@@ -74,6 +77,7 @@ class Deps {
     NotificationStore? notifications,
     ChangelogStore? changelogs,
     ScanJobStore? scanJobs,
+    CollectorSessionStore? collectorSessions,
     PubApiClient? pubApi,
     Resolver? resolver,
     UpgradeInspector? inspector,
@@ -89,6 +93,7 @@ class Deps {
       notifications: notifications ?? InMemoryNotificationStore(),
       changelogs: changelogs ?? InMemoryChangelogStore(),
       scanJobs: scanJobs ?? InMemoryScanJobStore(),
+      collectorSessions: collectorSessions ?? InMemoryCollectorSessionStore(),
       ecosystems: eco,
       gitFetcher: gitFetcher,
       pubApi: api,
@@ -108,6 +113,7 @@ class Deps {
     required this.notifications,
     required this.changelogs,
     required this.scanJobs,
+    required this.collectorSessions,
     required this.ecosystems,
     required this.gitFetcher,
     required this.pubApi,
@@ -141,6 +147,10 @@ class Deps {
   /// is what lets a scan outlive the connection that started it and the machine
   /// that first picked it up.
   final ScanJobStore scanJobs;
+
+  /// One-shot grants for the local collector to submit a bundle without ever
+  /// holding a Supabase JWT — see `backend/sql/collector_sessions.sql`.
+  final CollectorSessionStore collectorSessions;
 
   /// Delivers those announcements. Built per use rather than held, since it
   /// owns an HTTP client and the request path never announces anything — only
@@ -241,6 +251,7 @@ class Deps {
     NotificationStore notifications,
     ChangelogStore changelogs,
     ScanJobStore scanJobs,
+    CollectorSessionStore collectorSessions,
   })_buildStores() {
     final db = log.tagged('db');
     final url = readEnvironment()['DATABASE_URL'];
@@ -255,6 +266,7 @@ class Deps {
           notifications: PostgresNotificationStore(pool),
           changelogs: PostgresChangelogStore(pool),
           scanJobs: PostgresScanJobStore(pool),
+          collectorSessions: PostgresCollectorSessionStore(pool),
         );
       } catch (e) {
         // A malformed DATABASE_URL used to blow up lazily on the first request,
@@ -305,6 +317,7 @@ class Deps {
     NotificationStore notifications,
     ChangelogStore changelogs,
     ScanJobStore scanJobs,
+    CollectorSessionStore collectorSessions,
   })_inMemoryStores() => (
         repository: InMemoryProjectRepository(),
         apiDiffs: InMemoryApiDiffStore(),
@@ -312,6 +325,7 @@ class Deps {
         notifications: InMemoryNotificationStore(),
         changelogs: InMemoryChangelogStore(),
         scanJobs: InMemoryScanJobStore(),
+        collectorSessions: InMemoryCollectorSessionStore(),
       );
 
   static String? _jwksFromSupabaseUrl(String? base) {
