@@ -15,6 +15,9 @@
 #                   carry none rather than a guessed one.
 name: rescan
 
+permissions:
+  contents: read
+
 on:
   schedule:
     # 06:00 UTC daily. Nothing here depends on the hour — a re-scan finds what
