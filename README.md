@@ -152,15 +152,39 @@ ones it can: a lockfile is generated locally and routinely gitignored, so the
 versions a remote scan sees are inferred from declared constraints, and an
 advisory applies to a resolved version rather than to a constraint.
 
-So the repository is read where it lives, by a CLI, and what travels is the
-dependency list:
+So the repository is read where it lives, by a small tool, and what travels is
+the dependency list. Most people never need a Dart SDK for this: the registry
+screen offers a **download** of the collector as a native binary for Windows,
+Linux and macOS, and a **pairing code** that lets it submit its bundle to your
+account without a manual upload — mint the code, run the command it shows you,
+and the page picks the scan up on its own.
+
+```bash
+depcontrol collect --pair XXXX-XXXX-XXXX-XXXX   # writes the bundle, then sends it
+```
+
+If a Dart SDK is already on the machine, `dart run` works exactly the same way
+and needs nothing downloaded:
 
 ```bash
 dart run depcontrol collect .          # writes depcontrol-bundle.json
+dart run depcontrol collect . --upload https://your-api --token …
 ```
 
-Then upload it from the registry screen, or pass `--upload https://your-api`.
-Collecting and sending are separate on purpose, so you can read the file first.
+Collecting and sending are separate actions on purpose — `--out -` (or the
+default file) is always written before anything is sent, so you can read it
+first. `--pair` and `--upload` are two ways to send; `--upload` needs a
+Supabase access token and is meant for scripts and CI, where a browser to mint
+a pairing code is not available.
+
+**A pairing code is a bearer credential, not a session.** It is single-use,
+expires after fifteen minutes, and authorizes exactly one thing: submitting one
+dependency bundle to the account that minted it. It grants no read access to
+any project or report — someone who intercepts a live code can cause a scan of
+a repository they already hold; they cannot see anything this app knows. The
+downloaded binaries are also **unsigned**: Windows SmartScreen and macOS
+Gatekeeper will both warn before running one, and each release publishes a
+`.sha256` checksum beside every binary to verify against.
 
 - It reads **manifests, lockfiles and your own source**, and nothing else — not
   your `.env`, not your history.
@@ -277,9 +301,11 @@ that run on the server rather than inside the request that asked for them,
 stored report bodies that refresh for the fields the change digest deliberately
 ignores, manifest parsing extracted into `packages/ecosystem` so a scan can be
 read without a registry behind it, **.NET** as a third ecosystem — project
-files, central package management and legacy `packages.config` alike — and the
+files, central package management and legacy `packages.config` alike — the
 **local collector**, which reads a repository where it lives and makes private,
-self-hosted and enterprise repositories scannable at all.
+self-hosted and enterprise repositories scannable at all, and **downloadable
+collector binaries with account pairing**, so using it needs neither a Dart SDK
+nor a manual upload.
 
 What is planned, in order:
 
