@@ -25,6 +25,24 @@ frontend/build/
 .serena/
 brand/
 frontend/
-tools/
 **/*.iml
 README.md
+
+# `tools/` is developer tooling, except for the one piece the backend resolves:
+# `collector` is a workspace member and a dev dependency of `backend`, and
+# `dart pub get` resolves dev dependencies too. Excluding it fails the build
+# with "could not find package collector at https://pub.dev", which reads like
+# a typo rather than a missing build context. Nothing from it reaches the final
+# image — that stage is `FROM scratch` and copies only the compiled binary.
+tools/
+!tools/collector
+!tools/collector/**
+
+# The exception above is a blanket one, and the last matching pattern wins — so
+# everything the blocks above already excluded has to be excluded again here,
+# scoped, or it comes back in through `tools/collector/`. Keep this block last.
+tools/collector/.env
+tools/collector/.env.*
+tools/collector/.dart_tool
+tools/collector/.dart_tool/**
+tools/collector/pubspec_overrides.yaml

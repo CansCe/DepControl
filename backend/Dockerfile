@@ -26,6 +26,12 @@ RUN dart pub global activate dart_frog_cli 1.2.14
 WORKDIR /app
 COPY packages ./packages
 COPY backend ./backend
+# Dev-only, and it never runs here: `backend` dev-depends on `collector` so that
+# one test can produce a real bundle rather than an imitation of one, and pub
+# resolves dev dependencies whether or not anything will run them. It has to be
+# present for `dart pub get` to succeed. Nothing from it reaches the shipped
+# image — the final stage is `FROM scratch` and copies only the compiled binary.
+COPY tools/collector ./tools/collector
 
 WORKDIR /app/backend
 
@@ -42,7 +48,7 @@ WORKDIR /app/backend
 # bin/server.dart, but with an empty Router: every route 404s with "Route not
 # found" at runtime. Deleting the key here is what keeps that from coming back.
 RUN sed -i '/^resolution: workspace$/d' pubspec.yaml \
- && printf 'dependency_overrides:\n  shared:\n    path: ../packages/shared\n  ecosystem:\n    path: ../packages/ecosystem\n' \
+ && printf 'dependency_overrides:\n  shared:\n    path: ../packages/shared\n  ecosystem:\n    path: ../packages/ecosystem\n  collector:\n    path: ../tools/collector\n' \
       > pubspec_overrides.yaml \
  && dart pub get
 
@@ -56,9 +62,11 @@ RUN test -d build/routes \
 
 # `dart_frog build` regenerates its own broken overrides inside `build/`.
 # Overwrite it, then resolve and compile for real. From `/app/backend/build`,
-# `../../packages/shared` is `/app/packages/shared`.
+# `../../packages/shared` is `/app/packages/shared`. `collector` is carried here
+# too because the copied pubspec keeps the dev dependency; an override for a
+# package pub ends up not resolving is simply unused, so this is safe either way.
 WORKDIR /app/backend/build
-RUN printf 'dependency_overrides:\n  shared:\n    path: ../../packages/shared\n  ecosystem:\n    path: ../../packages/ecosystem\n' \
+RUN printf 'dependency_overrides:\n  shared:\n    path: ../../packages/shared\n  ecosystem:\n    path: ../../packages/ecosystem\n  collector:\n    path: ../../tools/collector\n' \
       > pubspec_overrides.yaml \
  && dart pub get \
  && dart compile exe bin/server.dart -o bin/server

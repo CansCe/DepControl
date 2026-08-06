@@ -7,6 +7,10 @@ on:
     paths:
       - 'backend/**'
       - 'packages/shared/**'
+      # A direct runtime dependency of `backend` (parses manifests for scans).
+      - 'packages/ecosystem/**'
+      # Now part of the backend image build context (see backend/Dockerfile).
+      - 'tools/collector/**'
       - 'pubspec.yaml'
       - 'pubspec.lock'
       - '.dockerignore'
